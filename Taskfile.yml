@@ -1,0 +1,47 @@
+version: '3'
+
+vars:
+  BINARY: mkt
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo "dev"
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo "none"
+  DATE:
+    sh: date -u '+%Y-%m-%dT%H:%M:%SZ'
+  LDFLAGS: >-
+    -s -w
+    -X github.com/stxkxs/mkt/cmd.version={{.VERSION}}
+    -X github.com/stxkxs/mkt/cmd.commit={{.COMMIT}}
+    -X github.com/stxkxs/mkt/cmd.date={{.DATE}}
+
+tasks:
+  build:
+    desc: Build the binary
+    cmds:
+      - go build -ldflags "{{.LDFLAGS}}" -o {{.BINARY}} .
+
+  run:
+    desc: Build and run
+    deps: [build]
+    cmds:
+      - ./{{.BINARY}}
+
+  test:
+    desc: Run tests
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: Run linter
+    cmds:
+      - golangci-lint run ./...
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -f {{.BINARY}}
+
+  tidy:
+    desc: Tidy go modules
+    cmds:
+      - go mod tidy
