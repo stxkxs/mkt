@@ -1,0 +1,19 @@
+# Binary
+mkt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Go
+vendor/
+
+# Config (user-specific)
+# ~/.config/mkt/config.yaml
