@@ -9,21 +9,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/tui/format"
+	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
 var (
-	colorGreen  = lipgloss.Color("#9ece6a")
-	colorRed    = lipgloss.Color("#f7768e")
-	colorDim    = lipgloss.Color("#565f89")
-	colorAccent = lipgloss.Color("#7aa2f7")
-	colorCyan   = lipgloss.Color("#7dcfff")
-	colorBg     = lipgloss.Color("#1a1b26")
-
-	styleUp    = lipgloss.NewStyle().Foreground(colorGreen)
-	styleDown  = lipgloss.NewStyle().Foreground(colorRed)
-	styleAxis  = lipgloss.NewStyle().Foreground(colorDim)
-	styleTitle = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	styleInfo  = lipgloss.NewStyle().Foreground(colorCyan)
+	styleAxis  = lipgloss.NewStyle().Foreground(theme.ColorDim)
+	styleTitle = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
+	styleInfo  = lipgloss.NewStyle().Foreground(theme.ColorCyan)
 )
 
 // ChartMode determines the chart type.
@@ -61,6 +54,7 @@ type Model struct {
 	active       bool
 	histProvider HistoryProvider
 	loading      bool
+	errMsg       string
 }
 
 // New creates a chart model.
@@ -78,6 +72,7 @@ func (m *Model) SetSymbol(sym string) tea.Cmd {
 	m.symbol = sym
 	m.active = true
 	m.loading = true
+	m.errMsg = ""
 	return m.fetchHistory()
 }
 
@@ -130,11 +125,13 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if msg.symbol == m.symbol {
 			m.data = msg.data
 			m.loading = false
+			m.errMsg = ""
 		}
 		return m, nil
 
 	case historyErrorMsg:
 		m.loading = false
+		m.errMsg = msg.err.Error()
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -195,7 +192,11 @@ func (m Model) View() string {
 	}
 
 	if len(m.data) == 0 {
-		sb.WriteString(styleAxis.Render("  No data available"))
+		if m.errMsg != "" {
+			sb.WriteString(theme.StyleDown.Render(fmt.Sprintf("  Error loading chart: %s", m.errMsg)))
+		} else {
+			sb.WriteString(styleAxis.Render("  No data available"))
+		}
 		return sb.String()
 	}
 
@@ -320,7 +321,7 @@ func renderCandlestick(candles []provider.OHLCV, width, height int) string {
 		// Y-axis price label (every 5 rows)
 		if r%(height/5+1) == 0 {
 			price := maxP - float64(r)/scale
-			sb.WriteString(styleAxis.Render(fmt.Sprintf("%*s ", labelWidth, formatAxisPrice(price))))
+			sb.WriteString(styleAxis.Render(fmt.Sprintf("%*s ", labelWidth, format.FormatAxisPrice(price))))
 		} else {
 			sb.WriteString(strings.Repeat(" ", labelWidth+1))
 		}
@@ -331,9 +332,9 @@ func renderCandlestick(candles []provider.OHLCV, width, height int) string {
 			if ch == ' ' {
 				sb.WriteRune(' ')
 			} else if colors[r][col] {
-				sb.WriteString(styleUp.Render(string(ch)))
+				sb.WriteString(theme.StyleUp.Render(string(ch)))
 			} else {
-				sb.WriteString(styleDown.Render(string(ch)))
+				sb.WriteString(theme.StyleDown.Render(string(ch)))
 			}
 		}
 		sb.WriteString("\n")
@@ -417,7 +418,7 @@ func renderLine(candles []provider.OHLCV, width, height int) string {
 	for r := range height {
 		if r%(height/5+1) == 0 {
 			price := maxP - float64(r)/float64(height)*priceRange
-			sb.WriteString(styleAxis.Render(fmt.Sprintf("%*s ", labelWidth, formatAxisPrice(price))))
+			sb.WriteString(styleAxis.Render(fmt.Sprintf("%*s ", labelWidth, format.FormatAxisPrice(price))))
 		} else {
 			sb.WriteString(strings.Repeat(" ", labelWidth+1))
 		}
@@ -427,28 +428,15 @@ func renderLine(candles []provider.OHLCV, width, height int) string {
 			if ch == ' ' {
 				sb.WriteRune(' ')
 			} else if isUp {
-				sb.WriteString(styleUp.Render(string(ch)))
+				sb.WriteString(theme.StyleUp.Render(string(ch)))
 			} else {
-				sb.WriteString(styleDown.Render(string(ch)))
+				sb.WriteString(theme.StyleDown.Render(string(ch)))
 			}
 		}
 		sb.WriteString("\n")
 	}
 
 	return sb.String()
-}
-
-func formatAxisPrice(price float64) string {
-	switch {
-	case price >= 10000:
-		return fmt.Sprintf("%.0f", price)
-	case price >= 100:
-		return fmt.Sprintf("%.1f", price)
-	case price >= 1:
-		return fmt.Sprintf("%.2f", price)
-	default:
-		return fmt.Sprintf("%.4f", price)
-	}
 }
 
 func clampRow(r, height int) int {

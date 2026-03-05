@@ -7,24 +7,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/alert"
+	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
 var (
-	colorGreen  = lipgloss.Color("#9ece6a")
-	colorRed    = lipgloss.Color("#f7768e")
-	colorDim    = lipgloss.Color("#565f89")
-	colorAccent = lipgloss.Color("#7aa2f7")
-	colorCyan   = lipgloss.Color("#7dcfff")
-	colorYellow = lipgloss.Color("#e0af68")
-
-	styleHeader = lipgloss.NewStyle().Foreground(colorDim).Bold(true)
-	styleCursor = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	styleSymbol = lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
-	styleOn     = lipgloss.NewStyle().Foreground(colorGreen)
-	styleOff    = lipgloss.NewStyle().Foreground(colorRed)
-	styleVal    = lipgloss.NewStyle().Foreground(lipgloss.Color("#c0caf5"))
-	styleDim    = lipgloss.NewStyle().Foreground(colorDim)
-	styleAlert  = lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
+	styleOn    = lipgloss.NewStyle().Foreground(theme.ColorGreen)
+	styleOff   = lipgloss.NewStyle().Foreground(theme.ColorRed)
+	styleAlert = lipgloss.NewStyle().Foreground(theme.ColorYellow).Bold(true)
 )
 
 // Model is the alerts management view.
@@ -56,6 +45,11 @@ func (m *Model) AddTriggered(a alert.TriggeredAlert) {
 	if len(m.history) > 50 {
 		m.history = m.history[len(m.history)-50:]
 	}
+}
+
+// TriggeredCount returns the number of triggered alerts in history.
+func (m Model) TriggeredCount() int {
+	return len(m.history)
 }
 
 // Update handles messages.
@@ -96,29 +90,29 @@ func (m Model) View() string {
 	rules := m.engine.Rules()
 
 	if len(rules) == 0 && len(m.history) == 0 {
-		sb.WriteString(styleDim.Render("  No alerts configured.\n"))
-		sb.WriteString(styleDim.Render("  Add alerts in ~/.config/mkt/config.yaml\n\n"))
-		sb.WriteString(styleDim.Render("  Example:\n"))
-		sb.WriteString(styleDim.Render("  alerts:\n"))
-		sb.WriteString(styleDim.Render("    - symbol: BTCUSDT\n"))
-		sb.WriteString(styleDim.Render("      condition: above\n"))
-		sb.WriteString(styleDim.Render("      value: 100000\n"))
-		sb.WriteString(styleDim.Render("      enabled: true\n"))
+		sb.WriteString(theme.StyleDim.Render("  No alerts configured.\n"))
+		sb.WriteString(theme.StyleDim.Render("  Add alerts in ~/.config/mkt/config.yaml\n\n"))
+		sb.WriteString(theme.StyleDim.Render("  Example:\n"))
+		sb.WriteString(theme.StyleDim.Render("  alerts:\n"))
+		sb.WriteString(theme.StyleDim.Render("    - symbol: BTCUSDT\n"))
+		sb.WriteString(theme.StyleDim.Render("      condition: above\n"))
+		sb.WriteString(theme.StyleDim.Render("      value: 100000\n"))
+		sb.WriteString(theme.StyleDim.Render("      enabled: true\n"))
 		return sb.String()
 	}
 
 	// Rules table
 	if len(rules) > 0 {
-		sb.WriteString(styleHeader.Render("  ALERT RULES"))
+		sb.WriteString(theme.StyleHeader.Render("  ALERT RULES"))
 		sb.WriteString("\n")
 		header := fmt.Sprintf("  %-12s %-10s %12s %8s", "SYMBOL", "CONDITION", "VALUE", "STATUS")
-		sb.WriteString(styleHeader.Render(header))
+		sb.WriteString(theme.StyleHeader.Render(header))
 		sb.WriteString("\n")
 
 		for i, r := range rules {
 			cursor := "  "
 			if i == m.cursor {
-				cursor = styleCursor.Render("> ")
+				cursor = theme.StyleCursor.Render("> ")
 			}
 
 			status := styleOn.Render("ON")
@@ -128,9 +122,9 @@ func (m Model) View() string {
 
 			row := fmt.Sprintf("%s%s %s %s %s",
 				cursor,
-				styleSymbol.Render(fmt.Sprintf("%-12s", r.Symbol)),
-				styleVal.Render(fmt.Sprintf("%-10s", r.Condition)),
-				styleVal.Render(fmt.Sprintf("%12.4f", r.Value)),
+				theme.StyleSymbol.Render(fmt.Sprintf("%-12s", r.Symbol)),
+				theme.StyleVal.Render(fmt.Sprintf("%-10s", r.Condition)),
+				theme.StyleVal.Render(fmt.Sprintf("%12.4f", r.Value)),
 				status,
 			)
 			sb.WriteString(row)
@@ -138,14 +132,14 @@ func (m Model) View() string {
 		}
 
 		sb.WriteString("\n")
-		sb.WriteString(styleDim.Render("  t: toggle  d: delete  j/k: navigate"))
+		sb.WriteString(theme.StyleDim.Render("  t: toggle  d: delete  j/k: navigate"))
 		sb.WriteString("\n")
 	}
 
 	// Recent alerts
 	if len(m.history) > 0 {
 		sb.WriteString("\n")
-		sb.WriteString(styleHeader.Render("  RECENT ALERTS"))
+		sb.WriteString(theme.StyleHeader.Render("  RECENT ALERTS"))
 		sb.WriteString("\n")
 		// Show last 10
 		start := len(m.history) - 10
@@ -154,7 +148,7 @@ func (m Model) View() string {
 		}
 		for _, a := range m.history[start:] {
 			sb.WriteString(fmt.Sprintf("  %s  %s\n",
-				styleDim.Render(a.Timestamp.Format("15:04:05")),
+				theme.StyleDim.Render(a.Timestamp.Format("15:04:05")),
 				styleAlert.Render(a.Message),
 			))
 		}

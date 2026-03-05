@@ -11,7 +11,6 @@ var (
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
-	quiet   bool
 )
 
 var rootCmd = &cobra.Command{
@@ -22,7 +21,6 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "suppress non-essential output")
 	rootCmd.AddCommand(versionCmd)
 }
 

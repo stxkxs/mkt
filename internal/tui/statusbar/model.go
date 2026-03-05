@@ -6,36 +6,36 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
 var (
-	colorDim    = lipgloss.Color("#565f89")
-	colorGreen  = lipgloss.Color("#9ece6a")
-	colorRed    = lipgloss.Color("#f7768e")
-	colorTabBg  = lipgloss.Color("#24283b")
-	colorYellow = lipgloss.Color("#e0af68")
-
 	styleBar = lipgloss.NewStyle().
-			Background(colorTabBg).
-			Foreground(colorDim)
+			Background(theme.ColorTabBg).
+			Foreground(theme.ColorDim)
 
 	styleConnected = lipgloss.NewStyle().
-			Background(colorTabBg).
-			Foreground(colorGreen)
+			Background(theme.ColorTabBg).
+			Foreground(theme.ColorGreen)
 
 	styleDisconnected = lipgloss.NewStyle().
-				Background(colorTabBg).
-				Foreground(colorRed)
+				Background(theme.ColorTabBg).
+				Foreground(theme.ColorRed)
 
 	styleAlertCount = lipgloss.NewStyle().
-			Background(colorTabBg).
-			Foreground(colorYellow).
+			Background(theme.ColorTabBg).
+			Foreground(theme.ColorYellow).
 			Bold(true)
 )
 
+type providerEntry struct {
+	Name      string
+	Connected bool
+}
+
 // Model is the status bar component.
 type Model struct {
-	providers  map[string]bool
+	providers  []providerEntry
 	lastUpdate time.Time
 	alertCount int
 	width      int
@@ -43,9 +43,7 @@ type Model struct {
 
 // New creates a new status bar.
 func New() Model {
-	return Model{
-		providers: make(map[string]bool),
-	}
+	return Model{}
 }
 
 // SetWidth updates the status bar width.
@@ -55,7 +53,13 @@ func (m *Model) SetWidth(w int) {
 
 // SetProviderStatus updates the connection status of a provider.
 func (m *Model) SetProviderStatus(name string, connected bool) {
-	m.providers[name] = connected
+	for i, p := range m.providers {
+		if p.Name == name {
+			m.providers[i].Connected = connected
+			return
+		}
+	}
+	m.providers = append(m.providers, providerEntry{Name: name, Connected: connected})
 }
 
 // SetLastUpdate records the last quote update time.
@@ -73,11 +77,11 @@ func (m Model) View() string {
 	var parts []string
 
 	// Provider status
-	for name, connected := range m.providers {
-		if connected {
-			parts = append(parts, styleConnected.Render("● "+name))
+	for _, p := range m.providers {
+		if p.Connected {
+			parts = append(parts, styleConnected.Render("● "+p.Name))
 		} else {
-			parts = append(parts, styleDisconnected.Render("○ "+name))
+			parts = append(parts, styleDisconnected.Render("○ "+p.Name))
 		}
 	}
 

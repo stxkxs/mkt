@@ -8,24 +8,11 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
 var (
-	colorGreen  = lipgloss.Color("#9ece6a")
-	colorRed    = lipgloss.Color("#f7768e")
-	colorDim    = lipgloss.Color("#565f89")
-	colorAccent = lipgloss.Color("#7aa2f7")
-	colorCyan   = lipgloss.Color("#7dcfff")
-	colorYellow = lipgloss.Color("#e0af68")
-
-	styleHeader = lipgloss.NewStyle().Foreground(colorDim).Bold(true)
-	styleCursor = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	styleSymbol = lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
-	styleUp     = lipgloss.NewStyle().Foreground(colorGreen)
-	styleDown   = lipgloss.NewStyle().Foreground(colorRed)
-	styleVal    = lipgloss.NewStyle().Foreground(lipgloss.Color("#c0caf5"))
-	styleTotal  = lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
-	styleDim    = lipgloss.NewStyle().Foreground(colorDim)
+	styleTotal = lipgloss.NewStyle().Foreground(theme.ColorYellow).Bold(true)
 )
 
 // Model is the portfolio view.
@@ -86,7 +73,7 @@ func (m Model) View() string {
 	}
 
 	if len(m.holdings) == 0 {
-		return styleDim.Render("  No holdings configured.\n  Add holdings in ~/.config/mkt/config.yaml")
+		return theme.StyleDim.Render("  No holdings configured.\n  Add holdings in ~/.config/mkt/config.yaml")
 	}
 
 	var sb strings.Builder
@@ -94,7 +81,7 @@ func (m Model) View() string {
 	// Header
 	header := fmt.Sprintf("  %-12s %10s %10s %12s %12s %10s",
 		"SYMBOL", "QTY", "COST", "PRICE", "VALUE", "P&L")
-	sb.WriteString(styleHeader.Render(header))
+	sb.WriteString(theme.StyleHeader.Render(header))
 	sb.WriteString("\n")
 
 	summary := portfolio.Evaluate(m.holdings, m.quotes)
@@ -102,23 +89,23 @@ func (m Model) View() string {
 	for i, pos := range summary.Positions {
 		cursor := "  "
 		if i == m.cursor {
-			cursor = styleCursor.Render("> ")
+			cursor = theme.StyleCursor.Render("> ")
 		}
 
-		pnlStyle := styleUp
+		pnlStyle := theme.StyleUp
 		sign := "+"
 		if pos.PnL < 0 {
-			pnlStyle = styleDown
+			pnlStyle = theme.StyleDown
 			sign = ""
 		}
 
 		row := fmt.Sprintf("%s%s %s %s %s %s %s",
 			cursor,
-			styleSymbol.Render(fmt.Sprintf("%-12s", pos.Symbol)),
-			styleVal.Render(fmt.Sprintf("%10.4f", pos.Quantity)),
-			styleVal.Render(fmt.Sprintf("%10.2f", pos.CostBasis)),
-			styleVal.Render(fmt.Sprintf("%12.2f", pos.CurrentPrice)),
-			styleVal.Render(fmt.Sprintf("%12.2f", pos.MarketValue)),
+			theme.StyleSymbol.Render(fmt.Sprintf("%-12s", pos.Symbol)),
+			theme.StyleVal.Render(fmt.Sprintf("%10.4f", pos.Quantity)),
+			theme.StyleVal.Render(fmt.Sprintf("%10.2f", pos.CostBasis)),
+			theme.StyleVal.Render(fmt.Sprintf("%12.2f", pos.CurrentPrice)),
+			theme.StyleVal.Render(fmt.Sprintf("%12.2f", pos.MarketValue)),
 			pnlStyle.Render(fmt.Sprintf("%s%.2f (%s%.1f%%)", sign, pos.PnL, sign, pos.PnLPct)),
 		)
 		sb.WriteString(row)
@@ -127,10 +114,10 @@ func (m Model) View() string {
 
 	// Total row
 	sb.WriteString("\n")
-	totalPnlStyle := styleUp
+	totalPnlStyle := theme.StyleUp
 	totalSign := "+"
 	if summary.TotalPnL < 0 {
-		totalPnlStyle = styleDown
+		totalPnlStyle = theme.StyleDown
 		totalSign = ""
 	}
 	sb.WriteString(fmt.Sprintf("  %s  %s  %s\n",

@@ -12,6 +12,7 @@ import (
 	"github.com/stxkxs/mkt/internal/provider"
 	"github.com/stxkxs/mkt/internal/provider/coinbase"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
+	"github.com/stxkxs/mkt/internal/tui/format"
 )
 
 func init() {
@@ -69,35 +70,12 @@ func runWatch(cmd *cobra.Command, args []string) error {
 			}
 			fmt.Printf("%-12s %12s %s%6.2f%% %8s  %s\n",
 				q.Symbol,
-				formatWatchPrice(q.Price),
+				format.FormatPrice(q.Price),
 				sign, q.ChangePct,
-				formatWatchVolume(q.Volume),
+				format.FormatVolume(q.Volume),
 				q.Timestamp.Format("15:04:05"),
 			)
 		}
 	}
 }
 
-func formatWatchPrice(price float64) string {
-	switch {
-	case price >= 100:
-		return fmt.Sprintf("%.2f", price)
-	case price >= 1:
-		return fmt.Sprintf("%.4f", price)
-	default:
-		return fmt.Sprintf("%.6f", price)
-	}
-}
-
-func formatWatchVolume(vol float64) string {
-	switch {
-	case vol >= 1e9:
-		return fmt.Sprintf("%.1fB", vol/1e9)
-	case vol >= 1e6:
-		return fmt.Sprintf("%.1fM", vol/1e6)
-	case vol >= 1e3:
-		return fmt.Sprintf("%.1fK", vol/1e3)
-	default:
-		return fmt.Sprintf("%.0f", vol)
-	}
-}
