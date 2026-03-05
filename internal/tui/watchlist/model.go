@@ -101,8 +101,29 @@ func (m Model) View() string {
 	sb.WriteString(theme.StyleHeader.Render(header))
 	sb.WriteString("\n")
 
+	// Compute visible window (1 row for header)
+	maxRows := m.height - 1
+	if maxRows < 1 || maxRows >= len(m.symbols) {
+		maxRows = len(m.symbols)
+	}
+	startIdx := 0
+	if len(m.symbols) > maxRows {
+		startIdx = m.cursor - maxRows + 1
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		if startIdx+maxRows > len(m.symbols) {
+			startIdx = len(m.symbols) - maxRows
+		}
+	}
+	endIdx := startIdx + maxRows
+	if endIdx > len(m.symbols) {
+		endIdx = len(m.symbols)
+	}
+
 	// Rows
-	for i, sym := range m.symbols {
+	for i := startIdx; i < endIdx; i++ {
+		sym := m.symbols[i]
 		q, hasQuote := m.quotes[sym]
 
 		// Cursor indicator

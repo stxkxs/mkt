@@ -11,9 +11,16 @@ import (
 
 // Holding represents a portfolio position from config.
 type Holding struct {
-	Symbol   string  `mapstructure:"symbol" yaml:"symbol"`
-	Quantity float64 `mapstructure:"quantity" yaml:"quantity"`
+	Symbol    string  `mapstructure:"symbol" yaml:"symbol"`
+	Name      string  `mapstructure:"name" yaml:"name"`
+	Quantity  float64 `mapstructure:"quantity" yaml:"quantity"`
 	CostBasis float64 `mapstructure:"cost_basis" yaml:"cost_basis"`
+}
+
+// Portfolio is a named collection of holdings.
+type Portfolio struct {
+	Name     string    `mapstructure:"name" yaml:"name"`
+	Holdings []Holding `mapstructure:"holdings" yaml:"holdings"`
 }
 
 // AlertRule represents a saved alert from config.
@@ -27,7 +34,7 @@ type AlertRule struct {
 // Config is the application configuration.
 type Config struct {
 	Watchlist    []string    `mapstructure:"watchlist" yaml:"watchlist"`
-	Holdings     []Holding   `mapstructure:"holdings" yaml:"holdings"`
+	Portfolios   []Portfolio `mapstructure:"portfolios" yaml:"portfolios"`
 	Alerts       []AlertRule `mapstructure:"alerts" yaml:"alerts"`
 	PollInterval string      `mapstructure:"poll_interval" yaml:"poll_interval"`
 	SparklineLen int         `mapstructure:"sparkline_len" yaml:"sparkline_len"`
@@ -61,7 +68,7 @@ func Load() (*Config, error) {
 	v.SetDefault("poll_interval", DefaultPollInterval)
 	v.SetDefault("sparkline_len", DefaultSparklineLen)
 	v.SetDefault("theme", DefaultTheme)
-	v.SetDefault("holdings", []Holding{})
+	v.SetDefault("portfolios", DefaultPortfolios)
 	v.SetDefault("alerts", []AlertRule{})
 
 	if err := v.ReadInConfig(); err != nil {
@@ -89,7 +96,7 @@ func Save(cfg *Config) error {
 	v.SetConfigType("yaml")
 
 	v.Set("watchlist", cfg.Watchlist)
-	v.Set("holdings", cfg.Holdings)
+	v.Set("portfolios", cfg.Portfolios)
 	v.Set("alerts", cfg.Alerts)
 	v.Set("poll_interval", cfg.PollInterval)
 	v.Set("sparkline_len", cfg.SparklineLen)

@@ -3,8 +3,15 @@ package portfolio
 // Holding represents a single portfolio position.
 type Holding struct {
 	Symbol    string
+	Name      string
 	Quantity  float64
 	CostBasis float64 // per-unit cost
+}
+
+// Portfolio is a named collection of holdings.
+type Portfolio struct {
+	Name     string
+	Holdings []Holding
 }
 
 // Position is a holding with live P&L calculated.

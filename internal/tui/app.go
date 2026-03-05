@@ -34,13 +34,13 @@ type App struct {
 }
 
 // NewApp creates the root TUI model.
-func NewApp(symbols []string, cache *market.Cache, histProvider chart.HistoryProvider, holdings []portfolio.Holding, alertEngine *alert.Engine) *App {
+func NewApp(symbols []string, cache *market.Cache, histProvider chart.HistoryProvider, portfolios []portfolio.Portfolio, alertEngine *alert.Engine) *App {
 	return &App{
 		activeTab: TabWatchlist,
 		watchlist: watchlist.New(symbols, cache),
 		detail:    detail.New(cache),
 		chart:     chart.New(histProvider),
-		portfolio: portfolioview.New(holdings),
+		portfolio: portfolioview.New(portfolios),
 		alerts:    alertsview.New(alertEngine),
 		statusbar: statusbar.New(),
 		cache:     cache,
