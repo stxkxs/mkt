@@ -8,20 +8,13 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/tui/format"
+	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
 var (
-	colorGreen  = lipgloss.Color("#9ece6a")
-	colorRed    = lipgloss.Color("#f7768e")
-	colorDim    = lipgloss.Color("#565f89")
-	colorAccent = lipgloss.Color("#7aa2f7")
-	colorCyan   = lipgloss.Color("#7dcfff")
-	colorYellow = lipgloss.Color("#e0af68")
-
-	styleLabel = lipgloss.NewStyle().Foreground(colorDim)
-	styleValue = lipgloss.NewStyle().Foreground(lipgloss.Color("#c0caf5"))
-	styleUp    = lipgloss.NewStyle().Foreground(colorGreen)
-	styleDown  = lipgloss.NewStyle().Foreground(colorRed)
+	styleLabel = lipgloss.NewStyle().Foreground(theme.ColorDim)
+	styleValue = lipgloss.NewStyle().Foreground(theme.ColorFg)
 )
 
 // Model is the detail panel for a selected symbol.
@@ -94,7 +87,7 @@ func (m Model) View() string {
 
 	// Header
 	header := lipgloss.NewStyle().
-		Foreground(colorAccent).
+		Foreground(theme.ColorAccent).
 		Bold(true).
 		Render(fmt.Sprintf("  %s Detail", m.symbol))
 	sb.WriteString(header)
@@ -108,22 +101,22 @@ func (m Model) View() string {
 	q := m.quote
 
 	// Price + change
-	changeStyle := styleUp
+	changeStyle := theme.StyleUp
 	arrow := "▲"
 	if q.ChangePct < 0 {
-		changeStyle = styleDown
+		changeStyle = theme.StyleDown
 		arrow = "▼"
 	}
 	sb.WriteString(fmt.Sprintf("  %s  %s\n\n",
-		styleValue.Bold(true).Render(formatPrice(q.Price)),
+		styleValue.Bold(true).Render(format.FormatPrice(q.Price)),
 		changeStyle.Render(fmt.Sprintf("%s %.2f (%.2f%%)", arrow, q.Change, q.ChangePct)),
 	))
 
 	// Details grid
 	details := []struct{ label, value string }{
-		{"24h High", formatPrice(q.High24h)},
-		{"24h Low", formatPrice(q.Low24h)},
-		{"Volume", formatVolume(q.Volume)},
+		{"24h High", format.FormatPrice(q.High24h)},
+		{"24h Low", format.FormatPrice(q.Low24h)},
+		{"Volume", format.FormatVolume(q.Volume)},
 		{"Provider", q.Provider},
 		{"Type", q.Asset.String()},
 	}
@@ -142,64 +135,11 @@ func (m Model) View() string {
 		if chartWidth > 80 {
 			chartWidth = 80
 		}
-		sb.WriteString(lipgloss.NewStyle().Foreground(colorCyan).Render(
-			"  " + renderSparkline(prices, chartWidth),
+		sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorCyan).Render(
+			"  " + format.Sparkline(prices, chartWidth),
 		))
 		sb.WriteString("\n")
 	}
 
 	return sb.String()
-}
-
-func renderSparkline(prices []float64, width int) string {
-	if len(prices) > width {
-		prices = prices[len(prices)-width:]
-	}
-	minP, maxP := prices[0], prices[0]
-	for _, p := range prices {
-		if p < minP {
-			minP = p
-		}
-		if p > maxP {
-			maxP = p
-		}
-	}
-	blocks := []rune("▁▂▃▄▅▆▇█")
-	rng := maxP - minP
-	if rng == 0 {
-		rng = 1
-	}
-	var sb strings.Builder
-	for _, p := range prices {
-		idx := int((p - minP) / rng * float64(len(blocks)-1))
-		if idx >= len(blocks) {
-			idx = len(blocks) - 1
-		}
-		sb.WriteRune(blocks[idx])
-	}
-	return sb.String()
-}
-
-func formatPrice(price float64) string {
-	switch {
-	case price >= 100:
-		return fmt.Sprintf("%.2f", price)
-	case price >= 1:
-		return fmt.Sprintf("%.4f", price)
-	default:
-		return fmt.Sprintf("%.6f", price)
-	}
-}
-
-func formatVolume(vol float64) string {
-	switch {
-	case vol >= 1e9:
-		return fmt.Sprintf("%.1fB", vol/1e9)
-	case vol >= 1e6:
-		return fmt.Sprintf("%.1fM", vol/1e6)
-	case vol >= 1e3:
-		return fmt.Sprintf("%.1fK", vol/1e3)
-	default:
-		return fmt.Sprintf("%.0f", vol)
-	}
 }

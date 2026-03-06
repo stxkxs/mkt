@@ -30,13 +30,21 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	yahooProv := yahoo.New(cfg.PollDuration())
 	hub := market.NewHub(cache, coinbaseProv, yahooProv)
 
-	// Convert config holdings to portfolio holdings
-	var holdings []portfolio.Holding
-	for _, h := range cfg.Holdings {
-		holdings = append(holdings, portfolio.Holding{
-			Symbol:    h.Symbol,
-			Quantity:  h.Quantity,
-			CostBasis: h.CostBasis,
+	// Convert config portfolios
+	var portfolios []portfolio.Portfolio
+	for _, cp := range cfg.Portfolios {
+		var holdings []portfolio.Holding
+		for _, h := range cp.Holdings {
+			holdings = append(holdings, portfolio.Holding{
+				Symbol:    h.Symbol,
+				Name:      h.Name,
+				Quantity:  h.Quantity,
+				CostBasis: h.CostBasis,
+			})
+		}
+		portfolios = append(portfolios, portfolio.Portfolio{
+			Name:     cp.Name,
+			Holdings: holdings,
 		})
 	}
 
@@ -63,7 +71,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 
 	// Route history requests: Coinbase for crypto, Yahoo for stocks
 	histProvider := market.NewMultiHistoryProvider(coinbaseProv, yahooProv)
-	app := tui.NewApp(symbols, cache, histProvider, holdings, alertEngine)
+	app := tui.NewApp(symbols, cache, histProvider, portfolios, alertEngine)
 	p = tea.NewProgram(app)
 
 	ctx, cancel := context.WithCancel(context.Background())

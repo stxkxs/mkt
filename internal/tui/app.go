@@ -13,6 +13,7 @@ import (
 	"github.com/stxkxs/mkt/internal/tui/detail"
 	portfolioview "github.com/stxkxs/mkt/internal/tui/portfolio"
 	"github.com/stxkxs/mkt/internal/tui/statusbar"
+	"github.com/stxkxs/mkt/internal/tui/theme"
 	"github.com/stxkxs/mkt/internal/tui/watchlist"
 )
 
@@ -33,13 +34,13 @@ type App struct {
 }
 
 // NewApp creates the root TUI model.
-func NewApp(symbols []string, cache *market.Cache, histProvider chart.HistoryProvider, holdings []portfolio.Holding, alertEngine *alert.Engine) *App {
+func NewApp(symbols []string, cache *market.Cache, histProvider chart.HistoryProvider, portfolios []portfolio.Portfolio, alertEngine *alert.Engine) *App {
 	return &App{
 		activeTab: TabWatchlist,
 		watchlist: watchlist.New(symbols, cache),
 		detail:    detail.New(cache),
 		chart:     chart.New(histProvider),
-		portfolio: portfolioview.New(holdings),
+		portfolio: portfolioview.New(portfolios),
 		alerts:    alertsview.New(alertEngine),
 		statusbar: statusbar.New(),
 		cache:     cache,
@@ -159,7 +160,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AlertTriggeredMsg:
 		a.alerts.AddTriggered(msg.Alert)
-		a.statusbar.SetAlertCount(len(a.alerts.View())) // rough proxy
+		a.statusbar.SetAlertCount(a.alerts.TriggeredCount())
 		return a, nil
 
 	case ConnectionStatusMsg:
@@ -225,7 +226,7 @@ func (a *App) View() tea.View {
 		a.alerts.SetSize(a.width, contentHeight)
 		content = a.alerts.View()
 	case TabChart:
-		content = styleDim.Render("  Select a symbol from Watchlist and press 'c' for chart")
+		content = theme.StyleDim.Render("  Select a symbol from Watchlist and press 'c' for chart")
 	}
 
 	contentRendered := lipgloss.NewStyle().
@@ -249,17 +250,17 @@ func (a *App) renderTabBar() string {
 		num := string(rune('1' + i))
 		text := num + " " + name
 		if Tab(i) == a.activeTab {
-			tabs = append(tabs, styleTabActive.Render(text))
+			tabs = append(tabs, theme.StyleTabActive.Render(text))
 		} else {
-			tabs = append(tabs, styleTabInactive.Render(text))
+			tabs = append(tabs, theme.StyleTabInactive.Render(text))
 		}
 	}
 	bar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
-	right := styleDim.Background(colorTabBg).Render(" mkt ")
+	right := theme.StyleDim.Background(theme.ColorTabBg).Render(" mkt ")
 	pad := a.width - lipgloss.Width(bar) - lipgloss.Width(right)
 	if pad < 0 {
 		pad = 0
 	}
-	filler := styleTabBar.Render(strings.Repeat(" ", pad))
+	filler := theme.StyleTabBar.Render(strings.Repeat(" ", pad))
 	return lipgloss.JoinHorizontal(lipgloss.Top, bar, filler, right)
 }

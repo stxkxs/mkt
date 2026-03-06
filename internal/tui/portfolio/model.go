@@ -8,40 +8,29 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
 var (
-	colorGreen  = lipgloss.Color("#9ece6a")
-	colorRed    = lipgloss.Color("#f7768e")
-	colorDim    = lipgloss.Color("#565f89")
-	colorAccent = lipgloss.Color("#7aa2f7")
-	colorCyan   = lipgloss.Color("#7dcfff")
-	colorYellow = lipgloss.Color("#e0af68")
-
-	styleHeader = lipgloss.NewStyle().Foreground(colorDim).Bold(true)
-	styleCursor = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	styleSymbol = lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
-	styleUp     = lipgloss.NewStyle().Foreground(colorGreen)
-	styleDown   = lipgloss.NewStyle().Foreground(colorRed)
-	styleVal    = lipgloss.NewStyle().Foreground(lipgloss.Color("#c0caf5"))
-	styleTotal  = lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
-	styleDim    = lipgloss.NewStyle().Foreground(colorDim)
+	styleTotal = lipgloss.NewStyle().Foreground(theme.ColorYellow).Bold(true)
+	styleLabel = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
 )
 
 // Model is the portfolio view.
 type Model struct {
-	holdings []portfolio.Holding
-	quotes   map[string]provider.Quote
-	cursor   int
-	width    int
-	height   int
+	portfolios []portfolio.Portfolio
+	activeIdx  int
+	quotes     map[string]provider.Quote
+	cursor     int
+	width      int
+	height     int
 }
 
 // New creates a portfolio model.
-func New(holdings []portfolio.Holding) Model {
+func New(portfolios []portfolio.Portfolio) Model {
 	return Model{
-		holdings: holdings,
-		quotes:   make(map[string]provider.Quote),
+		portfolios: portfolios,
+		quotes:     make(map[string]provider.Quote),
 	}
 }
 
@@ -56,23 +45,36 @@ func (m *Model) UpdateQuote(q provider.Quote) {
 	m.quotes[q.Symbol] = q
 }
 
-// SetHoldings updates the holdings list.
-func (m *Model) SetHoldings(h []portfolio.Holding) {
-	m.holdings = h
+func (m Model) activePortfolio() portfolio.Portfolio {
+	if m.activeIdx < len(m.portfolios) {
+		return m.portfolios[m.activeIdx]
+	}
+	return portfolio.Portfolio{}
 }
 
 // Update handles messages.
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		holdings := m.activePortfolio().Holdings
 		switch msg.String() {
 		case "j", "down":
-			if m.cursor < len(m.holdings)-1 {
+			if m.cursor < len(holdings)-1 {
 				m.cursor++
 			}
 		case "k", "up":
 			if m.cursor > 0 {
 				m.cursor--
+			}
+		case "[":
+			if len(m.portfolios) > 1 {
+				m.activeIdx = (m.activeIdx - 1 + len(m.portfolios)) % len(m.portfolios)
+				m.cursor = 0
+			}
+		case "]":
+			if len(m.portfolios) > 1 {
+				m.activeIdx = (m.activeIdx + 1) % len(m.portfolios)
+				m.cursor = 0
 			}
 		}
 	}
@@ -85,40 +87,80 @@ func (m Model) View() string {
 		return ""
 	}
 
-	if len(m.holdings) == 0 {
-		return styleDim.Render("  No holdings configured.\n  Add holdings in ~/.config/mkt/config.yaml")
+	if len(m.portfolios) == 0 {
+		return theme.StyleDim.Render("  No portfolios configured.\n  Add portfolios in ~/.config/mkt/config.yaml")
 	}
 
+	p := m.activePortfolio()
 	var sb strings.Builder
 
+	// Portfolio selector
+	navHint := ""
+	if len(m.portfolios) > 1 {
+		navHint = theme.StyleDim.Render(fmt.Sprintf("  [/]: switch  (%d/%d)", m.activeIdx+1, len(m.portfolios)))
+	}
+	sb.WriteString(styleLabel.Render(fmt.Sprintf("  %s", p.Name)) + navHint + "\n")
+
+	if len(p.Holdings) == 0 {
+		sb.WriteString(theme.StyleDim.Render("  No holdings in this portfolio.\n"))
+		return sb.String()
+	}
+
 	// Header
-	header := fmt.Sprintf("  %-12s %10s %10s %12s %12s %10s",
-		"SYMBOL", "QTY", "COST", "PRICE", "VALUE", "P&L")
-	sb.WriteString(styleHeader.Render(header))
+	header := fmt.Sprintf("  %-6s %-22s %10s %10s %12s %12s %10s",
+		"SYMBOL", "NAME", "QTY", "COST", "PRICE", "VALUE", "P&L")
+	sb.WriteString(theme.StyleHeader.Render(header))
 	sb.WriteString("\n")
 
-	summary := portfolio.Evaluate(m.holdings, m.quotes)
+	summary := portfolio.Evaluate(p.Holdings, m.quotes)
 
-	for i, pos := range summary.Positions {
+	// Compute visible window (2 for portfolio name + header, 3 for total/blank/summary)
+	maxRows := m.height - 5
+	if maxRows < 1 || maxRows >= len(summary.Positions) {
+		maxRows = len(summary.Positions)
+	}
+	startIdx := 0
+	if len(summary.Positions) > maxRows {
+		startIdx = m.cursor - maxRows + 1
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		if startIdx+maxRows > len(summary.Positions) {
+			startIdx = len(summary.Positions) - maxRows
+		}
+	}
+	endIdx := startIdx + maxRows
+	if endIdx > len(summary.Positions) {
+		endIdx = len(summary.Positions)
+	}
+
+	for i := startIdx; i < endIdx; i++ {
+		pos := summary.Positions[i]
 		cursor := "  "
 		if i == m.cursor {
-			cursor = styleCursor.Render("> ")
+			cursor = theme.StyleCursor.Render("> ")
 		}
 
-		pnlStyle := styleUp
+		pnlStyle := theme.StyleUp
 		sign := "+"
 		if pos.PnL < 0 {
-			pnlStyle = styleDown
+			pnlStyle = theme.StyleDown
 			sign = ""
 		}
 
-		row := fmt.Sprintf("%s%s %s %s %s %s %s",
+		name := pos.Name
+		if len(name) > 22 {
+			name = name[:21] + "…"
+		}
+
+		row := fmt.Sprintf("%s%s %s %s %s %s %s %s",
 			cursor,
-			styleSymbol.Render(fmt.Sprintf("%-12s", pos.Symbol)),
-			styleVal.Render(fmt.Sprintf("%10.4f", pos.Quantity)),
-			styleVal.Render(fmt.Sprintf("%10.2f", pos.CostBasis)),
-			styleVal.Render(fmt.Sprintf("%12.2f", pos.CurrentPrice)),
-			styleVal.Render(fmt.Sprintf("%12.2f", pos.MarketValue)),
+			theme.StyleSymbol.Render(fmt.Sprintf("%-6s", pos.Symbol)),
+			theme.StyleDim.Render(fmt.Sprintf("%-22s", name)),
+			theme.StyleVal.Render(fmt.Sprintf("%10.4f", pos.Quantity)),
+			theme.StyleVal.Render(fmt.Sprintf("%10.2f", pos.CostBasis)),
+			theme.StyleVal.Render(fmt.Sprintf("%12.2f", pos.CurrentPrice)),
+			theme.StyleVal.Render(fmt.Sprintf("%12.2f", pos.MarketValue)),
 			pnlStyle.Render(fmt.Sprintf("%s%.2f (%s%.1f%%)", sign, pos.PnL, sign, pos.PnLPct)),
 		)
 		sb.WriteString(row)
@@ -127,10 +169,10 @@ func (m Model) View() string {
 
 	// Total row
 	sb.WriteString("\n")
-	totalPnlStyle := styleUp
+	totalPnlStyle := theme.StyleUp
 	totalSign := "+"
 	if summary.TotalPnL < 0 {
-		totalPnlStyle = styleDown
+		totalPnlStyle = theme.StyleDown
 		totalSign = ""
 	}
 	sb.WriteString(fmt.Sprintf("  %s  %s  %s\n",

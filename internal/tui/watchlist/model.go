@@ -8,45 +8,15 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/tui/format"
+	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
 var (
-	colorGreen  = lipgloss.Color("#9ece6a")
-	colorRed    = lipgloss.Color("#f7768e")
-	colorDim    = lipgloss.Color("#565f89")
-	colorAccent = lipgloss.Color("#7aa2f7")
-	colorCyan   = lipgloss.Color("#7dcfff")
-	colorYellow = lipgloss.Color("#e0af68")
+	styleVol = lipgloss.NewStyle().Foreground(theme.ColorYellow)
 
-	styleHeader = lipgloss.NewStyle().
-			Foreground(colorDim).
-			Bold(true)
-
-	styleCursor = lipgloss.NewStyle().
-			Foreground(colorAccent).
-			Bold(true)
-
-	styleSymbol = lipgloss.NewStyle().
-			Foreground(colorCyan).
-			Bold(true)
-
-	styleUp = lipgloss.NewStyle().
-		Foreground(colorGreen)
-
-	styleDown = lipgloss.NewStyle().
-			Foreground(colorRed)
-
-	styleNeutral = lipgloss.NewStyle().
-			Foreground(colorDim)
-
-	styleVol = lipgloss.NewStyle().
-			Foreground(colorYellow)
-
-	styleSparkUp = lipgloss.NewStyle().
-			Foreground(colorGreen)
-
-	styleSparkDown = lipgloss.NewStyle().
-			Foreground(colorRed)
+	styleSparkUp   = lipgloss.NewStyle().Foreground(theme.ColorGreen)
+	styleSparkDown = lipgloss.NewStyle().Foreground(theme.ColorRed)
 )
 
 // Model is the watchlist view.
@@ -128,56 +98,81 @@ func (m Model) View() string {
 	// Header
 	header := fmt.Sprintf("  %-12s %12s %10s %8s  %-*s",
 		"SYMBOL", "PRICE", "CHANGE", "VOL", sparkWidth, "TREND")
-	sb.WriteString(styleHeader.Render(header))
+	sb.WriteString(theme.StyleHeader.Render(header))
 	sb.WriteString("\n")
 
+	// Compute visible window (1 row for header)
+	maxRows := m.height - 1
+	if maxRows < 1 || maxRows >= len(m.symbols) {
+		maxRows = len(m.symbols)
+	}
+	startIdx := 0
+	if len(m.symbols) > maxRows {
+		startIdx = m.cursor - maxRows + 1
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		if startIdx+maxRows > len(m.symbols) {
+			startIdx = len(m.symbols) - maxRows
+		}
+	}
+	endIdx := startIdx + maxRows
+	if endIdx > len(m.symbols) {
+		endIdx = len(m.symbols)
+	}
+
 	// Rows
-	for i, sym := range m.symbols {
+	for i := startIdx; i < endIdx; i++ {
+		sym := m.symbols[i]
 		q, hasQuote := m.quotes[sym]
 
 		// Cursor indicator
 		cursor := "  "
 		if i == m.cursor {
-			cursor = styleCursor.Render("> ")
+			cursor = theme.StyleCursor.Render("> ")
 		}
 
 		// Symbol
-		symStr := styleSymbol.Render(fmt.Sprintf("%-12s", sym))
+		symStr := theme.StyleSymbol.Render(fmt.Sprintf("%-12s", sym))
 
 		// Price
 		var priceStr, changeStr string
 		var changeStyle lipgloss.Style
 		if hasQuote {
-			priceStr = fmt.Sprintf("%12s", formatPrice(q.Price))
+			priceStr = fmt.Sprintf("%12s", format.FormatPrice(q.Price))
 			sign := "+"
 			if q.ChangePct < 0 {
 				sign = ""
 			}
 			changeStr = fmt.Sprintf("%s%.2f%%", sign, q.ChangePct)
 			if q.ChangePct > 0 {
-				changeStyle = styleUp
+				changeStyle = theme.StyleUp
 			} else if q.ChangePct < 0 {
-				changeStyle = styleDown
+				changeStyle = theme.StyleDown
 			} else {
-				changeStyle = styleNeutral
+				changeStyle = theme.StyleNeutral
 			}
 		} else {
 			priceStr = fmt.Sprintf("%12s", "—")
 			changeStr = fmt.Sprintf("%10s", "—")
-			changeStyle = styleNeutral
+			changeStyle = theme.StyleNeutral
 		}
 
 		// Volume
 		var volStr string
 		if hasQuote && q.Volume > 0 {
-			volStr = styleVol.Render(fmt.Sprintf("%8s", formatVolume(q.Volume)))
+			volStr = styleVol.Render(fmt.Sprintf("%8s", format.FormatVolume(q.Volume)))
 		} else {
-			volStr = styleNeutral.Render(fmt.Sprintf("%8s", "—"))
+			volStr = theme.StyleNeutral.Render(fmt.Sprintf("%8s", "—"))
 		}
 
 		// Sparkline
 		prices := m.cache.Prices(sym)
-		spark := sparkline(prices, sparkWidth)
+		spark := format.Sparkline(prices, sparkWidth)
+		// Pad if needed
+		for len(spark) < sparkWidth {
+			spark += " "
+		}
 		var sparkStyled string
 		if hasQuote && q.ChangePct >= 0 {
 			sparkStyled = styleSparkUp.Render(spark)
