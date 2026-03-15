@@ -12,6 +12,8 @@ var (
 	ColorRed       = lipgloss.Color("#f7768e")
 	ColorYellow    = lipgloss.Color("#e0af68")
 	ColorCyan      = lipgloss.Color("#7dcfff")
+	ColorMagenta   = lipgloss.Color("#bb9af7")
+	ColorOrange    = lipgloss.Color("#ff9e64")
 	ColorBorder    = lipgloss.Color("#3b4261")
 	ColorTabActive = lipgloss.Color("#7aa2f7")
 	ColorTabBg     = lipgloss.Color("#24283b")

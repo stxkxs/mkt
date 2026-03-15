@@ -11,6 +11,9 @@ import (
 	alertsview "github.com/stxkxs/mkt/internal/tui/alerts"
 	"github.com/stxkxs/mkt/internal/tui/chart"
 	"github.com/stxkxs/mkt/internal/tui/detail"
+	heatmapview "github.com/stxkxs/mkt/internal/tui/heatmap"
+	macroview "github.com/stxkxs/mkt/internal/tui/macro"
+	newsview "github.com/stxkxs/mkt/internal/tui/news"
 	portfolioview "github.com/stxkxs/mkt/internal/tui/portfolio"
 	"github.com/stxkxs/mkt/internal/tui/statusbar"
 	"github.com/stxkxs/mkt/internal/tui/theme"
@@ -27,24 +30,34 @@ type App struct {
 	watchlist watchlist.Model
 	detail    detail.Model
 	chart     chart.Model
+	compare   chart.CompareModel
 	portfolio portfolioview.Model
 	alerts    alertsview.Model
+	macro     macroview.Model
+	news      newsview.Model
+	heatmap   heatmapview.Model
 	statusbar statusbar.Model
 	cache     *market.Cache
 }
 
 // NewApp creates the root TUI model.
 func NewApp(symbols []string, cache *market.Cache, histProvider chart.HistoryProvider, portfolios []portfolio.Portfolio, alertEngine *alert.Engine) *App {
-	return &App{
+	a := &App{
 		activeTab: TabWatchlist,
 		watchlist: watchlist.New(symbols, cache),
 		detail:    detail.New(cache),
 		chart:     chart.New(histProvider),
+		compare:   chart.NewCompare(histProvider),
 		portfolio: portfolioview.New(portfolios),
 		alerts:    alertsview.New(alertEngine),
+		macro:     macroview.New(),
+		news:      newsview.New(),
+		heatmap:   heatmapview.New(),
 		statusbar: statusbar.New(),
 		cache:     cache,
 	}
+	a.statusbar.SetThemeName(theme.CurrentName)
+	return a
 }
 
 func (a *App) Init() tea.Cmd {
@@ -63,6 +76,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusbar.SetWidth(msg.Width)
 		a.detail.SetSize(msg.Width, msg.Height-2)
 		a.chart.SetSize(msg.Width, msg.Height-2)
+		a.compare.SetSize(msg.Width, msg.Height-2)
 		return a, nil
 
 	case tea.KeyPressMsg:
@@ -88,6 +102,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 			return a, tea.Batch(cmds...)
+		}
+
+		// If compare chart is active, route to it
+		if a.compare.Active() {
+			var cmd tea.Cmd
+			a.compare, cmd = a.compare.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return a, tea.Batch(cmds...)
+		}
+
+		// Theme switching
+		if msg.String() == "T" {
+			name := theme.NextTheme()
+			theme.Apply(name)
+			a.rebuildAllStyles()
+			a.statusbar.SetThemeName(name)
+			return a, nil
 		}
 
 		// Tab switching
@@ -122,6 +155,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return a, cmd
 				}
 				return a, nil
+			case "a":
+				sym := a.watchlist.SelectedSymbol()
+				if sym != "" {
+					a.compare.AddSymbol(sym)
+				}
+				return a, nil
+			case "C":
+				if len(a.compare.Symbols()) > 0 {
+					cmd := a.compare.Open()
+					return a, cmd
+				}
+				return a, nil
 			}
 			var cmd tea.Cmd
 			a.watchlist, cmd = a.watchlist.Update(msg)
@@ -149,13 +194,39 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+
+		case TabMacro:
+			// Macro has no Update (no interactive keys beyond tab switching)
+
+		case TabNews:
+			var cmd tea.Cmd
+			a.news, cmd = a.news.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+
+		case TabHeatmap:
+			var cmd tea.Cmd
+			a.heatmap, cmd = a.heatmap.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 
 	case QuoteUpdateMsg:
 		a.watchlist.UpdateQuote(msg.Quote)
 		a.detail.UpdateQuote(msg.Quote)
 		a.portfolio.UpdateQuote(msg.Quote)
+		a.heatmap.UpdateQuote(msg.Quote)
 		a.statusbar.SetLastUpdate(msg.Quote.Timestamp)
+		return a, nil
+
+	case MacroUpdateMsg:
+		a.macro.UpdateQuotes(msg.Quotes)
+		return a, nil
+
+	case NewsUpdateMsg:
+		a.news.UpdateHeadlines(msg.Headlines)
 		return a, nil
 
 	case AlertTriggeredMsg:
@@ -168,10 +239,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	default:
-		// Forward unknown messages to chart (for history loaded)
+		// Forward unknown messages to chart (for history loaded) and compare
 		if a.chart.Active() || a.activeTab == TabChart {
 			var cmd tea.Cmd
 			a.chart, cmd = a.chart.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		if a.compare.Active() {
+			var cmd tea.Cmd
+			a.compare, cmd = a.compare.Update(msg)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
@@ -189,6 +267,14 @@ func (a *App) View() tea.View {
 	// Full-screen chart mode
 	if a.chart.Active() {
 		s := a.chart.View()
+		v := tea.NewView(s)
+		v.AltScreen = true
+		return v
+	}
+
+	// Comparison chart mode
+	if a.compare.Active() {
+		s := a.compare.View()
 		v := tea.NewView(s)
 		v.AltScreen = true
 		return v
@@ -227,6 +313,15 @@ func (a *App) View() tea.View {
 		content = a.alerts.View()
 	case TabChart:
 		content = theme.StyleDim.Render("  Select a symbol from Watchlist and press 'c' for chart")
+	case TabMacro:
+		a.macro.SetSize(a.width, contentHeight)
+		content = a.macro.View()
+	case TabNews:
+		a.news.SetSize(a.width, contentHeight)
+		content = a.news.View()
+	case TabHeatmap:
+		a.heatmap.SetSize(a.width, contentHeight)
+		content = a.heatmap.View()
 	}
 
 	contentRendered := lipgloss.NewStyle().
@@ -263,4 +358,16 @@ func (a *App) renderTabBar() string {
 	}
 	filler := theme.StyleTabBar.Render(strings.Repeat(" ", pad))
 	return lipgloss.JoinHorizontal(lipgloss.Top, bar, filler, right)
+}
+
+func (a *App) rebuildAllStyles() {
+	watchlist.RebuildStyles()
+	chart.RebuildStyles()
+	alertsview.RebuildStyles()
+	portfolioview.RebuildStyles()
+	detail.RebuildStyles()
+	statusbar.RebuildStyles()
+	macroview.RebuildStyles()
+	newsview.RebuildStyles()
+	heatmapview.RebuildStyles()
 }

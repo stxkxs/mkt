@@ -28,6 +28,23 @@ var (
 			Bold(true)
 )
 
+// RebuildStyles refreshes local styles from current theme colors.
+func RebuildStyles() {
+	styleBar = lipgloss.NewStyle().
+		Background(theme.ColorTabBg).
+		Foreground(theme.ColorDim)
+	styleConnected = lipgloss.NewStyle().
+		Background(theme.ColorTabBg).
+		Foreground(theme.ColorGreen)
+	styleDisconnected = lipgloss.NewStyle().
+		Background(theme.ColorTabBg).
+		Foreground(theme.ColorRed)
+	styleAlertCount = lipgloss.NewStyle().
+		Background(theme.ColorTabBg).
+		Foreground(theme.ColorYellow).
+		Bold(true)
+}
+
 type providerEntry struct {
 	Name      string
 	Connected bool
@@ -38,6 +55,7 @@ type Model struct {
 	providers  []providerEntry
 	lastUpdate time.Time
 	alertCount int
+	themeName  string
 	width      int
 }
 
@@ -72,6 +90,11 @@ func (m *Model) SetAlertCount(n int) {
 	m.alertCount = n
 }
 
+// SetThemeName updates the displayed theme name.
+func (m *Model) SetThemeName(name string) {
+	m.themeName = name
+}
+
 // View renders the status bar.
 func (m Model) View() string {
 	var parts []string
@@ -97,6 +120,9 @@ func (m Model) View() string {
 	var right string
 	if m.alertCount > 0 {
 		right = styleAlertCount.Render(fmt.Sprintf("🔔 %d alerts", m.alertCount))
+	}
+	if m.themeName != "" {
+		right += styleBar.Render("  T:" + m.themeName)
 	}
 	right += styleBar.Render("  q:quit  tab:switch  j/k:nav  enter:detail")
 
