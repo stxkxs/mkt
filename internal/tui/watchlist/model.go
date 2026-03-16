@@ -19,6 +19,13 @@ var (
 	styleSparkDown = lipgloss.NewStyle().Foreground(theme.ColorRed)
 )
 
+// RebuildStyles refreshes local styles from current theme colors.
+func RebuildStyles() {
+	styleVol = lipgloss.NewStyle().Foreground(theme.ColorYellow)
+	styleSparkUp = lipgloss.NewStyle().Foreground(theme.ColorGreen)
+	styleSparkDown = lipgloss.NewStyle().Foreground(theme.ColorRed)
+}
+
 // Model is the watchlist view.
 type Model struct {
 	symbols []string

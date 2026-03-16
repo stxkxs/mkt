@@ -17,6 +17,12 @@ var (
 	styleValue = lipgloss.NewStyle().Foreground(theme.ColorFg)
 )
 
+// RebuildStyles refreshes local styles from current theme colors.
+func RebuildStyles() {
+	styleLabel = lipgloss.NewStyle().Foreground(theme.ColorDim)
+	styleValue = lipgloss.NewStyle().Foreground(theme.ColorFg)
+}
+
 // Model is the detail panel for a selected symbol.
 type Model struct {
 	symbol string

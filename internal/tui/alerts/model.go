@@ -16,6 +16,13 @@ var (
 	styleAlert = lipgloss.NewStyle().Foreground(theme.ColorYellow).Bold(true)
 )
 
+// RebuildStyles refreshes local styles from current theme colors.
+func RebuildStyles() {
+	styleOn = lipgloss.NewStyle().Foreground(theme.ColorGreen)
+	styleOff = lipgloss.NewStyle().Foreground(theme.ColorRed)
+	styleAlert = lipgloss.NewStyle().Foreground(theme.ColorYellow).Bold(true)
+}
+
 // Model is the alerts management view.
 type Model struct {
 	engine  *alert.Engine

@@ -11,11 +11,13 @@ import (
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/config"
 	"github.com/stxkxs/mkt/internal/market"
+	"github.com/stxkxs/mkt/internal/news"
 	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider"
 	"github.com/stxkxs/mkt/internal/provider/coinbase"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
 	"github.com/stxkxs/mkt/internal/tui"
+	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
 func runDashboard(cmd *cobra.Command, args []string) error {
@@ -23,6 +25,9 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+
+	// Apply theme from config before creating any TUI components
+	theme.Apply(cfg.Theme)
 
 	symbols := cfg.Watchlist
 	cache := market.NewCache(cfg.SparklineLen)
@@ -90,6 +95,51 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		p.Send(tui.QuoteUpdateMsg{Quote: q})
 		alertEngine.Check(q)
 	})
+
+	// Macro dashboard polling
+	go func() {
+		ticker := time.NewTicker(cfg.PollDuration())
+		defer ticker.Stop()
+		// Initial fetch
+		quotes := yahooProv.FetchMacroQuotes(ctx)
+		if len(quotes) > 0 {
+			p.Send(tui.MacroUpdateMsg{Quotes: quotes})
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				quotes := yahooProv.FetchMacroQuotes(ctx)
+				if len(quotes) > 0 {
+					p.Send(tui.MacroUpdateMsg{Quotes: quotes})
+				}
+			}
+		}
+	}()
+
+	// News feed polling
+	go func() {
+		feeds := news.DefaultFeeds()
+		ticker := time.NewTicker(3 * time.Minute)
+		defer ticker.Stop()
+		// Initial fetch
+		headlines := news.FetchAll(ctx, feeds)
+		if len(headlines) > 0 {
+			p.Send(tui.NewsUpdateMsg{Headlines: headlines})
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				headlines := news.FetchAll(ctx, feeds)
+				if len(headlines) > 0 {
+					p.Send(tui.NewsUpdateMsg{Headlines: headlines})
+				}
+			}
+		}
+	}()
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

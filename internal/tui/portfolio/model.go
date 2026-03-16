@@ -16,6 +16,12 @@ var (
 	styleLabel = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
 )
 
+// RebuildStyles refreshes local styles from current theme colors.
+func RebuildStyles() {
+	styleTotal = lipgloss.NewStyle().Foreground(theme.ColorYellow).Bold(true)
+	styleLabel = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
+}
+
 // Model is the portfolio view.
 type Model struct {
 	portfolios []portfolio.Portfolio
