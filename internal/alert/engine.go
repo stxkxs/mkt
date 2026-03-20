@@ -2,13 +2,20 @@ package alert
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
+	"github.com/stxkxs/mkt/internal/indicator"
 	"github.com/stxkxs/mkt/internal/provider"
 )
 
 const defaultCooldown = 5 * time.Minute
+
+// PriceSource provides historical prices for indicator evaluation.
+type PriceSource interface {
+	Prices(symbol string) []float64
+}
 
 // Engine evaluates alert rules against incoming quotes.
 type Engine struct {
@@ -17,6 +24,7 @@ type Engine struct {
 	cooldowns map[string]time.Time // key = rule identity, value = next allowed fire time
 	cooldown  time.Duration
 	onAlert   func(TriggeredAlert)
+	prices    PriceSource
 
 	// Track reference prices for pct conditions
 	refPrices map[string]float64 // symbol -> first seen price
@@ -33,6 +41,13 @@ func NewEngine(cooldown time.Duration, onAlert func(TriggeredAlert)) *Engine {
 		onAlert:   onAlert,
 		refPrices: make(map[string]float64),
 	}
+}
+
+// SetPriceSource sets the price history source for indicator-based alerts.
+func (e *Engine) SetPriceSource(ps PriceSource) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.prices = ps
 }
 
 // SetRules replaces all rules.
@@ -97,12 +112,23 @@ func (e *Engine) Check(q provider.Quote) {
 			continue
 		}
 
-		triggered, msg := evaluate(r, q.Price, e.refPrices[q.Symbol])
+		var triggered bool
+		var msg string
+
+		if IsIndicatorCondition(r.Condition) {
+			if e.prices != nil {
+				prices := e.prices.Prices(q.Symbol)
+				triggered, msg = evaluateIndicator(r, prices)
+			}
+		} else {
+			triggered, msg = evaluate(r, q.Price, e.refPrices[q.Symbol])
+		}
+
 		if !triggered {
 			continue
 		}
 
-		alert := TriggeredAlert{
+		a := TriggeredAlert{
 			Rule:      r,
 			Price:     q.Price,
 			Message:   msg,
@@ -112,7 +138,7 @@ func (e *Engine) Check(q provider.Quote) {
 		e.cooldowns[key] = now.Add(e.cooldown)
 
 		if e.onAlert != nil {
-			e.onAlert(alert)
+			e.onAlert(a)
 		}
 	}
 }
@@ -142,6 +168,79 @@ func evaluate(r Rule, price, refPrice float64) (bool, string) {
 			}
 		}
 	}
+	return false, ""
+}
+
+func evaluateIndicator(r Rule, prices []float64) (bool, string) {
+	if len(prices) < 2 {
+		return false, ""
+	}
+
+	switch r.Condition {
+	case CondRSIAbove, CondRSIBelow:
+		period := r.Period
+		if period <= 0 {
+			period = 14
+		}
+		if len(prices) < period+1 {
+			return false, ""
+		}
+		rsiVals := indicator.RSI(prices, period)
+		last := rsiVals[len(rsiVals)-1]
+		if math.IsNaN(last) {
+			return false, ""
+		}
+		if r.Condition == CondRSIAbove && last >= r.Value {
+			return true, fmt.Sprintf("%s RSI(%d) = %.1f crossed above %.1f", r.Symbol, period, last, r.Value)
+		}
+		if r.Condition == CondRSIBelow && last <= r.Value {
+			return true, fmt.Sprintf("%s RSI(%d) = %.1f crossed below %.1f", r.Symbol, period, last, r.Value)
+		}
+
+	case CondSMACrossAbove, CondSMACrossBelow:
+		period := r.Period
+		if period <= 0 {
+			period = 20
+		}
+		if len(prices) < period+1 {
+			return false, ""
+		}
+		smaVals := indicator.SMA(prices, period)
+		n := len(prices)
+		curr := prices[n-1]
+		prev := prices[n-2]
+		smaCurr := smaVals[n-1]
+		smaPrev := smaVals[n-2]
+		if math.IsNaN(smaCurr) || math.IsNaN(smaPrev) {
+			return false, ""
+		}
+		if r.Condition == CondSMACrossAbove && prev <= smaPrev && curr > smaCurr {
+			return true, fmt.Sprintf("%s price crossed above SMA(%d) at %.4f", r.Symbol, period, smaCurr)
+		}
+		if r.Condition == CondSMACrossBelow && prev >= smaPrev && curr < smaCurr {
+			return true, fmt.Sprintf("%s price crossed below SMA(%d) at %.4f", r.Symbol, period, smaCurr)
+		}
+
+	case CondMACDCross:
+		if len(prices) < 35 {
+			return false, ""
+		}
+		macdResult := indicator.MACD(prices, 12, 26, 9)
+		n := len(prices)
+		currDiff := macdResult.MACD[n-1] - macdResult.Signal[n-1]
+		prevDiff := macdResult.MACD[n-2] - macdResult.Signal[n-2]
+		if math.IsNaN(currDiff) || math.IsNaN(prevDiff) {
+			return false, ""
+		}
+		// Sign change = crossover
+		if prevDiff <= 0 && currDiff > 0 {
+			return true, fmt.Sprintf("%s MACD bullish crossover (MACD=%.4f, Signal=%.4f)", r.Symbol, macdResult.MACD[n-1], macdResult.Signal[n-1])
+		}
+		if prevDiff >= 0 && currDiff < 0 {
+			return true, fmt.Sprintf("%s MACD bearish crossover (MACD=%.4f, Signal=%.4f)", r.Symbol, macdResult.MACD[n-1], macdResult.Signal[n-1])
+		}
+	}
+
 	return false, ""
 }
 
