@@ -52,11 +52,12 @@ type providerEntry struct {
 
 // Model is the status bar component.
 type Model struct {
-	providers  []providerEntry
-	lastUpdate time.Time
-	alertCount int
-	themeName  string
-	width      int
+	providers   []providerEntry
+	lastUpdate  time.Time
+	alertCount  int
+	themeName   string
+	searchQuery string
+	width       int
 }
 
 // New creates a new status bar.
@@ -95,6 +96,11 @@ func (m *Model) SetThemeName(name string) {
 	m.themeName = name
 }
 
+// SetSearchQuery updates the search query displayed in the status bar.
+func (m *Model) SetSearchQuery(q string) {
+	m.searchQuery = q
+}
+
 // View renders the status bar.
 func (m Model) View() string {
 	var parts []string
@@ -112,6 +118,11 @@ func (m Model) View() string {
 	if !m.lastUpdate.IsZero() {
 		elapsed := time.Since(m.lastUpdate).Truncate(time.Second)
 		parts = append(parts, styleBar.Render(fmt.Sprintf("updated %s ago", elapsed)))
+	}
+
+	// Search query
+	if m.searchQuery != "" {
+		parts = append(parts, styleAlertCount.Render(fmt.Sprintf("/ %s", m.searchQuery)))
 	}
 
 	left := strings.Join(parts, styleBar.Render("  "))

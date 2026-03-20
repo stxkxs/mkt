@@ -112,7 +112,7 @@ func (m Model) View() string {
 	if len(rules) > 0 {
 		sb.WriteString(theme.StyleHeader.Render("  ALERT RULES"))
 		sb.WriteString("\n")
-		header := fmt.Sprintf("  %-12s %-10s %12s %8s", "SYMBOL", "CONDITION", "VALUE", "STATUS")
+		header := fmt.Sprintf("  %-12s %-16s %12s %8s", "SYMBOL", "CONDITION", "VALUE", "STATUS")
 		sb.WriteString(theme.StyleHeader.Render(header))
 		sb.WriteString("\n")
 
@@ -127,11 +127,21 @@ func (m Model) View() string {
 				status = styleOff.Render("OFF")
 			}
 
+			condStr := string(r.Condition)
+			if r.Period > 0 {
+				condStr = fmt.Sprintf("%s(%d)", r.Condition, r.Period)
+			}
+
+			valStr := fmt.Sprintf("%12.4f", r.Value)
+			if r.Condition == alert.CondMACDCross {
+				valStr = fmt.Sprintf("%12s", "—")
+			}
+
 			row := fmt.Sprintf("%s%s %s %s %s",
 				cursor,
 				theme.StyleSymbol.Render(fmt.Sprintf("%-12s", r.Symbol)),
-				theme.StyleVal.Render(fmt.Sprintf("%-10s", r.Condition)),
-				theme.StyleVal.Render(fmt.Sprintf("%12.4f", r.Value)),
+				theme.StyleVal.Render(fmt.Sprintf("%-16s", condStr)),
+				theme.StyleVal.Render(valStr),
 				status,
 			)
 			sb.WriteString(row)

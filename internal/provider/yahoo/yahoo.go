@@ -152,19 +152,131 @@ func (p *Provider) Subscribe(ctx context.Context, symbols []string, out chan<- p
 	}
 }
 
+const batchSize = 50
+
 func (p *Provider) fetchAndSend(ctx context.Context, symbols []string, out chan<- provider.Quote) {
-	// Try chart API per-symbol (more reliable than the quote endpoint)
-	for _, sym := range symbols {
-		q, err := p.fetchQuoteViaChart(ctx, sym)
+	// Try batch endpoint first
+	for i := 0; i < len(symbols); i += batchSize {
+		end := i + batchSize
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		batch := symbols[i:end]
+
+		quotes, err := p.fetchBatchQuotes(ctx, batch)
 		if err != nil {
+			// Fallback: parallel per-symbol chart API
+			p.fetchParallel(ctx, batch, out)
 			continue
 		}
-		select {
-		case out <- q:
-		case <-ctx.Done():
-			return
+
+		for _, q := range quotes {
+			select {
+			case out <- q:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
+}
+
+// fetchParallel fetches quotes for symbols concurrently using the chart API.
+// Limited to 10 concurrent requests to avoid overwhelming the API.
+func (p *Provider) fetchParallel(ctx context.Context, symbols []string, out chan<- provider.Quote) {
+	const workers = 10
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+
+	for _, sym := range symbols {
+		select {
+		case <-ctx.Done():
+			return
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(s string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			q, err := p.fetchQuoteViaChart(ctx, s)
+			if err != nil {
+				return
+			}
+			select {
+			case out <- q:
+			case <-ctx.Done():
+			}
+		}(sym)
+	}
+	wg.Wait()
+}
+
+// fetchBatchQuotes fetches quotes for multiple symbols in a single HTTP request
+// using the v7/finance/quote endpoint.
+func (p *Provider) fetchBatchQuotes(ctx context.Context, symbols []string) ([]provider.Quote, error) {
+	joined := strings.Join(symbols, ",")
+	// Try v7 first (newer), with explicit field list to ensure high/low are returned
+	url := fmt.Sprintf("%s/v7/finance/quote?symbols=%s&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketVolume,regularMarketDayHigh,regularMarketDayLow,regularMarketPreviousClose", baseURL, joined)
+	if p.crumb != "" {
+		url += "&crumb=" + p.crumb
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		p.mu.Lock()
+		p.crumb = ""
+		p.mu.Unlock()
+		return nil, fmt.Errorf("yahoo auth error %d, resetting crumb", resp.StatusCode)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("yahoo batch quote error %d", resp.StatusCode)
+	}
+
+	var result batchQuoteResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parse batch quotes: %w", err)
+	}
+
+	if result.QuoteResponse.Error != nil {
+		return nil, fmt.Errorf("yahoo error: %s", result.QuoteResponse.Error.Description)
+	}
+
+	var quotes []provider.Quote
+	for _, r := range result.QuoteResponse.Result {
+		if r.RegularMarketPrice == 0 {
+			continue
+		}
+		quotes = append(quotes, provider.Quote{
+			Symbol:    r.Symbol,
+			Price:     r.RegularMarketPrice,
+			Change:    r.RegularMarketChange,
+			ChangePct: r.RegularMarketChangePercent,
+			Volume:    r.RegularMarketVolume,
+			High24h:   r.RegularMarketDayHigh,
+			Low24h:    r.RegularMarketDayLow,
+			Asset:     provider.AssetStock,
+			Provider:  "yahoo",
+			Timestamp: time.Now(),
+		})
+	}
+
+	return quotes, nil
 }
 
 // fetchQuoteViaChart uses the v8 chart API which is more reliable than the quote API.
@@ -242,9 +354,10 @@ func (p *Provider) fetchQuoteViaChart(ctx context.Context, symbol string) (provi
 		}
 	}
 
-	// Get high/low from indicators
-	var high, low float64
-	if len(r.Indicators.Quote) > 0 {
+	// Get high/low: prefer meta fields, fall back to indicators
+	high := meta.RegularMarketDayHigh
+	low := meta.RegularMarketDayLow
+	if high == 0 && len(r.Indicators.Quote) > 0 {
 		q := r.Indicators.Quote[0]
 		if len(q.High) > 0 {
 			for i := len(q.High) - 1; i >= 0; i-- {
@@ -254,6 +367,9 @@ func (p *Provider) fetchQuoteViaChart(ctx context.Context, symbol string) (provi
 				}
 			}
 		}
+	}
+	if low == 0 && len(r.Indicators.Quote) > 0 {
+		q := r.Indicators.Quote[0]
 		if len(q.Low) > 0 {
 			for i := len(q.Low) - 1; i >= 0; i-- {
 				if q.Low[i] != nil {

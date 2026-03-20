@@ -47,6 +47,35 @@ func FormatVolume(vol float64) string {
 	}
 }
 
+// DayRange renders a bar showing where price sits between low and high.
+// Returns two strings: track and marker index, so caller can style them independently.
+// Uses ─ for track and ● for current position.
+func DayRange(price, low, high float64, width int) (track string, markerIdx int) {
+	if width <= 0 {
+		return "", -1
+	}
+	if high == low || high == 0 || low == 0 {
+		return fmt.Sprintf("%-*s", width, "—"), -1
+	}
+	pos := (price - low) / (high - low)
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > 1 {
+		pos = 1
+	}
+	idx := int(pos * float64(width-1))
+	var sb strings.Builder
+	for i := range width {
+		if i == idx {
+			sb.WriteRune('●')
+		} else {
+			sb.WriteRune('─')
+		}
+	}
+	return sb.String(), idx
+}
+
 // Sparkline renders a mini sparkline from price data using Unicode block characters.
 // The caller is responsible for padding the result if needed.
 func Sparkline(prices []float64, width int) string {

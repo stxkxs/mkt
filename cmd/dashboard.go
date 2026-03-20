@@ -69,14 +69,18 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 			Symbol:    r.Symbol,
 			Condition: alert.Condition(r.Condition),
 			Value:     r.Value,
+			Period:    r.Period,
 			Enabled:   r.Enabled,
 		})
 	}
 	alertEngine.SetRules(rules)
 
+	// Set price source for indicator-based alerts
+	alertEngine.SetPriceSource(cache)
+
 	// Route history requests: Coinbase for crypto, Yahoo for stocks
 	histProvider := market.NewMultiHistoryProvider(coinbaseProv, yahooProv)
-	app := tui.NewApp(symbols, cache, histProvider, portfolios, alertEngine)
+	app := tui.NewApp(symbols, cache, histProvider, portfolios, alertEngine, yahooProv)
 	p = tea.NewProgram(app)
 
 	ctx, cancel := context.WithCancel(context.Background())

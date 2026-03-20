@@ -26,8 +26,9 @@ type Portfolio struct {
 // AlertRule represents a saved alert from config.
 type AlertRule struct {
 	Symbol    string  `mapstructure:"symbol" yaml:"symbol"`
-	Condition string  `mapstructure:"condition" yaml:"condition"` // above, below, pct_up, pct_down
+	Condition string  `mapstructure:"condition" yaml:"condition"` // above, below, pct_up, pct_down, rsi_above, rsi_below, sma_cross_above, sma_cross_below, macd_cross
 	Value     float64 `mapstructure:"value" yaml:"value"`
+	Period    int     `mapstructure:"period,omitempty" yaml:"period,omitempty"`
 	Enabled   bool    `mapstructure:"enabled" yaml:"enabled"`
 }
 

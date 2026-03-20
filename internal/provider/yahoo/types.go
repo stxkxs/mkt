@@ -39,3 +39,25 @@ type quoteIndicator struct {
 	Close  []*float64 `json:"close"`
 	Volume []*float64 `json:"volume"`
 }
+
+// batchQuoteResponse is the Yahoo Finance v7 batch quote API response.
+type batchQuoteResponse struct {
+	QuoteResponse struct {
+		Result []batchQuoteResult `json:"result"`
+		Error  *struct {
+			Code        string `json:"code"`
+			Description string `json:"description"`
+		} `json:"error"`
+	} `json:"quoteResponse"`
+}
+
+type batchQuoteResult struct {
+	Symbol                     string  `json:"symbol"`
+	RegularMarketPrice         float64 `json:"regularMarketPrice"`
+	RegularMarketChange        float64 `json:"regularMarketChange"`
+	RegularMarketChangePercent float64 `json:"regularMarketChangePercent"`
+	RegularMarketVolume        float64 `json:"regularMarketVolume"`
+	RegularMarketDayHigh       float64 `json:"regularMarketDayHigh"`
+	RegularMarketDayLow        float64 `json:"regularMarketDayLow"`
+	RegularMarketPreviousClose float64 `json:"regularMarketPreviousClose"`
+}
