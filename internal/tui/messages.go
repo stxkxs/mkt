@@ -48,3 +48,6 @@ type MacroUpdateMsg struct {
 type NewsUpdateMsg struct {
 	Headlines []news.Headline
 }
+
+// SpinnerTickMsg drives the braille loading spinner animation.
+type SpinnerTickMsg struct{}

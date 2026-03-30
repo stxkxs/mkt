@@ -191,7 +191,7 @@ func (m Model) View() string {
 
 func (m Model) viewOverview() string {
 	var sb strings.Builder
-	sb.WriteString(theme.StyleHeader.Render("  SECTOR HEATMAP"))
+	sb.WriteString(theme.SectionHeader("Sector Heatmap", m.width))
 	sb.WriteString(theme.StyleDim.Render("  j/k/h/l:nav  enter:drill down"))
 	sb.WriteString("\n\n")
 

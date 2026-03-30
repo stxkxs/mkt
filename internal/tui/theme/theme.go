@@ -1,6 +1,10 @@
 package theme
 
-import "charm.land/lipgloss/v2"
+import (
+	"strings"
+
+	"charm.land/lipgloss/v2"
+)
 
 // Shared colors used across all TUI sub-packages.
 var (
@@ -17,6 +21,7 @@ var (
 	ColorBorder    = lipgloss.Color("#3b4261")
 	ColorTabActive = lipgloss.Color("#7aa2f7")
 	ColorTabBg     = lipgloss.Color("#24283b")
+	ColorShadow    = lipgloss.Color("#13141d")
 )
 
 // Shared styles used across multiple TUI sub-packages.
@@ -31,23 +36,36 @@ var (
 	StyleSymbol = lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
 	StyleVal    = lipgloss.NewStyle().Foreground(ColorFg)
 
+	// Tab bar
 	StyleTabActive = lipgloss.NewStyle().
-			Foreground(ColorBg).
-			Background(ColorTabActive).
+			Foreground(ColorAccent).
+			Background(ColorTabBg).
 			Bold(true).
-			PaddingLeft(1).
-			PaddingRight(1)
+			Underline(true)
 
 	StyleTabInactive = lipgloss.NewStyle().
 				Foreground(ColorDim).
-				Background(ColorTabBg).
-				PaddingLeft(1).
-				PaddingRight(1)
+				Background(ColorTabBg)
 
 	StyleTabBar = lipgloss.NewStyle().
+			Background(ColorTabBg)
+
+	StyleTabSeparator = lipgloss.NewStyle().
+				Foreground(ColorDim).
+				Background(ColorTabBg)
+
+	StyleBranding = lipgloss.NewStyle().
+			Foreground(ColorAccent).
 			Background(ColorTabBg).
-			PaddingLeft(1).
-			PaddingRight(1)
+			Bold(true)
+
+	// Cursor / selection
+	StyleCursorGutter = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+	StyleCursorRow    = lipgloss.NewStyle().Background(ColorTabBg)
+
+	// Panels & borders
+	StyleBorderChar = lipgloss.NewStyle().Foreground(ColorBorder)
+	StylePanelTitle = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
 
 	StyleStatusBar = lipgloss.NewStyle().
 			Background(ColorTabBg).
@@ -55,3 +73,22 @@ var (
 			PaddingLeft(1).
 			PaddingRight(1)
 )
+
+// StyleAccentText renders text in accent color.
+func StyleAccentText(s string) string {
+	return lipgloss.NewStyle().Foreground(ColorAccent).Render(s)
+}
+
+// SectionHeader renders a styled section divider: "  ── Title ─────────"
+func SectionHeader(title string, width int) string {
+	prefix := StyleBorderChar.Render("  ── ")
+	titleStr := StylePanelTitle.Render(title)
+	suffix := " "
+	used := 5 + lipgloss.Width(titleStr) + 1 // "  ── " + title + " "
+	remaining := width - used
+	if remaining < 0 {
+		remaining = 0
+	}
+	line := StyleBorderChar.Render(strings.Repeat("─", remaining))
+	return prefix + titleStr + suffix + line
+}

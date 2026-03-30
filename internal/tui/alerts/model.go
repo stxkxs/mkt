@@ -110,16 +110,18 @@ func (m Model) View() string {
 
 	// Rules table
 	if len(rules) > 0 {
-		sb.WriteString(theme.StyleHeader.Render("  ALERT RULES"))
+		sb.WriteString(theme.SectionHeader("Alert Rules", m.width))
 		sb.WriteString("\n")
 		header := fmt.Sprintf("  %-12s %-16s %12s %8s", "SYMBOL", "CONDITION", "VALUE", "STATUS")
 		sb.WriteString(theme.StyleHeader.Render(header))
+		sb.WriteString("\n")
+		sb.WriteString(theme.StyleBorderChar.Render(strings.Repeat("─", m.width)))
 		sb.WriteString("\n")
 
 		for i, r := range rules {
 			cursor := "  "
 			if i == m.cursor {
-				cursor = theme.StyleCursor.Render("> ")
+				cursor = theme.StyleCursorGutter.Render("▎") + " "
 			}
 
 			status := styleOn.Render("ON")
@@ -156,7 +158,7 @@ func (m Model) View() string {
 	// Recent alerts
 	if len(m.history) > 0 {
 		sb.WriteString("\n")
-		sb.WriteString(theme.StyleHeader.Render("  RECENT ALERTS"))
+		sb.WriteString(theme.SectionHeader("Recent Alerts", m.width))
 		sb.WriteString("\n")
 		// Show last 10
 		start := len(m.history) - 10

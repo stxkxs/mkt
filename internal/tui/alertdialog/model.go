@@ -12,11 +12,6 @@ import (
 )
 
 var (
-	styleBorder = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(theme.ColorAccent).
-			Padding(1, 2)
-	styleTitle = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
 	styleLabel = lipgloss.NewStyle().Foreground(theme.ColorDim)
 	styleValue = lipgloss.NewStyle().Foreground(theme.ColorFg)
 	styleHint  = lipgloss.NewStyle().Foreground(theme.ColorDim)
@@ -24,11 +19,6 @@ var (
 
 // RebuildStyles refreshes local styles from current theme colors.
 func RebuildStyles() {
-	styleBorder = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorAccent).
-		Padding(1, 2)
-	styleTitle = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
 	styleLabel = lipgloss.NewStyle().Foreground(theme.ColorDim)
 	styleValue = lipgloss.NewStyle().Foreground(theme.ColorFg)
 	styleHint = lipgloss.NewStyle().Foreground(theme.ColorDim)
@@ -171,29 +161,29 @@ func (m Model) View() string {
 	condStr := fmt.Sprintf("◄ %s ►", cond)
 
 	var lines []string
-	lines = append(lines, styleTitle.Render(fmt.Sprintf("New Alert: %s", m.symbol)))
 	lines = append(lines, "")
 
 	if m.step == stepCondition {
-		lines = append(lines, styleLabel.Render("Condition: ")+styleValue.Render(condStr))
+		lines = append(lines, "  "+styleLabel.Render("Condition: ")+styleValue.Render(condStr))
 		lines = append(lines, "")
-		lines = append(lines, styleHint.Render("←/→: cycle  enter: next  esc: cancel"))
+		lines = append(lines, "  "+styleHint.Render("←/→: cycle  enter: next  esc: cancel"))
 	} else if m.step == stepValue {
-		lines = append(lines, styleLabel.Render("Condition: ")+styleValue.Render(string(cond)))
-		lines = append(lines, styleLabel.Render("Value:     ")+styleValue.Render(m.valueInput+"_"))
+		lines = append(lines, "  "+styleLabel.Render("Condition: ")+styleValue.Render(string(cond)))
+		lines = append(lines, "  "+styleLabel.Render("Value:     ")+styleValue.Render(m.valueInput+"_"))
 		lines = append(lines, "")
-		lines = append(lines, styleHint.Render("type value  enter: next  esc: cancel"))
+		lines = append(lines, "  "+styleHint.Render("type value  enter: next  esc: cancel"))
 	} else {
 		val := m.valueInput
 		if cond == alert.CondMACDCross {
 			val = "—"
 		}
-		lines = append(lines, styleLabel.Render("Condition: ")+styleValue.Render(string(cond)))
-		lines = append(lines, styleLabel.Render("Value:     ")+styleValue.Render(val))
+		lines = append(lines, "  "+styleLabel.Render("Condition: ")+styleValue.Render(string(cond)))
+		lines = append(lines, "  "+styleLabel.Render("Value:     ")+styleValue.Render(val))
 		lines = append(lines, "")
-		lines = append(lines, styleHint.Render("enter: save  esc: cancel"))
+		lines = append(lines, "  "+styleHint.Render("enter: save  esc: cancel"))
 	}
 
+	lines = append(lines, "")
 	content := strings.Join(lines, "\n")
-	return styleBorder.Width(36).Render(content)
+	return theme.RenderPanel(fmt.Sprintf("New Alert: %s", m.symbol), content, 42)
 }

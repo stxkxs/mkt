@@ -117,11 +117,13 @@ func (m Model) View() string {
 		"SYMBOL", "NAME", "QTY", "COST", "PRICE", "VALUE", "P&L")
 	sb.WriteString(theme.StyleHeader.Render(header))
 	sb.WriteString("\n")
+	sb.WriteString(theme.StyleBorderChar.Render(strings.Repeat("─", m.width)))
+	sb.WriteString("\n")
 
 	summary := portfolio.Evaluate(p.Holdings, m.quotes)
 
-	// Compute visible window (2 for portfolio name + header, 3 for total/blank/summary)
-	maxRows := m.height - 5
+	// Compute visible window (3 for portfolio name + header + separator, 3 for total/blank/summary)
+	maxRows := m.height - 6
 	if maxRows < 1 || maxRows >= len(summary.Positions) {
 		maxRows = len(summary.Positions)
 	}
@@ -144,7 +146,7 @@ func (m Model) View() string {
 		pos := summary.Positions[i]
 		cursor := "  "
 		if i == m.cursor {
-			cursor = theme.StyleCursor.Render("> ")
+			cursor = theme.StyleCursorGutter.Render("▎") + " "
 		}
 
 		pnlStyle := theme.StyleUp

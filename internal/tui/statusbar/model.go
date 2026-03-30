@@ -26,6 +26,10 @@ var (
 			Background(theme.ColorTabBg).
 			Foreground(theme.ColorYellow).
 			Bold(true)
+
+	styleSep = lipgloss.NewStyle().
+			Background(theme.ColorTabBg).
+			Foreground(theme.ColorBorder)
 )
 
 // RebuildStyles refreshes local styles from current theme colors.
@@ -43,6 +47,9 @@ func RebuildStyles() {
 		Background(theme.ColorTabBg).
 		Foreground(theme.ColorYellow).
 		Bold(true)
+	styleSep = lipgloss.NewStyle().
+		Background(theme.ColorTabBg).
+		Foreground(theme.ColorBorder)
 }
 
 type providerEntry struct {
@@ -103,39 +110,49 @@ func (m *Model) SetSearchQuery(q string) {
 
 // View renders the status bar.
 func (m Model) View() string {
-	var parts []string
+	sep := styleSep.Render(" │ ")
 
-	// Provider status
+	// Left segments
+	var leftSegs []string
+
+	// Provider status segment
+	var provParts []string
 	for _, p := range m.providers {
 		if p.Connected {
-			parts = append(parts, styleConnected.Render("● "+p.Name))
+			provParts = append(provParts, styleConnected.Render("● "+p.Name))
 		} else {
-			parts = append(parts, styleDisconnected.Render("○ "+p.Name))
+			provParts = append(provParts, styleDisconnected.Render("○ "+p.Name))
 		}
 	}
+	if len(provParts) > 0 {
+		leftSegs = append(leftSegs, strings.Join(provParts, styleBar.Render("  ")))
+	}
 
-	// Last update
+	// Last update segment
 	if !m.lastUpdate.IsZero() {
 		elapsed := time.Since(m.lastUpdate).Truncate(time.Second)
-		parts = append(parts, styleBar.Render(fmt.Sprintf("updated %s ago", elapsed)))
+		leftSegs = append(leftSegs, styleBar.Render(fmt.Sprintf("%s ago", elapsed)))
 	}
 
-	// Search query
+	// Search query segment
 	if m.searchQuery != "" {
-		parts = append(parts, styleAlertCount.Render(fmt.Sprintf("/ %s", m.searchQuery)))
+		leftSegs = append(leftSegs, styleAlertCount.Render(fmt.Sprintf("/ %s", m.searchQuery)))
 	}
 
-	left := strings.Join(parts, styleBar.Render("  "))
-
-	// Right side: alerts + help
-	var right string
+	// Alert count segment
 	if m.alertCount > 0 {
-		right = styleAlertCount.Render(fmt.Sprintf("🔔 %d alerts", m.alertCount))
+		leftSegs = append(leftSegs, styleAlertCount.Render(fmt.Sprintf("🔔 %d", m.alertCount)))
 	}
+
+	left := strings.Join(leftSegs, sep)
+
+	// Right segments
+	var rightSegs []string
 	if m.themeName != "" {
-		right += styleBar.Render("  T:" + m.themeName)
+		rightSegs = append(rightSegs, styleBar.Render("T:"+m.themeName))
 	}
-	right += styleBar.Render("  q:quit  tab:switch  j/k:nav  enter:detail")
+	rightSegs = append(rightSegs, styleBar.Render("?:help"))
+	right := strings.Join(rightSegs, sep)
 
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 0 {

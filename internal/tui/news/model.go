@@ -85,7 +85,7 @@ func (m Model) View() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(theme.StyleHeader.Render("  NEWS FEED"))
+	sb.WriteString(theme.SectionHeader("News Feed", m.width))
 	sb.WriteString(theme.StyleDim.Render("  j/k:nav  enter:open  g/G:top/bottom"))
 	sb.WriteString("\n\n")
 
@@ -120,7 +120,7 @@ func (m Model) View() string {
 
 		cursor := "  "
 		if i == m.cursor {
-			cursor = theme.StyleCursor.Render("> ")
+			cursor = theme.StyleCursorGutter.Render("▎") + " "
 		}
 
 		// Line 1: source + time

@@ -277,9 +277,11 @@ func (m Model) View() string {
 		"SYMBOL", "PRICE", "CHANGE", "VOL", rangeWidth, "RANGE", sparkWidth, "TREND")
 	sb.WriteString(theme.StyleHeader.Render(header))
 	sb.WriteString("\n")
+	sb.WriteString(theme.StyleBorderChar.Render(strings.Repeat("─", m.width)))
+	sb.WriteString("\n")
 
-	// Compute visible window (1 row for header)
-	maxRows := m.height - 1
+	// Compute visible window (2 rows for header + separator)
+	maxRows := m.height - 2
 	if maxRows < 1 || maxRows >= len(m.symbols) {
 		maxRows = len(m.symbols)
 	}
@@ -310,6 +312,8 @@ func (m Model) viewSearch(sparkWidth int) string {
 		"SYMBOL", "PRICE", "CHANGE", "VOL", rangeWidth, "RANGE", sparkWidth, "TREND")
 	sb.WriteString(theme.StyleHeader.Render(header))
 	sb.WriteString("\n")
+	sb.WriteString(theme.StyleBorderChar.Render(strings.Repeat("─", m.width)))
+	sb.WriteString("\n")
 
 	if len(m.filtered) == 0 {
 		sb.WriteString(theme.StyleDim.Render("  No matches"))
@@ -317,8 +321,8 @@ func (m Model) viewSearch(sparkWidth int) string {
 		return sb.String()
 	}
 
-	// Show filtered results (max visible rows minus 2 for prompt + header)
-	maxRows := m.height - 2
+	// Show filtered results (max visible rows minus 3 for prompt + header + separator)
+	maxRows := m.height - 3
 	if maxRows < 1 {
 		maxRows = 1
 	}
@@ -352,7 +356,7 @@ func (m Model) renderRow(sb *strings.Builder, i int, selected bool, sparkWidth i
 	// Cursor indicator
 	cursor := "  "
 	if selected {
-		cursor = theme.StyleCursor.Render("> ")
+		cursor = theme.StyleCursorGutter.Render("▎") + " "
 	}
 
 	// Symbol
@@ -406,9 +410,9 @@ func (m Model) renderRow(sb *strings.Builder, i int, selected bool, sparkWidth i
 		rangeStr = theme.StyleNeutral.Render(fmt.Sprintf("%*s", rangeWidth, "—"))
 	}
 
-	// Sparkline
+	// Sparkline (braille for higher resolution)
 	prices := m.cache.Prices(sym)
-	spark := format.Sparkline(prices, sparkWidth)
+	spark := format.BrailleSparkline(prices, sparkWidth)
 	// Pad if needed
 	for len(spark) < sparkWidth {
 		spark += " "
@@ -426,7 +430,7 @@ func (m Model) renderRow(sb *strings.Builder, i int, selected bool, sparkWidth i
 		volStr, rangeStr, sparkStyled)
 
 	if selected {
-		sb.WriteString(lipgloss.NewStyle().Bold(true).Render(row))
+		sb.WriteString(theme.StyleCursorRow.Bold(true).Render(row))
 	} else {
 		sb.WriteString(row)
 	}

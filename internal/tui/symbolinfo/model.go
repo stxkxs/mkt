@@ -12,11 +12,6 @@ import (
 )
 
 var (
-	styleBorder = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(theme.ColorAccent).
-			Padding(1, 2)
-	styleTitle = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
 	styleLabel = lipgloss.NewStyle().Foreground(theme.ColorDim).Width(16)
 	styleValue = lipgloss.NewStyle().Foreground(theme.ColorFg)
 	styleHint  = lipgloss.NewStyle().Foreground(theme.ColorDim)
@@ -25,11 +20,6 @@ var (
 
 // RebuildStyles refreshes local styles from current theme colors.
 func RebuildStyles() {
-	styleBorder = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.ColorAccent).
-		Padding(1, 2)
-	styleTitle = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
 	styleLabel = lipgloss.NewStyle().Foreground(theme.ColorDim).Width(16)
 	styleValue = lipgloss.NewStyle().Foreground(theme.ColorFg)
 	styleHint = lipgloss.NewStyle().Foreground(theme.ColorDim)
@@ -111,35 +101,34 @@ func (m Model) View() string {
 	}
 
 	var lines []string
-	lines = append(lines, styleTitle.Render(m.summary.Symbol))
 	lines = append(lines, "")
 
 	if m.loading {
-		lines = append(lines, styleHint.Render("Loading..."))
+		lines = append(lines, "  "+styleHint.Render("Loading..."))
 	} else if m.errMsg != "" {
-		lines = append(lines, styleError.Render("Error: "+m.errMsg))
+		lines = append(lines, "  "+styleError.Render("Error: "+m.errMsg))
 	} else {
 		s := m.summary
-		lines = append(lines, row("Market Cap", formatLargeNum(s.MarketCap)))
-		lines = append(lines, row("P/E", formatFloat(s.PE)))
-		lines = append(lines, row("Forward P/E", formatFloat(s.ForwardPE)))
-		lines = append(lines, row("EPS", "$"+formatFloat(s.EPS)))
-		lines = append(lines, row("Div Yield", formatPct(s.DivYield)))
-		lines = append(lines, row("52W High", "$"+formatFloat(s.Week52High)))
-		lines = append(lines, row("52W Low", "$"+formatFloat(s.Week52Low)))
+		lines = append(lines, "  "+row("Market Cap", formatLargeNum(s.MarketCap)))
+		lines = append(lines, "  "+row("P/E", formatFloat(s.PE)))
+		lines = append(lines, "  "+row("Forward P/E", formatFloat(s.ForwardPE)))
+		lines = append(lines, "  "+row("EPS", "$"+formatFloat(s.EPS)))
+		lines = append(lines, "  "+row("Div Yield", formatPct(s.DivYield)))
+		lines = append(lines, "  "+row("52W High", "$"+formatFloat(s.Week52High)))
+		lines = append(lines, "  "+row("52W Low", "$"+formatFloat(s.Week52Low)))
 		if s.Sector != "" {
-			lines = append(lines, row("Sector", s.Sector))
+			lines = append(lines, "  "+row("Sector", s.Sector))
 		}
 		if s.Industry != "" {
-			lines = append(lines, row("Industry", s.Industry))
+			lines = append(lines, "  "+row("Industry", s.Industry))
 		}
 	}
 
 	lines = append(lines, "")
-	lines = append(lines, styleHint.Render("esc: close"))
-
+	lines = append(lines, "  "+styleHint.Render("esc: close"))
+	lines = append(lines, "")
 	content := strings.Join(lines, "\n")
-	return styleBorder.Width(38).Render(content)
+	return theme.RenderPanel(m.summary.Symbol, content, 44)
 }
 
 func row(label, value string) string {

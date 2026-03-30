@@ -18,6 +18,7 @@ type Theme struct {
 	Border    string
 	TabActive string
 	TabBg     string
+	Shadow    string
 }
 
 // ThemeNames is the ordered list of available themes.
@@ -47,6 +48,7 @@ var themes = map[string]Theme{
 		Border:    "#3b4261",
 		TabActive: "#7aa2f7",
 		TabBg:     "#24283b",
+		Shadow:    "#13141d",
 	},
 	"catppuccin-mocha": {
 		Name:      "catppuccin-mocha",
@@ -63,6 +65,7 @@ var themes = map[string]Theme{
 		Border:    "#45475a",
 		TabActive: "#89b4fa",
 		TabBg:     "#181825",
+		Shadow:    "#151520",
 	},
 	"gruvbox-dark": {
 		Name:      "gruvbox-dark",
@@ -79,6 +82,7 @@ var themes = map[string]Theme{
 		Border:    "#504945",
 		TabActive: "#83a598",
 		TabBg:     "#1d2021",
+		Shadow:    "#1d1d1d",
 	},
 	"nord": {
 		Name:      "nord",
@@ -95,6 +99,7 @@ var themes = map[string]Theme{
 		Border:    "#434c5e",
 		TabActive: "#88c0d0",
 		TabBg:     "#3b4252",
+		Shadow:    "#242830",
 	},
 	"dracula": {
 		Name:      "dracula",
@@ -111,6 +116,7 @@ var themes = map[string]Theme{
 		Border:    "#44475a",
 		TabActive: "#bd93f9",
 		TabBg:     "#21222c",
+		Shadow:    "#1e1f29",
 	},
 	"solarized-dark": {
 		Name:      "solarized-dark",
@@ -127,6 +133,7 @@ var themes = map[string]Theme{
 		Border:    "#073642",
 		TabActive: "#268bd2",
 		TabBg:     "#073642",
+		Shadow:    "#001f28",
 	},
 	"catppuccin-latte": {
 		Name:      "catppuccin-latte",
@@ -143,6 +150,7 @@ var themes = map[string]Theme{
 		Border:    "#ccd0da",
 		TabActive: "#1e66f5",
 		TabBg:     "#e6e9ef",
+		Shadow:    "#d5d8df",
 	},
 }
 
@@ -186,6 +194,7 @@ func Apply(name string) {
 	ColorBorder = lipgloss.Color(t.Border)
 	ColorTabActive = lipgloss.Color(t.TabActive)
 	ColorTabBg = lipgloss.Color(t.TabBg)
+	ColorShadow = lipgloss.Color(t.Shadow)
 
 	rebuildStyles()
 }
@@ -209,22 +218,32 @@ func rebuildStyles() {
 	StyleVal = lipgloss.NewStyle().Foreground(ColorFg)
 
 	StyleTabActive = lipgloss.NewStyle().
-		Foreground(ColorBg).
-		Background(ColorTabActive).
+		Foreground(ColorAccent).
+		Background(ColorTabBg).
 		Bold(true).
-		PaddingLeft(1).
-		PaddingRight(1)
+		Underline(true)
 
 	StyleTabInactive = lipgloss.NewStyle().
 		Foreground(ColorDim).
-		Background(ColorTabBg).
-		PaddingLeft(1).
-		PaddingRight(1)
+		Background(ColorTabBg)
 
 	StyleTabBar = lipgloss.NewStyle().
+		Background(ColorTabBg)
+
+	StyleTabSeparator = lipgloss.NewStyle().
+		Foreground(ColorDim).
+		Background(ColorTabBg)
+
+	StyleBranding = lipgloss.NewStyle().
+		Foreground(ColorAccent).
 		Background(ColorTabBg).
-		PaddingLeft(1).
-		PaddingRight(1)
+		Bold(true)
+
+	StyleCursorGutter = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+	StyleCursorRow = lipgloss.NewStyle().Background(ColorTabBg)
+
+	StyleBorderChar = lipgloss.NewStyle().Foreground(ColorBorder)
+	StylePanelTitle = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
 
 	StyleStatusBar = lipgloss.NewStyle().
 		Background(ColorTabBg).

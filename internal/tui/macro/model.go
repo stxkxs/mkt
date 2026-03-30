@@ -12,7 +12,6 @@ import (
 )
 
 var (
-	styleCategory = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
 	styleMacroVal = lipgloss.NewStyle().Foreground(theme.ColorFg)
 )
 
@@ -81,7 +80,6 @@ func (m *Model) UpdateQuotes(quotes []provider.Quote) {
 
 // RebuildStyles refreshes local styles from current theme colors.
 func RebuildStyles() {
-	styleCategory = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
 	styleMacroVal = lipgloss.NewStyle().Foreground(theme.ColorFg)
 }
 
@@ -92,7 +90,7 @@ func (m Model) View() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(theme.StyleHeader.Render("  MACRO DASHBOARD"))
+	sb.WriteString(theme.SectionHeader("Macro Dashboard", m.width))
 	sb.WriteString("\n\n")
 
 	if len(m.quotes) == 0 {
@@ -101,7 +99,7 @@ func (m Model) View() string {
 	}
 
 	for _, cat := range categories {
-		sb.WriteString(styleCategory.Render(fmt.Sprintf("  %s", cat.name)))
+		sb.WriteString(theme.SectionHeader(cat.name, m.width))
 		sb.WriteString("\n")
 
 		for _, ms := range cat.symbols {
@@ -144,7 +142,7 @@ func (m Model) View() string {
 		if spread < 0 {
 			spreadStyle = theme.StyleDown
 		}
-		sb.WriteString(styleCategory.Render("  Computed"))
+		sb.WriteString(theme.SectionHeader("Computed", m.width))
 		sb.WriteString("\n")
 		sb.WriteString(fmt.Sprintf("    %-18s %12s\n",
 			theme.StyleDim.Render("2s10s Spread"),

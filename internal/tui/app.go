@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -13,6 +14,7 @@ import (
 	"github.com/stxkxs/mkt/internal/tui/alertdialog"
 	"github.com/stxkxs/mkt/internal/tui/chart"
 	"github.com/stxkxs/mkt/internal/tui/detail"
+	"github.com/stxkxs/mkt/internal/tui/format"
 	heatmapview "github.com/stxkxs/mkt/internal/tui/heatmap"
 	macroview "github.com/stxkxs/mkt/internal/tui/macro"
 	newsview "github.com/stxkxs/mkt/internal/tui/news"
@@ -25,10 +27,11 @@ import (
 
 // App is the root TUI model.
 type App struct {
-	activeTab Tab
-	width     int
-	height    int
-	ready     bool
+	activeTab   Tab
+	width       int
+	height      int
+	ready       bool
+	spinnerTick int
 
 	watchlist   watchlist.Model
 	detail      detail.Model
@@ -68,7 +71,9 @@ func NewApp(symbols []string, cache *market.Cache, histProvider chart.HistoryPro
 }
 
 func (a *App) Init() tea.Cmd {
-	return nil
+	return tea.Every(100*time.Millisecond, func(t time.Time) tea.Msg {
+		return SpinnerTickMsg{}
+	})
 }
 
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -79,14 +84,21 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.width = msg.Width
 		a.height = msg.Height
 		a.ready = true
-		a.watchlist.SetSize(msg.Width, msg.Height-2)
+		contentW, contentH := a.contentSize(msg.Width, msg.Height)
+		a.watchlist.SetSize(contentW, contentH)
 		a.statusbar.SetWidth(msg.Width)
-		a.detail.SetSize(msg.Width, msg.Height-2)
+		a.detail.SetSize(contentW, contentH)
 		a.chart.SetSize(msg.Width, msg.Height-2)
 		a.compare.SetSize(msg.Width, msg.Height-2)
 		a.alertDialog.SetSize(msg.Width, msg.Height)
 		a.symbolInfo.SetSize(msg.Width, msg.Height)
 		return a, nil
+
+	case SpinnerTickMsg:
+		a.spinnerTick++
+		return a, tea.Every(100*time.Millisecond, func(t time.Time) tea.Msg {
+			return SpinnerTickMsg{}
+		})
 
 	case tea.KeyPressMsg:
 		// Search mode guard: route all keys to watchlist while searching
@@ -355,7 +367,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a *App) View() tea.View {
 	if !a.ready {
-		return tea.NewView("Loading...")
+		spinner := format.SpinnerFrame(a.spinnerTick)
+		return tea.NewView(theme.StyleAccentText(spinner + " Loading..."))
 	}
 
 	// Full-screen chart mode
@@ -378,13 +391,11 @@ func (a *App) View() tea.View {
 	if a.detail.Active() {
 		tabBar := a.renderTabBar()
 		statusBar := a.statusbar.View()
-		contentHeight := a.height - lipgloss.Height(tabBar) - lipgloss.Height(statusBar)
-		a.detail.SetSize(a.width, contentHeight)
-		content := lipgloss.NewStyle().
-			Width(a.width).
-			Height(contentHeight).
-			Render(a.detail.View())
-		s := lipgloss.JoinVertical(lipgloss.Left, tabBar, content, statusBar)
+		contentW, contentH := a.contentSize(a.width, a.height)
+		a.detail.SetSize(contentW, contentH)
+		content := a.detail.View()
+		panel := a.renderContentPanel("Detail", content, contentH)
+		s := lipgloss.JoinVertical(lipgloss.Left, tabBar, panel, statusBar)
 		v := tea.NewView(s)
 		v.AltScreen = true
 		return withMouse(v)
@@ -393,39 +404,36 @@ func (a *App) View() tea.View {
 	tabBar := a.renderTabBar()
 	statusBar := a.statusbar.View()
 
-	contentHeight := a.height - lipgloss.Height(tabBar) - lipgloss.Height(statusBar)
+	contentW, contentH := a.contentSize(a.width, a.height)
 	var content string
 	switch a.activeTab {
 	case TabWatchlist:
-		a.watchlist.SetSize(a.width, contentHeight)
+		a.watchlist.SetSize(contentW, contentH)
 		content = a.watchlist.View()
 	case TabPortfolio:
-		a.portfolio.SetSize(a.width, contentHeight)
+		a.portfolio.SetSize(contentW, contentH)
 		content = a.portfolio.View()
 	case TabAlerts:
-		a.alerts.SetSize(a.width, contentHeight)
+		a.alerts.SetSize(contentW, contentH)
 		content = a.alerts.View()
 	case TabChart:
 		content = theme.StyleDim.Render("  Select a symbol from Watchlist and press 'c' for chart")
 	case TabMacro:
-		a.macro.SetSize(a.width, contentHeight)
+		a.macro.SetSize(contentW, contentH)
 		content = a.macro.View()
 	case TabNews:
-		a.news.SetSize(a.width, contentHeight)
+		a.news.SetSize(contentW, contentH)
 		content = a.news.View()
 	case TabHeatmap:
-		a.heatmap.SetSize(a.width, contentHeight)
+		a.heatmap.SetSize(contentW, contentH)
 		content = a.heatmap.View()
 	}
 
-	contentRendered := lipgloss.NewStyle().
-		Width(a.width).
-		Height(contentHeight).
-		Render(content)
+	panel := a.renderContentPanel(tabNames[a.activeTab], content, contentH)
 
 	s := lipgloss.JoinVertical(lipgloss.Left,
 		tabBar,
-		contentRendered,
+		panel,
 		statusBar,
 	)
 
@@ -453,20 +461,99 @@ func withMouse(v tea.View) tea.View {
 	return v
 }
 
-func (a *App) renderTabBar() string {
-	var tabs []string
-	for i, name := range tabNames {
-		num := string(rune('1' + i))
-		text := num + " " + name
-		if Tab(i) == a.activeTab {
-			tabs = append(tabs, theme.StyleTabActive.Render(text))
-		} else {
-			tabs = append(tabs, theme.StyleTabInactive.Render(text))
-		}
+// usePanelBorders returns true if the terminal is large enough for panel borders.
+func (a *App) usePanelBorders() bool {
+	return a.width >= 30 && a.height >= 15
+}
+
+// contentSize returns the width and height available for content inside the panel.
+func (a *App) contentSize(totalW, totalH int) (int, int) {
+	// tab bar (1) + status bar (1) = 2
+	h := totalH - 2
+	w := totalW
+	if a.usePanelBorders() {
+		h -= 2 // top + bottom border
+		w -= 2 // left + right border
 	}
-	bar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
-	right := theme.StyleDim.Background(theme.ColorTabBg).Render(" mkt ")
-	pad := a.width - lipgloss.Width(bar) - lipgloss.Width(right)
+	if h < 1 {
+		h = 1
+	}
+	if w < 1 {
+		w = 1
+	}
+	return w, h
+}
+
+// renderContentPanel wraps content in a bordered panel with an embedded title.
+func (a *App) renderContentPanel(title, content string, contentH int) string {
+	if !a.usePanelBorders() {
+		return lipgloss.NewStyle().
+			Width(a.width).
+			Height(contentH).
+			Render(content)
+	}
+
+	innerWidth := a.width - 2
+
+	// Top border: ╭─── Title ──────────────────────╮
+	titleRendered := theme.StylePanelTitle.Render(" " + title + " ")
+	titleVisualWidth := lipgloss.Width(titleRendered)
+	topFillLen := innerWidth - 1 - titleVisualWidth // "─" + title + fill
+	if topFillLen < 0 {
+		topFillLen = 0
+	}
+	top := theme.StyleBorderChar.Render("╭─") + titleRendered + theme.StyleBorderChar.Render(strings.Repeat("─", topFillLen)+"╮")
+
+	// Bottom border: ╰────────────────────────────────╯
+	bottom := theme.StyleBorderChar.Render("╰" + strings.Repeat("─", innerWidth) + "╯")
+
+	// Content lines with side borders
+	contentRendered := lipgloss.NewStyle().
+		Width(innerWidth).
+		Height(contentH).
+		Render(content)
+	lines := strings.Split(contentRendered, "\n")
+
+	var sb strings.Builder
+	sb.WriteString(top)
+	sb.WriteString("\n")
+	border := theme.StyleBorderChar.Render("│")
+	for _, line := range lines {
+		lineW := lipgloss.Width(line)
+		pad := innerWidth - lineW
+		if pad < 0 {
+			pad = 0
+		}
+		sb.WriteString(border)
+		sb.WriteString(line)
+		sb.WriteString(strings.Repeat(" ", pad))
+		sb.WriteString(border)
+		sb.WriteString("\n")
+	}
+	sb.WriteString(bottom)
+
+	return sb.String()
+}
+
+func (a *App) renderTabBar() string {
+	sep := theme.StyleTabSeparator.Render(" │ ")
+
+	var parts []string
+	for i, name := range tabNames {
+		indicator := "◇"
+		style := theme.StyleTabInactive
+		if Tab(i) == a.activeTab {
+			indicator = "◆"
+			style = theme.StyleTabActive
+		}
+		parts = append(parts, style.Render(indicator+" "+name))
+	}
+
+	bar := theme.StyleTabBar.Render(" ") + strings.Join(parts, sep)
+	right := theme.StyleBranding.Render("▸ mkt ")
+	barW := lipgloss.Width(bar)
+	rightW := lipgloss.Width(right)
+	pad := a.width - barW - rightW
 	if pad < 0 {
 		pad = 0
 	}
@@ -476,15 +563,22 @@ func (a *App) renderTabBar() string {
 
 // tabAtX returns which tab index was clicked at the given X coordinate, or -1.
 func (a *App) tabAtX(x int) Tab {
-	cumX := 0
+	sep := theme.StyleTabSeparator.Render(" │ ")
+	sepW := lipgloss.Width(sep)
+	cumX := 1 // leading space from StyleTabBar " "
 	for i, name := range tabNames {
-		num := string(rune('1' + i))
-		text := num + " " + name
-		w := lipgloss.Width(theme.StyleTabActive.Render(text))
+		indicator := "◇"
+		style := theme.StyleTabInactive
+		if Tab(i) == a.activeTab {
+			indicator = "◆"
+			style = theme.StyleTabActive
+		}
+		text := style.Render(indicator + " " + name)
+		w := lipgloss.Width(text)
 		if x >= cumX && x < cumX+w {
 			return Tab(i)
 		}
-		cumX += w
+		cumX += w + sepW
 	}
 	return -1
 }

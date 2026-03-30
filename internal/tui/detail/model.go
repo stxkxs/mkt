@@ -142,7 +142,7 @@ func (m Model) View() string {
 			chartWidth = 80
 		}
 		sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorCyan).Render(
-			"  " + format.Sparkline(prices, chartWidth),
+			"  " + format.BrailleSparkline(prices, chartWidth),
 		))
 		sb.WriteString("\n")
 	}
