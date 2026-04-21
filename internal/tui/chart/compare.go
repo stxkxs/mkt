@@ -129,6 +129,9 @@ func (m *CompareModel) SetSize(w, h int) {
 // Update handles messages.
 func (m CompareModel) Update(msg tea.Msg) (CompareModel, tea.Cmd) {
 	switch msg := msg.(type) {
+	case theme.ChangedMsg:
+		RebuildStyles()
+		return m, nil
 	case compareLoadedMsg:
 		m.entries = msg.entries
 		m.loading = false

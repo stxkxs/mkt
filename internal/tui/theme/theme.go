@@ -74,6 +74,11 @@ var (
 			PaddingRight(1)
 )
 
+// ChangedMsg is broadcast when the active theme changes so each view can rebuild its cached styles.
+type ChangedMsg struct {
+	Name string
+}
+
 // StyleAccentText renders text in accent color.
 func StyleAccentText(s string) string {
 	return lipgloss.NewStyle().Foreground(ColorAccent).Render(s)

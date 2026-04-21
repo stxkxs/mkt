@@ -25,8 +25,8 @@ func (a AssetType) String() string {
 type Quote struct {
 	Symbol    string
 	Price     float64
-	Change    float64   // absolute change
-	ChangePct float64   // percentage change
+	Change    float64 // absolute change
+	ChangePct float64 // percentage change
 	Volume    float64
 	High24h   float64
 	Low24h    float64

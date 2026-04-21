@@ -18,6 +18,8 @@ go install github.com/stxkxs/mkt@latest
 
 ### Build from source
 
+Requires Go 1.25+ and [Task](https://taskfile.dev) (`brew install go-task` or `go install github.com/go-task/task/v3/cmd/task@latest`).
+
 ```sh
 git clone https://github.com/stxkxs/mkt.git
 cd mkt
@@ -181,8 +183,7 @@ mkt/
     │   ├── provider.go            # QuoteProvider, HistoryProvider interfaces
     │   ├── types.go               # Quote, OHLCV, Interval
     │   ├── coinbase/              # WebSocket streaming + REST history
-    │   ├── yahoo/                 # HTTP polling + chart history + macro quotes
-    │   └── binance/               # WebSocket (non-US, kept as alternative)
+    │   └── yahoo/                 # HTTP polling + chart history + macro quotes
     ├── market/
     │   ├── hub.go                 # aggregates providers, fan-out via callback
     │   ├── cache.go               # ring buffer per symbol for sparklines

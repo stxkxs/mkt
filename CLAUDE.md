@@ -34,7 +34,7 @@ Providers (Coinbase WS, Yahoo HTTP) → chan Quote → Hub → cache + alertEngi
 **Key layers:**
 
 - **`cmd/`** — Cobra CLI. `dashboard.go` is the main wiring point: creates providers, hub, alert engine, portfolios, and starts the Bubbletea program.
-- **`internal/provider/`** — `QuoteProvider` and `HistoryProvider` interfaces (`provider.go`). Implementations: `coinbase/` (WebSocket streaming + REST candles), `yahoo/` (HTTP polling + chart history), `binance/` (alternative crypto WS).
+- **`internal/provider/`** — `QuoteProvider` and `HistoryProvider` interfaces (`provider.go`). Implementations: `coinbase/` (WebSocket streaming + REST candles), `yahoo/` (HTTP polling + chart history).
 - **`internal/market/`** — `hub.go` multiplexes providers and fans out quotes to cache/alerts/TUI. `cache.go` is a ring buffer per symbol for sparklines.
 - **`internal/tui/`** — `app.go` is the root Bubbletea model that routes messages and manages 7 tabs. Each tab is its own package (watchlist, chart, portfolio, alerts, macro, news, heatmap) with Model/Update/View.
 - **`internal/alert/`** — Rule engine with cooldown. Supports price, percent change, RSI, SMA cross, MACD cross conditions.

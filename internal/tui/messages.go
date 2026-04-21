@@ -34,11 +34,6 @@ type ErrorMsg struct {
 	Err error
 }
 
-// ThemeChangedMsg is sent when the theme changes.
-type ThemeChangedMsg struct {
-	Name string
-}
-
 // MacroUpdateMsg is sent when macro indicator data arrives.
 type MacroUpdateMsg struct {
 	Quotes []provider.Quote

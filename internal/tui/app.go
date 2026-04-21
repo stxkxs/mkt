@@ -10,8 +10,8 @@ import (
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
-	alertsview "github.com/stxkxs/mkt/internal/tui/alerts"
 	"github.com/stxkxs/mkt/internal/tui/alertdialog"
+	alertsview "github.com/stxkxs/mkt/internal/tui/alerts"
 	"github.com/stxkxs/mkt/internal/tui/chart"
 	"github.com/stxkxs/mkt/internal/tui/detail"
 	"github.com/stxkxs/mkt/internal/tui/format"
@@ -166,13 +166,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Batch(cmds...)
 		}
 
-		// Theme switching
+		// Theme switching: Apply updates global colors; broadcast ChangedMsg
+		// so each sub-model can rebuild its cached styles in its own Update.
 		if msg.String() == "T" {
 			name := theme.NextTheme()
 			theme.Apply(name)
-			a.rebuildAllStyles()
 			a.statusbar.SetThemeName(name)
-			return a, nil
+			return a, func() tea.Msg { return theme.ChangedMsg{Name: name} }
 		}
 
 		// Tab switching
@@ -335,6 +335,32 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ConnectionStatusMsg:
 		a.statusbar.SetProviderStatus(msg.Provider, msg.Connected)
 		return a, nil
+
+	case theme.ChangedMsg:
+		statusbar.RebuildStyles()
+		macroview.RebuildStyles()
+		var cmd tea.Cmd
+		a.watchlist, cmd = a.watchlist.Update(msg)
+		cmds = append(cmds, cmd)
+		a.chart, cmd = a.chart.Update(msg)
+		cmds = append(cmds, cmd)
+		a.compare, cmd = a.compare.Update(msg)
+		cmds = append(cmds, cmd)
+		a.portfolio, cmd = a.portfolio.Update(msg)
+		cmds = append(cmds, cmd)
+		a.alerts, cmd = a.alerts.Update(msg)
+		cmds = append(cmds, cmd)
+		a.news, cmd = a.news.Update(msg)
+		cmds = append(cmds, cmd)
+		a.heatmap, cmd = a.heatmap.Update(msg)
+		cmds = append(cmds, cmd)
+		a.detail, cmd = a.detail.Update(msg)
+		cmds = append(cmds, cmd)
+		a.alertDialog, cmd = a.alertDialog.Update(msg)
+		cmds = append(cmds, cmd)
+		a.symbolInfo, cmd = a.symbolInfo.Update(msg)
+		cmds = append(cmds, cmd)
+		return a, tea.Batch(cmds...)
 
 	default:
 		// Forward unknown messages to chart (for history loaded) and compare
@@ -581,18 +607,4 @@ func (a *App) tabAtX(x int) Tab {
 		cumX += w + sepW
 	}
 	return -1
-}
-
-func (a *App) rebuildAllStyles() {
-	watchlist.RebuildStyles()
-	chart.RebuildStyles()
-	alertsview.RebuildStyles()
-	portfolioview.RebuildStyles()
-	detail.RebuildStyles()
-	statusbar.RebuildStyles()
-	macroview.RebuildStyles()
-	newsview.RebuildStyles()
-	heatmapview.RebuildStyles()
-	alertdialog.RebuildStyles()
-	symbolinfo.RebuildStyles()
 }

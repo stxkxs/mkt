@@ -62,6 +62,9 @@ func (m Model) TriggeredCount() int {
 // Update handles messages.
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case theme.ChangedMsg:
+		RebuildStyles()
+		return m, nil
 	case tea.KeyPressMsg:
 		rules := m.engine.Rules()
 		switch msg.String() {

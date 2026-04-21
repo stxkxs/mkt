@@ -25,9 +25,9 @@ type Position struct {
 
 // Summary is the overall portfolio summary.
 type Summary struct {
-	Positions  []Position
-	TotalCost  float64
-	TotalValue float64
-	TotalPnL   float64
+	Positions   []Position
+	TotalCost   float64
+	TotalValue  float64
+	TotalPnL    float64
 	TotalPnLPct float64
 }
