@@ -146,6 +146,9 @@ func (m *Model) fetchHistory() tea.Cmd {
 // Update handles messages.
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case theme.ChangedMsg:
+		RebuildStyles()
+		return m, nil
 	case historyLoadedMsg:
 		if msg.symbol == m.symbol {
 			m.data = msg.data

@@ -1,0 +1,54 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - unconvert
+  settings:
+    errcheck:
+      check-type-assertions: true
+      exclude-functions:
+        - (io.Closer).Close
+        - (*net/http.Response).Body.Close
+        - (*github.com/coder/websocket.Conn).Close
+        - (*github.com/coder/websocket.Conn).CloseNow
+        - io/ioutil.ReadAll
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+    staticcheck:
+      checks:
+        - "all"
+        - "-QF1001"
+        - "-QF1002"
+        - "-QF1003"
+        - "-QF1012"
+        - "-ST1000"
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+      - source: "defer .*\\.Close\\(\\)"
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

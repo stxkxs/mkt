@@ -7,6 +7,11 @@ import (
 	"github.com/stxkxs/mkt/internal/provider"
 )
 
+// dispatchBuffer sizes the fan-out queue between the provider read loop and the
+// onQuote dispatcher. Quotes are dropped when this fills — the cache always has
+// the latest price, and the next quote will refresh the UI and re-check alerts.
+const dispatchBuffer = 256
+
 // Hub aggregates quote providers and fans out updates.
 type Hub struct {
 	quoteProviders []provider.QuoteProvider
@@ -25,6 +30,7 @@ func NewHub(cache *Cache, providers ...provider.QuoteProvider) *Hub {
 
 // Start launches all providers and the fan-out loop.
 // onQuote is called for each quote received (used to send to TUI).
+// The dispatcher runs on its own goroutine so a slow onQuote cannot stall providers.
 func (h *Hub) Start(ctx context.Context, symbols []string, onQuote func(provider.Quote)) {
 	// Route symbols to providers
 	providerSymbols := make(map[int][]string)
@@ -50,7 +56,9 @@ func (h *Hub) Start(ctx context.Context, symbols []string, onQuote func(provider
 		}(p, syms)
 	}
 
-	// Fan-out loop
+	// Reader: cache.Push is cheap; dispatch is best-effort so the read loop
+	// never blocks on a slow consumer.
+	dispatchCh := make(chan provider.Quote, dispatchBuffer)
 	go func() {
 		for {
 			select {
@@ -58,9 +66,27 @@ func (h *Hub) Start(ctx context.Context, symbols []string, onQuote func(provider
 				return
 			case q := <-h.quoteCh:
 				h.cache.Push(q)
-				if onQuote != nil {
-					onQuote(q)
+				if onQuote == nil {
+					continue
 				}
+				select {
+				case dispatchCh <- q:
+				default:
+					// Consumer backed up; skip rather than block providers.
+					// The cache already holds the latest price.
+				}
+			}
+		}
+	}()
+
+	// Dispatcher: calls onQuote. May block freely without starving providers.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case q := <-dispatchCh:
+				onQuote(q)
 			}
 		}
 	}()

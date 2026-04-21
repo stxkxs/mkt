@@ -87,15 +87,22 @@ func FetchAll(ctx context.Context, feeds []Feed) []Headline {
 	return deduped
 }
 
+// feedTimeout bounds a single feed fetch so one slow source cannot stall FetchAll.
+const feedTimeout = 8 * time.Second
+
+var feedClient = &http.Client{Timeout: feedTimeout}
+
 func fetchFeed(ctx context.Context, feed Feed) []Headline {
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feed.URL, nil)
+	reqCtx, cancel := context.WithTimeout(ctx, feedTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, feed.URL, nil)
 	if err != nil {
 		return nil
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 
-	resp, err := client.Do(req)
+	resp, err := feedClient.Do(req)
 	if err != nil {
 		return nil
 	}

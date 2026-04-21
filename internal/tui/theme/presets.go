@@ -197,6 +197,7 @@ func Apply(name string) {
 	ColorShadow = lipgloss.Color(t.Shadow)
 
 	rebuildStyles()
+	rebuildHeatmapGradient(t.Red, t.Dim, t.Green)
 }
 
 // NextTheme cycles to the next theme and returns its name.

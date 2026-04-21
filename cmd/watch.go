@@ -49,10 +49,18 @@ func runWatch(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(cryptoSyms) > 0 {
-		go coinbaseProv.Subscribe(ctx, cryptoSyms, quoteCh)
+		go func() {
+			if err := coinbaseProv.Subscribe(ctx, cryptoSyms, quoteCh); err != nil && ctx.Err() == nil {
+				fmt.Fprintf(os.Stderr, "coinbase subscribe: %v\n", err)
+			}
+		}()
 	}
 	if len(stockSyms) > 0 {
-		go yahooProv.Subscribe(ctx, stockSyms, quoteCh)
+		go func() {
+			if err := yahooProv.Subscribe(ctx, stockSyms, quoteCh); err != nil && ctx.Err() == nil {
+				fmt.Fprintf(os.Stderr, "yahoo subscribe: %v\n", err)
+			}
+		}()
 	}
 
 	// Print header
@@ -78,4 +86,3 @@ func runWatch(cmd *cobra.Command, args []string) error {
 		}
 	}
 }
-

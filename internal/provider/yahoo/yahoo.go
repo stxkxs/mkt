@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"regexp"
@@ -130,10 +131,9 @@ func (p *Provider) initSession(ctx context.Context) error {
 
 // Subscribe polls Yahoo Finance at regular intervals.
 func (p *Provider) Subscribe(ctx context.Context, symbols []string, out chan<- provider.Quote) error {
-	// Initialize session for cookies/crumb
+	// Non-fatal: some endpoints work without a crumb, so we log and proceed.
 	if err := p.initSession(ctx); err != nil {
-		// Non-fatal, we'll try requests anyway
-		_ = err
+		log.Printf("yahoo: session init failed, continuing without crumb: %v", err)
 	}
 
 	ticker := time.NewTicker(p.pollInterval)
@@ -397,7 +397,7 @@ func (p *Provider) fetchQuoteViaChart(ctx context.Context, symbol string) (provi
 // History fetches historical OHLCV data.
 func (p *Provider) History(ctx context.Context, params provider.HistoryParams) ([]provider.OHLCV, error) {
 	if err := p.initSession(ctx); err != nil {
-		_ = err
+		log.Printf("yahoo: session init failed for history %s, continuing: %v", params.Symbol, err)
 	}
 
 	interval := yahooInterval(params.Interval)

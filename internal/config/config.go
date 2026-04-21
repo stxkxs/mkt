@@ -56,7 +56,8 @@ func configPath() string {
 // Load reads the config file, creating defaults if it doesn't exist.
 func Load() (*Config, error) {
 	dir := configDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// 0o700: holdings and alert rules are user-private; don't expose to other local users.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create config dir: %w", err)
 	}
 
@@ -73,11 +74,9 @@ func Load() (*Config, error) {
 	v.SetDefault("alerts", []AlertRule{})
 
 	if err := v.ReadInConfig(); err != nil {
-		// Write defaults if file doesn't exist
+		// Write defaults if file doesn't exist. A concurrent create is fine; defaults still apply in-memory.
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			if err := v.SafeWriteConfig(); err != nil {
-				// Ignore if file already exists
-			}
+			_ = v.SafeWriteConfig()
 		}
 		// Not fatal — use defaults
 	}

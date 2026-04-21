@@ -80,6 +80,9 @@ func (m *Model) Open(symbol string) tea.Cmd {
 // Update handles messages.
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case theme.ChangedMsg:
+		RebuildStyles()
+		return m, nil
 	case tea.KeyPressMsg:
 		if msg.String() == "esc" || msg.String() == "?" {
 			m.active = false

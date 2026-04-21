@@ -16,8 +16,8 @@ import (
 var (
 	styleVol = lipgloss.NewStyle().Foreground(theme.ColorYellow)
 
-	styleSparkUp   = lipgloss.NewStyle().Foreground(theme.ColorGreen)
-	styleSparkDown = lipgloss.NewStyle().Foreground(theme.ColorRed)
+	styleSparkUp    = lipgloss.NewStyle().Foreground(theme.ColorGreen)
+	styleSparkDown  = lipgloss.NewStyle().Foreground(theme.ColorRed)
 	styleRangeTrack = lipgloss.NewStyle().Foreground(theme.ColorDim)
 	styleRangeMark  = lipgloss.NewStyle().Foreground(theme.ColorAccent)
 	styleSearch     = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
@@ -102,6 +102,9 @@ func (m *Model) SetSize(w, h int) {
 // Update handles messages for the watchlist.
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case theme.ChangedMsg:
+		RebuildStyles()
+		return m, nil
 	case tea.KeyPressMsg:
 		if m.searching {
 			return m.updateSearch(msg)

@@ -13,49 +13,14 @@ import (
 	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
-// Color gradient: 9 discrete steps from red -> neutral -> green.
-var gradientColors []color.Color
-
-func initGradient() {
-	gradientColors = []color.Color{
-		lipgloss.Color("#ff0000"), // -5%
-		lipgloss.Color("#cc3333"),
-		lipgloss.Color("#994444"), // -2.5%
-		lipgloss.Color("#775555"),
-		lipgloss.Color("#555555"), // 0%
-		lipgloss.Color("#557755"),
-		lipgloss.Color("#449944"), // +2.5%
-		lipgloss.Color("#33cc33"),
-		lipgloss.Color("#00ff00"), // +5%
-	}
-}
-
-func init() {
-	initGradient()
-}
-
-func changeColor(pct float64) color.Color {
-	if len(gradientColors) == 0 {
-		initGradient()
-	}
-	idx := int((pct + 5) / 10 * 8)
-	if idx < 0 {
-		idx = 0
-	}
-	if idx > 8 {
-		idx = 8
-	}
-	return gradientColors[idx]
-}
-
 // Model is the sector heatmap tab with drill-down.
 type Model struct {
-	sectors    []Sector
-	quotes     map[string]provider.Quote
-	cursor     int // sector cursor (overview) or stock cursor (drilldown)
-	sectorIdx  int // which sector we're drilled into (-1 = overview)
-	width      int
-	height     int
+	sectors   []Sector
+	quotes    map[string]provider.Quote
+	cursor    int // sector cursor (overview) or stock cursor (drilldown)
+	sectorIdx int // which sector we're drilled into (-1 = overview)
+	width     int
+	height    int
 }
 
 // New creates a heatmap model.
@@ -84,6 +49,9 @@ func RebuildStyles() {}
 // Update handles messages.
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case theme.ChangedMsg:
+		RebuildStyles()
+		return m, nil
 	case tea.KeyPressMsg:
 		if m.sectorIdx >= 0 {
 			return m.updateDrilldown(msg)
@@ -227,7 +195,7 @@ func (m Model) viewOverview() string {
 		}
 		rect := rects[i]
 		chg := m.sectorChange(s)
-		clr := changeColor(chg)
+		clr := theme.HeatmapColor(chg)
 		isSelected := i == m.cursor
 
 		// Fill
@@ -340,7 +308,7 @@ func (m Model) viewDrilldown() string {
 	var sb strings.Builder
 
 	// Header: sector name + change + breadcrumb
-	sectorColor := changeColor(sectorChg)
+	sectorColor := theme.HeatmapColor(sectorChg)
 	title := lipgloss.NewStyle().Foreground(sectorColor).Bold(true).
 		Render(fmt.Sprintf("  %s", sect.Name))
 	chgStr := fmt.Sprintf(" %.2f%%", sectorChg)
@@ -459,7 +427,7 @@ func (m Model) viewDrilldown() string {
 				continue
 			}
 			pct := e.quote.ChangePct
-			clr := changeColor(pct)
+			clr := theme.HeatmapColor(pct)
 			sign := "+"
 			if pct < 0 {
 				sign = ""
