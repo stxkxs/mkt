@@ -478,8 +478,25 @@ func (a *App) View() tea.View {
 	return withMouse(v)
 }
 
-func (a *App) overlayCenter(_ string, overlay string) string {
-	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, overlay)
+// overlayCenter composites overlay on top of bg, centered. The underlying
+// tab content stays visible around the modal instead of being replaced by
+// blank space (which is what lipgloss.Place alone would produce).
+func (a *App) overlayCenter(bg, overlay string) string {
+	ow := lipgloss.Width(overlay)
+	oh := lipgloss.Height(overlay)
+	x := (a.width - ow) / 2
+	if x < 0 {
+		x = 0
+	}
+	y := (a.height - oh) / 2
+	if y < 0 {
+		y = 0
+	}
+	c := lipgloss.NewCompositor(
+		lipgloss.NewLayer(bg),
+		lipgloss.NewLayer(overlay).X(x).Y(y).Z(1),
+	)
+	return c.Render()
 }
 
 func withMouse(v tea.View) tea.View {

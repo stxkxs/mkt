@@ -291,11 +291,11 @@ func coinbaseGranularity(i provider.Interval) int {
 	case provider.Interval1h:
 		return 3600
 	case provider.Interval4h:
-		return 3600 * 4 // Not natively supported, use 1h
+		return 3600 // Coinbase candles only support 60/300/900/3600/21600/86400; fall back to 1h
 	case provider.Interval1d:
 		return 86400
 	case provider.Interval1w:
-		return 86400 * 7 // Not natively supported, use 1d
+		return 86400 // Coinbase candles only support 60/300/900/3600/21600/86400; fall back to 1d
 	default:
 		return 86400
 	}

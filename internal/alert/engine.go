@@ -92,9 +92,10 @@ func (e *Engine) ToggleRule(idx int) {
 }
 
 // Check evaluates all rules against a quote.
+// Holds the write lock because it mutates refPrices and cooldowns.
 func (e *Engine) Check(q provider.Quote) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
 	// Track reference price
 	if _, ok := e.refPrices[q.Symbol]; !ok {

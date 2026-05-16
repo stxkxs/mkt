@@ -488,6 +488,8 @@ func yahooInterval(i provider.Interval) string {
 		return "15m"
 	case provider.Interval1h:
 		return "1h"
+	case provider.Interval4h:
+		return "1h" // Yahoo has no 4h bucket; fall back to 1h like Coinbase does
 	case provider.Interval1d:
 		return "1d"
 	case provider.Interval1w:
@@ -505,7 +507,7 @@ func yahooRange(i provider.Interval, limit int) string {
 		return "5d"
 	case provider.Interval15m:
 		return "5d"
-	case provider.Interval1h:
+	case provider.Interval1h, provider.Interval4h:
 		return "1mo"
 	case provider.Interval1d:
 		if limit > 200 {

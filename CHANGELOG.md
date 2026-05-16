@@ -15,5 +15,11 @@
 - Yahoo session init failures are now logged instead of silently discarded.
 - Config directory is created with `0o700` permissions; holdings and alert rules were previously world-readable.
 
+### Fixed
+- `alert.Engine.Check` now takes the write lock; it mutates `refPrices` and `cooldowns`, which `RLock` did not protect.
+- Yahoo history requests for the `4h` interval now fall back to `1h` candles instead of silently returning daily data.
+- Coinbase history requests for `4h` / `1w` now send supported granularities (`3600` / `86400`); previously they sent `14400` / `604800`, which the Coinbase candles API rejects.
+- Modal overlays (symbol info, alert dialog) now composite over the live tab content via `lipgloss.Compositor` instead of replacing the screen with `lipgloss.Place` on a blank canvas.
+
 ### Removed
 - Dormant `internal/provider/binance/` package (never imported).
