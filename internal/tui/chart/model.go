@@ -37,10 +37,12 @@ const (
 	IndBollinger
 	IndRSI
 	IndMACD
+	IndVWAP
+	IndOBV
 	indCount
 )
 
-var indicatorNames = []string{"SMA(20)", "EMA(20)", "Bollinger", "RSI(14)", "MACD"}
+var indicatorNames = []string{"SMA(20)", "EMA(20)", "Bollinger", "RSI(14)", "MACD", "VWAP", "OBV"}
 
 // ChartMode determines the chart type.
 type ChartMode int
@@ -178,6 +180,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.indicators[IndRSI] = !m.indicators[IndRSI]
 			case "5":
 				m.indicators[IndMACD] = !m.indicators[IndMACD]
+			case "6":
+				m.indicators[IndVWAP] = !m.indicators[IndVWAP]
+			case "7":
+				m.indicators[IndOBV] = !m.indicators[IndOBV]
 			}
 			return m, nil
 		}
@@ -258,7 +264,7 @@ func (m Model) View() string {
 			}
 			sb.WriteString(fmt.Sprintf(" %d:%s%s", i+1, marker, indicatorNames[i]))
 		}
-		sb.WriteString(styleAxis.Render("  (press 1-5 to toggle, i/esc to close)"))
+		sb.WriteString(styleAxis.Render("  (press 1-7 to toggle, i/esc to close)"))
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
@@ -290,7 +296,7 @@ func (m Model) View() string {
 	}
 
 	// Determine chart heights
-	hasSubPanel := m.indicators[IndRSI] || m.indicators[IndMACD]
+	hasSubPanel := m.indicators[IndRSI] || m.indicators[IndMACD] || m.indicators[IndOBV]
 	headerLines := 4
 	if m.indicatorMenu {
 		headerLines = 5
@@ -328,6 +334,12 @@ func (m Model) View() string {
 			sb.WriteString(m.renderRSI(closes, m.width-12, subH))
 		} else if m.indicators[IndMACD] {
 			sb.WriteString(m.renderMACD(closes, m.width-12, subH))
+		} else if m.indicators[IndOBV] {
+			volumes := make([]float64, len(candles))
+			for i, c := range candles {
+				volumes[i] = c.Volume
+			}
+			sb.WriteString(m.renderOBV(closes, volumes, m.width-12, subH))
 		}
 	}
 
@@ -357,6 +369,34 @@ func (m Model) View() string {
 			if v := rsi[len(rsi)-1]; !math.IsNaN(v) {
 				indVals = append(indVals, fmt.Sprintf("RSI:%.1f", v))
 			}
+		}
+		if m.indicators[IndVWAP] {
+			highs := make([]float64, len(candles))
+			lows := make([]float64, len(candles))
+			vols := make([]float64, len(candles))
+			for i, c := range candles {
+				highs[i] = c.High
+				lows[i] = c.Low
+				vols[i] = c.Volume
+			}
+			vwap := indicator.VWAP(highs, lows, closes, vols)
+			if v := vwap[len(vwap)-1]; !math.IsNaN(v) {
+				indVals = append(indVals, fmt.Sprintf("VWAP:%.2f", v))
+			}
+		}
+		if m.indicators[IndOBV] {
+			vols := make([]float64, len(candles))
+			for i, c := range candles {
+				vols[i] = c.Volume
+			}
+			obv := indicator.OBV(closes, vols)
+			last := obv[len(obv)-1]
+			sign := ""
+			if last < 0 {
+				sign = "-"
+				last = -last
+			}
+			indVals = append(indVals, fmt.Sprintf("OBV:%s%s", sign, format.FormatVolume(last)))
 		}
 		if len(indVals) > 0 {
 			summary += "  " + lipgloss.NewStyle().Foreground(theme.ColorMagenta).Render(strings.Join(indVals, " "))
@@ -467,7 +507,7 @@ func (m Model) renderCandlestickWithIndicators(candles []provider.OHLCV, closes 
 	}
 
 	// Overlay indicators
-	m.drawOverlays(grid, gridColor, closes, width, height, minP, scale, candleWidth)
+	m.drawOverlays(grid, gridColor, candles, closes, width, height, minP, scale, candleWidth)
 
 	// Render
 	return renderGrid(grid, gridColor, width, height, maxP, scale)
@@ -554,12 +594,12 @@ func (m Model) renderLineWithIndicators(candles []provider.OHLCV, closes []float
 	}
 
 	// Overlay indicators (use original closes, not resampled)
-	m.drawOverlays(grid, gridColor, closes, width, height, minP, scale, 1)
+	m.drawOverlays(grid, gridColor, candles, closes, width, height, minP, scale, 1)
 
 	return renderGrid(grid, gridColor, width, height, maxP, scale)
 }
 
-func (m Model) drawOverlays(grid [][]rune, gridColor [][]color.Color, closes []float64, width, height int, minP, scale float64, step int) {
+func (m Model) drawOverlays(grid [][]rune, gridColor [][]color.Color, candles []provider.OHLCV, closes []float64, width, height int, minP, scale float64, step int) {
 	plotLine := func(values []float64, clr color.Color) {
 		for i, v := range values {
 			if math.IsNaN(v) {
@@ -596,6 +636,18 @@ func (m Model) drawOverlays(grid [][]rune, gridColor [][]color.Color, closes []f
 		plotLine(bb.Upper, theme.ColorDim)
 		plotLine(bb.Middle, theme.ColorAccent)
 		plotLine(bb.Lower, theme.ColorDim)
+	}
+	if m.indicators[IndVWAP] {
+		highs := make([]float64, len(candles))
+		lows := make([]float64, len(candles))
+		vols := make([]float64, len(candles))
+		for i, c := range candles {
+			highs[i] = c.High
+			lows[i] = c.Low
+			vols[i] = c.Volume
+		}
+		vwap := indicator.VWAP(highs, lows, closes, vols)
+		plotLine(vwap, theme.ColorMagenta)
 	}
 }
 
@@ -800,6 +852,85 @@ func (m Model) renderMACD(closes []float64, width, height int) string {
 	labelWidth := 10
 	sb.WriteString(strings.Repeat(" ", labelWidth+1))
 	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("MACD(12,26,9)"))
+	sb.WriteString("\n")
+	for r := range height {
+		sb.WriteString(strings.Repeat(" ", labelWidth+1))
+		for c := range grid[r] {
+			ch := grid[r][c]
+			clr := gridColor[r][c]
+			if ch == ' ' {
+				sb.WriteRune(' ')
+			} else if clr != nil {
+				sb.WriteString(lipgloss.NewStyle().Foreground(clr).Render(string(ch)))
+			} else {
+				sb.WriteRune(ch)
+			}
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func (m Model) renderOBV(closes, volumes []float64, width, height int) string {
+	if height < 3 || width <= 0 || len(closes) == 0 {
+		return ""
+	}
+	obv := indicator.OBV(closes, volumes)
+
+	// Find OBV range
+	minV, maxV := obv[0], obv[0]
+	for _, v := range obv {
+		if v < minV {
+			minV = v
+		}
+		if v > maxV {
+			maxV = v
+		}
+	}
+	rng := maxV - minV
+	if rng == 0 {
+		rng = 1
+	}
+
+	grid := make([][]rune, height)
+	gridColor := make([][]color.Color, height)
+	for r := range height {
+		grid[r] = make([]rune, width)
+		gridColor[r] = make([]color.Color, width)
+		for c := range width {
+			grid[r][c] = ' '
+		}
+	}
+
+	// Zero reference line if it falls inside the range
+	if minV < 0 && maxV > 0 {
+		zeroRow := height - 1 - int((0-minV)/rng*float64(height-1))
+		zeroRow = clampRow(zeroRow, height)
+		for c := range width {
+			grid[zeroRow][c] = '┄'
+			gridColor[zeroRow][c] = theme.ColorDim
+		}
+	}
+
+	// Plot OBV line
+	for i, v := range obv {
+		col := i
+		if len(obv) > width {
+			col = i * width / len(obv)
+		}
+		if col >= width {
+			break
+		}
+		row := height - 1 - int((v-minV)/rng*float64(height-1))
+		row = clampRow(row, height)
+		grid[row][col] = '●'
+		gridColor[row][col] = theme.ColorAccent
+	}
+
+	var sb strings.Builder
+	labelWidth := 10
+	sb.WriteString(strings.Repeat(" ", labelWidth+1))
+	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("OBV"))
 	sb.WriteString("\n")
 	for r := range height {
 		sb.WriteString(strings.Repeat(" ", labelWidth+1))
