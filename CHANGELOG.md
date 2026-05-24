@@ -30,6 +30,7 @@
 - Coinbase order-book depth: new `coinbase.FetchOrderBook` and `OrderBookDepth` helpers. The detail panel renders the top-5 bids/asks for crypto symbols when opened (REST snapshot per open; WebSocket live updates are a follow-up).
 - Correlation matrix tab (`9`): pairwise Pearson correlation between watchlist symbols using each symbol's recent cached prices. New `portfolio.Correlation` and `CorrelationMatrix` helpers; colored grid render (green positive, red negative).
 - Macro tab "Upcoming Economic Events (30d)" section: lists the next month of FOMC / CPI / NFP / GDP releases from `calendar.EconomicEvents()` with relative `in Xd / Xh` countdowns.
+- Multiple named watchlists: `watchlists: [{name: ..., symbols: [...]}]` in config. Watchlist tab shows the active group name + `[/]: switch (i/n)` and cycles with `[` / `]`. The legacy top-level `watchlist:` field is still honored and appears as "Default". The hub subscribes to the deduplicated union so all groups stay live.
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.

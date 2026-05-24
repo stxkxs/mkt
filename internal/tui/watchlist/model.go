@@ -33,14 +33,22 @@ func RebuildStyles() {
 	styleSearch = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
 }
 
+// Group is one named watchlist subset.
+type Group struct {
+	Name    string
+	Symbols []string
+}
+
 // Model is the watchlist view.
 type Model struct {
-	symbols []string
-	quotes  map[string]provider.Quote
-	cache   *market.Cache
-	cursor  int
-	width   int
-	height  int
+	groups    []Group
+	activeIdx int
+	symbols   []string // active group's symbols; mirrored from groups[activeIdx]
+	quotes    map[string]provider.Quote
+	cache     *market.Cache
+	cursor    int
+	width     int
+	height    int
 
 	// Search state
 	searching   bool
@@ -50,13 +58,38 @@ type Model struct {
 	preCursor   int   // cursor before search started (for restore on esc)
 }
 
-// New creates a watchlist model.
-func New(symbols []string, cache *market.Cache) Model {
+// New creates a watchlist model from one or more groups. The first group
+// is active by default. A nil/empty groups slice falls back to a single
+// "Default" group with no symbols.
+func New(groups []Group, cache *market.Cache) Model {
+	if len(groups) == 0 {
+		groups = []Group{{Name: "Default"}}
+	}
 	return Model{
-		symbols: symbols,
+		groups:  groups,
+		symbols: groups[0].Symbols,
 		quotes:  make(map[string]provider.Quote),
 		cache:   cache,
 	}
+}
+
+// ActiveGroupName returns the name of the currently active group.
+func (m Model) ActiveGroupName() string {
+	if m.activeIdx < len(m.groups) {
+		return m.groups[m.activeIdx].Name
+	}
+	return ""
+}
+
+// switchGroup advances to the next/prev group with wraparound and
+// resyncs the cursor + cached symbols slice.
+func (m *Model) switchGroup(delta int) {
+	if len(m.groups) <= 1 {
+		return
+	}
+	m.activeIdx = (m.activeIdx + delta + len(m.groups)) % len(m.groups)
+	m.symbols = m.groups[m.activeIdx].Symbols
+	m.cursor = 0
 }
 
 // Symbols returns the current symbol list.
@@ -131,6 +164,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			if len(m.symbols) > 0 {
 				m.cursor = len(m.symbols) - 1
 			}
+		case "[":
+			m.switchGroup(-1)
+		case "]":
+			m.switchGroup(1)
 		}
 	case tea.MouseClickMsg:
 		row := msg.Y - 1 // -1 for header
@@ -273,6 +310,13 @@ func (m Model) View() string {
 	// Search mode: show filtered results
 	if m.searching {
 		return m.viewSearch(sparkWidth)
+	}
+
+	// Group switcher hint when multiple watchlists are configured.
+	if len(m.groups) > 1 {
+		sb.WriteString("  ")
+		sb.WriteString(theme.StyleAccentText(m.ActiveGroupName()))
+		sb.WriteString(theme.StyleDim.Render(fmt.Sprintf("  [/]: switch  (%d/%d)\n", m.activeIdx+1, len(m.groups))))
 	}
 
 	// Header
