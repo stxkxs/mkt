@@ -32,6 +32,7 @@ type Model struct {
 	cache  *market.Cache
 	cb     *coinbase.Provider
 	book   coinbase.OrderBook
+	notes  map[string]string
 	width  int
 	height int
 	active bool
@@ -41,6 +42,11 @@ type Model struct {
 // order books for crypto symbols when shown; pass nil to disable.
 func New(cache *market.Cache, cb *coinbase.Provider) Model {
 	return Model{cache: cache, cb: cb}
+}
+
+// SetNotes seeds the per-symbol freeform notes map.
+func (m *Model) SetNotes(notes map[string]string) {
+	m.notes = notes
 }
 
 // SetSymbol updates the displayed symbol and returns a tea.Cmd that
@@ -180,6 +186,18 @@ func (m Model) View() string {
 			"  " + format.BrailleSparkline(prices, chartWidth),
 		))
 		sb.WriteString("\n")
+	}
+
+	// Freeform notes for this symbol
+	if note := m.notes[m.symbol]; note != "" {
+		sb.WriteString("\n  ")
+		sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("Notes"))
+		sb.WriteString("\n")
+		for _, line := range strings.Split(note, "\n") {
+			sb.WriteString("  ")
+			sb.WriteString(styleValue.Render(line))
+			sb.WriteString("\n")
+		}
 	}
 
 	// Order book (top 5 per side) for crypto symbols
