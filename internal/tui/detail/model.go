@@ -1,6 +1,7 @@
 package detail
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/provider/coinbase"
 	"github.com/stxkxs/mkt/internal/tui/format"
 	"github.com/stxkxs/mkt/internal/tui/theme"
 )
@@ -28,19 +30,43 @@ type Model struct {
 	symbol string
 	quote  provider.Quote
 	cache  *market.Cache
+	cb     *coinbase.Provider
+	book   coinbase.OrderBook
 	width  int
 	height int
 	active bool
 }
 
-// New creates a detail model.
-func New(cache *market.Cache) Model {
-	return Model{cache: cache}
+// New creates a detail model. The coinbase provider is used to fetch
+// order books for crypto symbols when shown; pass nil to disable.
+func New(cache *market.Cache, cb *coinbase.Provider) Model {
+	return Model{cache: cache, cb: cb}
 }
 
-// SetSymbol updates the displayed symbol.
-func (m *Model) SetSymbol(sym string) {
+// SetSymbol updates the displayed symbol and returns a tea.Cmd that
+// fetches an order book if the symbol is crypto. The Cmd is nil for
+// non-crypto symbols or when no coinbase provider is configured.
+func (m *Model) SetSymbol(sym string) tea.Cmd {
 	m.symbol = sym
+	m.book = coinbase.OrderBook{}
+	if m.cb == nil || !isCryptoSymbol(sym) {
+		return nil
+	}
+	cb := m.cb
+	return func() tea.Msg {
+		b, err := cb.FetchOrderBook(context.Background(), sym)
+		if err != nil {
+			return nil
+		}
+		return orderBookLoadedMsg{book: b}
+	}
+}
+
+type orderBookLoadedMsg struct{ book coinbase.OrderBook }
+
+func isCryptoSymbol(s string) bool {
+	up := strings.ToUpper(s)
+	return strings.Contains(up, "-USD") || strings.HasSuffix(up, "USDT")
 }
 
 // SetSize updates dimensions.
@@ -76,6 +102,12 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case theme.ChangedMsg:
 		RebuildStyles()
+		return m, nil
+	case orderBookLoadedMsg:
+		// Only keep the book if it still matches the displayed symbol.
+		if msg.book.ProductID == "" || strings.EqualFold(msg.book.ProductID, m.symbol) {
+			m.book = msg.book
+		}
 		return m, nil
 	case tea.KeyPressMsg:
 		switch msg.String() {
@@ -148,6 +180,40 @@ func (m Model) View() string {
 			"  " + format.BrailleSparkline(prices, chartWidth),
 		))
 		sb.WriteString("\n")
+	}
+
+	// Order book (top 5 per side) for crypto symbols
+	if len(m.book.Bids) > 0 || len(m.book.Asks) > 0 {
+		sb.WriteString("\n  ")
+		sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("Order Book (top 5)"))
+		sb.WriteString("\n")
+		n := 5
+		if n > len(m.book.Bids) {
+			n = len(m.book.Bids)
+		}
+		na := 5
+		if na > len(m.book.Asks) {
+			na = len(m.book.Asks)
+		}
+		rows := n
+		if na > rows {
+			rows = na
+		}
+		for i := 0; i < rows; i++ {
+			var bidStr, askStr string
+			if i < n {
+				bidStr = fmt.Sprintf("%10.2f x %.4f", m.book.Bids[i].Price, m.book.Bids[i].Size)
+			} else {
+				bidStr = strings.Repeat(" ", 21)
+			}
+			if i < na {
+				askStr = fmt.Sprintf("%10.2f x %.4f", m.book.Asks[i].Price, m.book.Asks[i].Size)
+			}
+			sb.WriteString(fmt.Sprintf("  %s    %s\n",
+				theme.StyleUp.Render(bidStr),
+				theme.StyleDown.Render(askStr),
+			))
+		}
 	}
 
 	return sb.String()
