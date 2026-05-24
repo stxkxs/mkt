@@ -8,10 +8,13 @@ type Holding struct {
 	CostBasis float64 // per-unit cost
 }
 
-// Portfolio is a named collection of holdings.
+// Portfolio is a named collection of holdings, optionally accompanied by
+// the transaction log that produced them. Transactions enable realized
+// P&L (P1) and tax-lot accounting (P2) without re-reading config.
 type Portfolio struct {
-	Name     string
-	Holdings []Holding
+	Name         string
+	Holdings     []Holding
+	Transactions []Transaction
 }
 
 // Position is a holding with live P&L calculated.

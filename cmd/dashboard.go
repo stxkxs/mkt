@@ -80,8 +80,9 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 			})
 		}
 		portfolios = append(portfolios, portfolio.Portfolio{
-			Name:     cp.Name,
-			Holdings: portfolio.Materialize(holdings, txs),
+			Name:         cp.Name,
+			Holdings:     portfolio.Materialize(holdings, txs),
+			Transactions: txs,
 		})
 	}
 

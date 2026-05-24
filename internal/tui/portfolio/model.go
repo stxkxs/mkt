@@ -236,5 +236,18 @@ func (m Model) View() string {
 			totalSign, summary.TotalPnL, totalSign, summary.TotalPnLPct)),
 	))
 
+	if len(p.Transactions) > 0 {
+		realized := portfolio.Realized(p.Transactions)
+		realizedStyle := theme.StyleUp
+		realizedSign := "+"
+		if realized < 0 {
+			realizedStyle = theme.StyleDown
+			realizedSign = ""
+		}
+		sb.WriteString(fmt.Sprintf("  %s\n",
+			realizedStyle.Bold(true).Render(fmt.Sprintf("Realized: %s$%.2f", realizedSign, realized)),
+		))
+	}
+
 	return sb.String()
 }
