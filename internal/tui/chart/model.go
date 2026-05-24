@@ -39,10 +39,12 @@ const (
 	IndMACD
 	IndVWAP
 	IndOBV
+	IndATR
+	IndStoch
 	indCount
 )
 
-var indicatorNames = []string{"SMA(20)", "EMA(20)", "Bollinger", "RSI(14)", "MACD", "VWAP", "OBV"}
+var indicatorNames = []string{"SMA(20)", "EMA(20)", "Bollinger", "RSI(14)", "MACD", "VWAP", "OBV", "ATR(14)", "Stoch"}
 
 // ChartMode determines the chart type.
 type ChartMode int
@@ -184,6 +186,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.indicators[IndVWAP] = !m.indicators[IndVWAP]
 			case "7":
 				m.indicators[IndOBV] = !m.indicators[IndOBV]
+			case "8":
+				m.indicators[IndATR] = !m.indicators[IndATR]
+			case "9":
+				m.indicators[IndStoch] = !m.indicators[IndStoch]
 			}
 			return m, nil
 		}
@@ -264,7 +270,7 @@ func (m Model) View() string {
 			}
 			sb.WriteString(fmt.Sprintf(" %d:%s%s", i+1, marker, indicatorNames[i]))
 		}
-		sb.WriteString(styleAxis.Render("  (press 1-7 to toggle, i/esc to close)"))
+		sb.WriteString(styleAxis.Render("  (press 1-9 to toggle, i/esc to close)"))
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
@@ -296,7 +302,7 @@ func (m Model) View() string {
 	}
 
 	// Determine chart heights
-	hasSubPanel := m.indicators[IndRSI] || m.indicators[IndMACD] || m.indicators[IndOBV]
+	hasSubPanel := m.indicators[IndRSI] || m.indicators[IndMACD] || m.indicators[IndOBV] || m.indicators[IndATR] || m.indicators[IndStoch]
 	headerLines := 4
 	if m.indicatorMenu {
 		headerLines = 5
@@ -340,6 +346,12 @@ func (m Model) View() string {
 				volumes[i] = c.Volume
 			}
 			sb.WriteString(m.renderOBV(closes, volumes, m.width-12, subH))
+		} else if m.indicators[IndATR] {
+			highs, lows := extractHL(candles)
+			sb.WriteString(m.renderATR(highs, lows, closes, m.width-12, subH))
+		} else if m.indicators[IndStoch] {
+			highs, lows := extractHL(candles)
+			sb.WriteString(m.renderStoch(highs, lows, closes, m.width-12, subH))
 		}
 	}
 
@@ -397,6 +409,27 @@ func (m Model) View() string {
 				last = -last
 			}
 			indVals = append(indVals, fmt.Sprintf("OBV:%s%s", sign, format.FormatVolume(last)))
+		}
+		if m.indicators[IndATR] {
+			highs, lows := extractHL(candles)
+			atr := indicator.ATR(highs, lows, closes, 14)
+			if v := atr[len(atr)-1]; !math.IsNaN(v) {
+				indVals = append(indVals, fmt.Sprintf("ATR:%.4f", v))
+			}
+		}
+		if m.indicators[IndStoch] {
+			highs, lows := extractHL(candles)
+			k, d := indicator.Stochastic(highs, lows, closes, 14, 3)
+			var parts []string
+			if v := k[len(k)-1]; !math.IsNaN(v) {
+				parts = append(parts, fmt.Sprintf("K:%.1f", v))
+			}
+			if v := d[len(d)-1]; !math.IsNaN(v) {
+				parts = append(parts, fmt.Sprintf("D:%.1f", v))
+			}
+			if len(parts) > 0 {
+				indVals = append(indVals, "Stoch:"+strings.Join(parts, "/"))
+			}
 		}
 		if len(indVals) > 0 {
 			summary += "  " + lipgloss.NewStyle().Foreground(theme.ColorMagenta).Render(strings.Join(indVals, " "))
@@ -855,6 +888,175 @@ func (m Model) renderMACD(closes []float64, width, height int) string {
 	sb.WriteString("\n")
 	for r := range height {
 		sb.WriteString(strings.Repeat(" ", labelWidth+1))
+		for c := range grid[r] {
+			ch := grid[r][c]
+			clr := gridColor[r][c]
+			if ch == ' ' {
+				sb.WriteRune(' ')
+			} else if clr != nil {
+				sb.WriteString(lipgloss.NewStyle().Foreground(clr).Render(string(ch)))
+			} else {
+				sb.WriteRune(ch)
+			}
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+// extractHL pulls high and low slices out of a candle series.
+func extractHL(candles []provider.OHLCV) (highs, lows []float64) {
+	highs = make([]float64, len(candles))
+	lows = make([]float64, len(candles))
+	for i, c := range candles {
+		highs[i] = c.High
+		lows[i] = c.Low
+	}
+	return highs, lows
+}
+
+func (m Model) renderATR(highs, lows, closes []float64, width, height int) string {
+	if height < 3 || width <= 0 || len(closes) == 0 {
+		return ""
+	}
+	atr := indicator.ATR(highs, lows, closes, 14)
+
+	// Range over non-NaN ATR values
+	minV, maxV := math.Inf(1), math.Inf(-1)
+	for _, v := range atr {
+		if math.IsNaN(v) {
+			continue
+		}
+		if v < minV {
+			minV = v
+		}
+		if v > maxV {
+			maxV = v
+		}
+	}
+	if math.IsInf(minV, 1) {
+		return ""
+	}
+	rng := maxV - minV
+	if rng == 0 {
+		rng = 1
+	}
+
+	grid := make([][]rune, height)
+	gridColor := make([][]color.Color, height)
+	for r := range height {
+		grid[r] = make([]rune, width)
+		gridColor[r] = make([]color.Color, width)
+		for c := range width {
+			grid[r][c] = ' '
+		}
+	}
+
+	for i, v := range atr {
+		if math.IsNaN(v) {
+			continue
+		}
+		col := i
+		if len(atr) > width {
+			col = i * width / len(atr)
+		}
+		if col >= width {
+			break
+		}
+		row := height - 1 - int((v-minV)/rng*float64(height-1))
+		row = clampRow(row, height)
+		grid[row][col] = '●'
+		gridColor[row][col] = theme.ColorAccent
+	}
+
+	var sb strings.Builder
+	labelWidth := 10
+	sb.WriteString(strings.Repeat(" ", labelWidth+1))
+	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("ATR(14)"))
+	sb.WriteString("\n")
+	for r := range height {
+		sb.WriteString(strings.Repeat(" ", labelWidth+1))
+		for c := range grid[r] {
+			ch := grid[r][c]
+			clr := gridColor[r][c]
+			if ch == ' ' {
+				sb.WriteRune(' ')
+			} else if clr != nil {
+				sb.WriteString(lipgloss.NewStyle().Foreground(clr).Render(string(ch)))
+			} else {
+				sb.WriteRune(ch)
+			}
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func (m Model) renderStoch(highs, lows, closes []float64, width, height int) string {
+	if height < 3 || width <= 0 || len(closes) == 0 {
+		return ""
+	}
+	k, d := indicator.Stochastic(highs, lows, closes, 14, 3)
+
+	grid := make([][]rune, height)
+	gridColor := make([][]color.Color, height)
+	for r := range height {
+		grid[r] = make([]rune, width)
+		gridColor[r] = make([]color.Color, width)
+		for c := range width {
+			grid[r][c] = ' '
+		}
+	}
+
+	// Reference lines at 20 and 80
+	row20 := height - 1 - int(20.0/100.0*float64(height-1))
+	row80 := height - 1 - int(80.0/100.0*float64(height-1))
+	row20 = clampRow(row20, height)
+	row80 = clampRow(row80, height)
+	for c := range width {
+		grid[row20][c] = '┄'
+		gridColor[row20][c] = theme.ColorDim
+		grid[row80][c] = '┄'
+		gridColor[row80][c] = theme.ColorDim
+	}
+
+	plotSeries := func(series []float64, clr color.Color, glyph rune) {
+		for i, v := range series {
+			if math.IsNaN(v) {
+				continue
+			}
+			col := i
+			if len(series) > width {
+				col = i * width / len(series)
+			}
+			if col >= width {
+				break
+			}
+			row := height - 1 - int(v/100.0*float64(height-1))
+			row = clampRow(row, height)
+			if grid[row][col] == ' ' || grid[row][col] == '┄' {
+				grid[row][col] = glyph
+				gridColor[row][col] = clr
+			}
+		}
+	}
+	plotSeries(k, theme.ColorAccent, '●')
+	plotSeries(d, theme.ColorYellow, '○')
+
+	var sb strings.Builder
+	labelWidth := 10
+	sb.WriteString(strings.Repeat(" ", labelWidth+1))
+	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("Stochastic"))
+	sb.WriteString("\n")
+	for r := range height {
+		switch r {
+		case row80:
+			sb.WriteString(styleAxis.Render(fmt.Sprintf("%*s ", labelWidth, "80")))
+		case row20:
+			sb.WriteString(styleAxis.Render(fmt.Sprintf("%*s ", labelWidth, "20")))
+		default:
+			sb.WriteString(strings.Repeat(" ", labelWidth+1))
+		}
 		for c := range grid[r] {
 			ch := grid[r][c]
 			clr := gridColor[r][c]
