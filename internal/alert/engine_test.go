@@ -1,6 +1,9 @@
 package alert
 
 import (
+	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,5 +83,65 @@ func TestDisabledRule(t *testing.T) {
 	e.Check(provider.Quote{Symbol: "BTCUSDT", Price: 51000})
 	if len(fired) != 0 {
 		t.Fatal("disabled rule should not fire")
+	}
+}
+
+// recordingNotifier collects every alert it sees and optionally returns
+// a fixed error from Notify.
+type recordingNotifier struct {
+	name string
+	mu   sync.Mutex
+	seen []TriggeredAlert
+	err  error
+}
+
+func (r *recordingNotifier) Name() string { return r.name }
+
+func (r *recordingNotifier) Notify(_ context.Context, a TriggeredAlert) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seen = append(r.seen, a)
+	return r.err
+}
+
+func (r *recordingNotifier) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.seen)
+}
+
+func TestNotifierFanOut(t *testing.T) {
+	e := NewEngine(1*time.Second, nil)
+	n1 := &recordingNotifier{name: "n1"}
+	n2 := &recordingNotifier{name: "n2"}
+	e.AddNotifier(n1)
+	e.AddNotifier(n2)
+
+	e.AddRule(Rule{Symbol: "BTCUSDT", Condition: CondAbove, Value: 50000, Enabled: true})
+	e.Check(provider.Quote{Symbol: "BTCUSDT", Price: 51000})
+
+	if got := n1.count(); got != 1 {
+		t.Fatalf("n1: expected 1 alert, got %d", got)
+	}
+	if got := n2.count(); got != 1 {
+		t.Fatalf("n2: expected 1 alert, got %d", got)
+	}
+}
+
+func TestNotifierErrorIsolation(t *testing.T) {
+	e := NewEngine(1*time.Second, nil)
+	failing := &recordingNotifier{name: "failing", err: errors.New("boom")}
+	ok := &recordingNotifier{name: "ok"}
+	e.AddNotifier(failing)
+	e.AddNotifier(ok)
+
+	e.AddRule(Rule{Symbol: "BTCUSDT", Condition: CondAbove, Value: 50000, Enabled: true})
+	e.Check(provider.Quote{Symbol: "BTCUSDT", Price: 51000})
+
+	if got := failing.count(); got != 1 {
+		t.Fatalf("failing: expected 1 alert (call still attempted), got %d", got)
+	}
+	if got := ok.count(); got != 1 {
+		t.Fatalf("ok: expected 1 alert (sibling failure must not block), got %d", got)
 	}
 }

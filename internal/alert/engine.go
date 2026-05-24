@@ -1,7 +1,9 @@
 package alert
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"math"
 	"sync"
 	"time"
@@ -10,7 +12,10 @@ import (
 	"github.com/stxkxs/mkt/internal/provider"
 )
 
-const defaultCooldown = 5 * time.Minute
+const (
+	defaultCooldown = 5 * time.Minute
+	notifyTimeout   = 5 * time.Second
+)
 
 // PriceSource provides historical prices for indicator evaluation.
 type PriceSource interface {
@@ -25,6 +30,7 @@ type Engine struct {
 	cooldown  time.Duration
 	onAlert   func(TriggeredAlert)
 	prices    PriceSource
+	notifiers []Notifier
 
 	// Track reference prices for pct conditions
 	refPrices map[string]float64 // symbol -> first seen price
@@ -48,6 +54,15 @@ func (e *Engine) SetPriceSource(ps PriceSource) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.prices = ps
+}
+
+// AddNotifier registers a destination that receives every triggered alert.
+// Notifiers are called in registration order with a per-call timeout; errors
+// are logged and never propagated.
+func (e *Engine) AddNotifier(n Notifier) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.notifiers = append(e.notifiers, n)
 }
 
 // SetRules replaces all rules.
@@ -91,18 +106,18 @@ func (e *Engine) ToggleRule(idx int) {
 	}
 }
 
-// Check evaluates all rules against a quote.
-// Holds the write lock because it mutates refPrices and cooldowns.
+// Check evaluates all rules against a quote. Triggered alerts are collected
+// under the lock and dispatched after release so slow notifiers cannot stall
+// other engine operations.
 func (e *Engine) Check(q provider.Quote) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 
-	// Track reference price
 	if _, ok := e.refPrices[q.Symbol]; !ok {
 		e.refPrices[q.Symbol] = q.Price
 	}
 
 	now := time.Now()
+	var triggered []TriggeredAlert
 	for i, r := range e.rules {
 		if !r.Enabled || r.Symbol != q.Symbol {
 			continue
@@ -113,33 +128,46 @@ func (e *Engine) Check(q provider.Quote) {
 			continue
 		}
 
-		var triggered bool
+		var fires bool
 		var msg string
 
 		if IsIndicatorCondition(r.Condition) {
 			if e.prices != nil {
 				prices := e.prices.Prices(q.Symbol)
-				triggered, msg = evaluateIndicator(r, prices)
+				fires, msg = evaluateIndicator(r, prices)
 			}
 		} else {
-			triggered, msg = evaluate(r, q.Price, e.refPrices[q.Symbol])
+			fires, msg = evaluate(r, q.Price, e.refPrices[q.Symbol])
 		}
 
-		if !triggered {
+		if !fires {
 			continue
 		}
 
-		a := TriggeredAlert{
+		e.cooldowns[key] = now.Add(e.cooldown)
+		triggered = append(triggered, TriggeredAlert{
 			Rule:      r,
 			Price:     q.Price,
 			Message:   msg,
 			Timestamp: now,
+		})
+	}
+
+	onAlert := e.onAlert
+	notifiers := make([]Notifier, len(e.notifiers))
+	copy(notifiers, e.notifiers)
+	e.mu.Unlock()
+
+	for _, a := range triggered {
+		if onAlert != nil {
+			onAlert(a)
 		}
-
-		e.cooldowns[key] = now.Add(e.cooldown)
-
-		if e.onAlert != nil {
-			e.onAlert(a)
+		for _, n := range notifiers {
+			ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+			if err := n.Notify(ctx, a); err != nil {
+				log.Printf("alert notifier %s: %v", n.Name(), err)
+			}
+			cancel()
 		}
 	}
 }
