@@ -390,6 +390,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.macro.UpdateDeFi(msg.Chains)
 		return a, nil
 
+	case FuturesUpdateMsg:
+		a.macro.UpdateFutures(msg.Snapshots)
+		return a, nil
+
 	case AlertTriggeredMsg:
 		a.alerts.AddTriggered(msg.Alert)
 		a.statusbar.SetAlertCount(a.alerts.TriggeredCount())

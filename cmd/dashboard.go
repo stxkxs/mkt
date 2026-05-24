@@ -15,6 +15,7 @@ import (
 	"github.com/stxkxs/mkt/internal/news"
 	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/provider/binance"
 	"github.com/stxkxs/mkt/internal/provider/coinbase"
 	"github.com/stxkxs/mkt/internal/provider/defillama"
 	"github.com/stxkxs/mkt/internal/provider/fred"
@@ -187,6 +188,28 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 				if len(quotes) > 0 {
 					p.Send(tui.MacroUpdateMsg{Quotes: quotes})
 				}
+			}
+		}
+	}()
+
+	// Crypto futures polling — Binance funding + OI for major perps.
+	go func() {
+		syms := []string{"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		fetch := func() {
+			snaps := binance.FetchFuturesSnapshot(ctx, syms)
+			if len(snaps) > 0 {
+				p.Send(tui.FuturesUpdateMsg{Snapshots: snaps})
+			}
+		}
+		fetch()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				fetch()
 			}
 		}
 	}()
