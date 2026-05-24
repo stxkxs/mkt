@@ -57,6 +57,34 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m.updateDrilldown(msg)
 		}
 		return m.updateOverview(msg)
+	case tea.MouseWheelMsg:
+		if m.sectorIdx >= 0 {
+			sect := m.sectors[m.sectorIdx]
+			cols := m.tileCols()
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				m.cursor -= cols
+				if m.cursor < 0 {
+					m.cursor = 0
+				}
+			case tea.MouseWheelDown:
+				m.cursor += cols
+				if m.cursor >= len(sect.Symbols) {
+					m.cursor = len(sect.Symbols) - 1
+				}
+			}
+			return m, nil
+		}
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case tea.MouseWheelDown:
+			if m.cursor < len(m.sectors)-1 {
+				m.cursor++
+			}
+		}
 	}
 	return m, nil
 }

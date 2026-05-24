@@ -77,8 +77,54 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				}
 			}
 		}
+	case tea.MouseWheelMsg:
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case tea.MouseWheelDown:
+			if m.cursor < len(m.headlines)-1 {
+				m.cursor++
+			}
+		}
+	case tea.MouseClickMsg:
+		if len(m.headlines) == 0 {
+			return m, nil
+		}
+		// Local header: section header + hint + blank = 3 rows. Each
+		// headline occupies 2 rows.
+		row := msg.Y - 3
+		if row < 0 {
+			return m, nil
+		}
+		start := newsViewportStart(m.cursor, len(m.headlines), m.height)
+		idx := start + row/2
+		if idx >= 0 && idx < len(m.headlines) {
+			m.cursor = idx
+		}
 	}
 	return m, nil
+}
+
+// newsViewportStart mirrors the offset calculation in View so the click
+// handler agrees with what's actually rendered.
+func newsViewportStart(cursor, total, height int) int {
+	maxItems := (height - 3) / 2
+	if maxItems < 1 {
+		maxItems = 1
+	}
+	if maxItems >= total {
+		return 0
+	}
+	start := cursor - maxItems + 1
+	if start < 0 {
+		start = 0
+	}
+	if start+maxItems > total {
+		start = total - maxItems
+	}
+	return start
 }
 
 // View renders the news feed.
