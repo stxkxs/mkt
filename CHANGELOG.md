@@ -4,6 +4,7 @@
 - `internal/provider/recording`: NDJSON record/replay for quote streams. `Recording` decorator wraps any `QuoteProvider` and tees observed quotes to a shared `Sink`; `Replay` provider reads the file back, with `ModeBurst` and `ModeRealtime` pacing. Opt-in via `MKT_RECORD=<path>` env var on the dashboard.
 - `portfolio.Transaction` and `portfolio.DeriveHoldings` / `Materialize`: optional transaction log on each portfolio in `config.yaml` (`transactions:` field) folds into derived holdings using weighted-average cost basis. Holdings-only configs continue to load unchanged.
 - Mouse support across all tabs: wheel scrolls the cursor in portfolio / alerts / news / heatmap; click sets the cursor in portfolio / alerts / news; wheel zooms in/out on the full-screen chart and comparison chart.
+- `indicator.VWAP` (anchored, typical-price weighted) and `indicator.OBV` (signed running volume), wired into the chart `i` menu as keys `6` and `7`. VWAP overlays the price axis; OBV renders in the sub-panel.
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.
