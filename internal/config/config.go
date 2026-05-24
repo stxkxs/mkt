@@ -92,20 +92,20 @@ type Config struct {
 	PushoverToken string      `mapstructure:"pushover_token,omitempty" yaml:"pushover_token,omitempty"`
 }
 
-// configDir returns the config directory path.
-func configDir() string {
+// ConfigDir returns the application's config / data directory path.
+func ConfigDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "mkt")
 }
 
 // configPath returns the config file path.
 func configPath() string {
-	return filepath.Join(configDir(), "config.yaml")
+	return filepath.Join(ConfigDir(), "config.yaml")
 }
 
 // Load reads the config file, creating defaults if it doesn't exist.
 func Load() (*Config, error) {
-	dir := configDir()
+	dir := ConfigDir()
 	// 0o700: holdings and alert rules are user-private; don't expose to other local users.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create config dir: %w", err)
