@@ -49,7 +49,9 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 
 	hub := market.NewHub(cache, coinbaseQP, yahooQP)
 
-	// Convert config portfolios
+	// Convert config portfolios. Materialize folds any optional
+	// transactions on top of the snapshot holdings; with no transactions
+	// the snapshot passes through unchanged.
 	var portfolios []portfolio.Portfolio
 	for _, cp := range cfg.Portfolios {
 		var holdings []portfolio.Holding
@@ -61,9 +63,21 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 				CostBasis: h.CostBasis,
 			})
 		}
+		var txs []portfolio.Transaction
+		for _, t := range cp.Transactions {
+			txs = append(txs, portfolio.Transaction{
+				Type:     portfolio.TxType(t.Type),
+				Symbol:   t.Symbol,
+				Quantity: t.Quantity,
+				Price:    t.Price,
+				Time:     config.ParseTime(t.Time),
+				Fee:      t.Fee,
+				Note:     t.Note,
+			})
+		}
 		portfolios = append(portfolios, portfolio.Portfolio{
 			Name:     cp.Name,
-			Holdings: holdings,
+			Holdings: portfolio.Materialize(holdings, txs),
 		})
 	}
 

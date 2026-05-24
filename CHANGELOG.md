@@ -2,6 +2,7 @@
 
 ### Added
 - `internal/provider/recording`: NDJSON record/replay for quote streams. `Recording` decorator wraps any `QuoteProvider` and tees observed quotes to a shared `Sink`; `Replay` provider reads the file back, with `ModeBurst` and `ModeRealtime` pacing. Opt-in via `MKT_RECORD=<path>` env var on the dashboard.
+- `portfolio.Transaction` and `portfolio.DeriveHoldings` / `Materialize`: optional transaction log on each portfolio in `config.yaml` (`transactions:` field) folds into derived holdings using weighted-average cost basis. Holdings-only configs continue to load unchanged.
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.
