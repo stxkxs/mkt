@@ -86,6 +86,76 @@ func TestDisabledRule(t *testing.T) {
 	}
 }
 
+// pricesStub satisfies PriceSource for indicator-condition tests.
+type pricesStub struct{ vals []float64 }
+
+func (p pricesStub) Prices(string) []float64 { return p.vals }
+
+func TestVolumeAboveFires(t *testing.T) {
+	var fired []TriggeredAlert
+	e := NewEngine(1*time.Second, func(a TriggeredAlert) {
+		fired = append(fired, a)
+	})
+	e.AddRule(Rule{Symbol: "BTC", Condition: CondVolumeAbove, Value: 1_000_000, Enabled: true})
+
+	e.Check(provider.Quote{Symbol: "BTC", Price: 50000, Volume: 500_000})
+	if len(fired) != 0 {
+		t.Fatalf("low volume should not fire, got %d", len(fired))
+	}
+
+	e.Check(provider.Quote{Symbol: "BTC", Price: 50000, Volume: 2_000_000})
+	if len(fired) != 1 {
+		t.Fatalf("high volume should fire, got %d", len(fired))
+	}
+}
+
+func TestStddevAboveFires(t *testing.T) {
+	var fired []TriggeredAlert
+	e := NewEngine(1*time.Second, func(a TriggeredAlert) {
+		fired = append(fired, a)
+	})
+	// Highly variable price series (stddev/mean ratio > 5%)
+	prices := []float64{100, 110, 90, 120, 80, 130, 70, 140, 60, 150, 50, 160, 40, 170, 30, 180, 20, 190, 10, 200}
+	e.SetPriceSource(pricesStub{vals: prices})
+	e.AddRule(Rule{
+		Symbol:    "BTC",
+		Condition: CondStddevAbove,
+		Value:     5, // 5% of mean
+		Period:    20,
+		Enabled:   true,
+	})
+
+	e.Check(provider.Quote{Symbol: "BTC", Price: 200})
+	if len(fired) != 1 {
+		t.Fatalf("high stddev should fire, got %d", len(fired))
+	}
+}
+
+func TestStddevAboveDoesNotFireOnFlat(t *testing.T) {
+	var fired []TriggeredAlert
+	e := NewEngine(1*time.Second, func(a TriggeredAlert) {
+		fired = append(fired, a)
+	})
+	// Flat price series — zero stddev
+	prices := make([]float64, 25)
+	for i := range prices {
+		prices[i] = 100
+	}
+	e.SetPriceSource(pricesStub{vals: prices})
+	e.AddRule(Rule{
+		Symbol:    "BTC",
+		Condition: CondStddevAbove,
+		Value:     1,
+		Period:    20,
+		Enabled:   true,
+	})
+
+	e.Check(provider.Quote{Symbol: "BTC", Price: 100})
+	if len(fired) != 0 {
+		t.Fatalf("flat series should not fire stddev, got %d", len(fired))
+	}
+}
+
 // recordingNotifier collects every alert it sees and optionally returns
 // a fixed error from Notify.
 type recordingNotifier struct {

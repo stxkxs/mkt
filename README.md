@@ -75,10 +75,12 @@ Set price alerts that fire desktop notifications:
 ```yaml
 alerts:
   - symbol: BTC-USD
-    condition: above    # above, below, pct_up, pct_down
+    condition: above    # above, below, pct_up, pct_down, volume_above, stddev_above
     value: 100000
     enabled: true
 ```
+
+`volume_above` triggers when the quote's reported volume exceeds the value. `stddev_above` triggers when the rolling standard deviation over `period` quotes exceeds `value` percent of the rolling mean — a volatility expansion proxy when full OHLC isn't available.
 
 Alerts have a 5-minute cooldown to prevent spam. Toggle and delete alerts from the TUI.
 

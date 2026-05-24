@@ -151,7 +151,7 @@ func (e *Engine) Check(q provider.Quote) {
 				fires, msg = evaluateIndicator(r, prices)
 			}
 		} else {
-			fires, msg = evaluate(r, q.Price, e.refPrices[q.Symbol])
+			fires, msg = evaluate(r, q, e.refPrices[q.Symbol])
 		}
 
 		if !fires {
@@ -187,7 +187,8 @@ func (e *Engine) Check(q provider.Quote) {
 	}
 }
 
-func evaluate(r Rule, price, refPrice float64) (bool, string) {
+func evaluate(r Rule, q provider.Quote, refPrice float64) (bool, string) {
+	price := q.Price
 	switch r.Condition {
 	case CondAbove:
 		if price >= r.Value {
@@ -210,6 +211,10 @@ func evaluate(r Rule, price, refPrice float64) (bool, string) {
 			if pct >= r.Value {
 				return true, fmt.Sprintf("%s down %.1f%% (from %.4f to %.4f)", r.Symbol, pct, refPrice, price)
 			}
+		}
+	case CondVolumeAbove:
+		if q.Volume > r.Value {
+			return true, fmt.Sprintf("%s volume %.0f exceeds %.0f", r.Symbol, q.Volume, r.Value)
 		}
 	}
 	return false, ""
@@ -283,6 +288,33 @@ func evaluateIndicator(r Rule, prices []float64) (bool, string) {
 		if prevDiff >= 0 && currDiff < 0 {
 			return true, fmt.Sprintf("%s MACD bearish crossover (MACD=%.4f, Signal=%.4f)", r.Symbol, macdResult.MACD[n-1], macdResult.Signal[n-1])
 		}
+
+	case CondStddevAbove:
+		period := r.Period
+		if period <= 1 {
+			period = 20
+		}
+		if len(prices) < period {
+			return false, ""
+		}
+		window := prices[len(prices)-period:]
+		var sum float64
+		for _, v := range window {
+			sum += v
+		}
+		mean := sum / float64(period)
+		if mean == 0 {
+			return false, ""
+		}
+		stddevs := indicator.Stddev(prices, period)
+		sd := stddevs[len(stddevs)-1]
+		if math.IsNaN(sd) {
+			return false, ""
+		}
+		pct := 100 * sd / mean
+		if pct >= r.Value {
+			return true, fmt.Sprintf("%s stddev %.2f%% of mean exceeds %.2f%% (period %d)", r.Symbol, pct, r.Value, period)
+		}
 	}
 
 	return false, ""
@@ -317,7 +349,7 @@ func (e *Engine) evaluateCompound(r Rule, key string, q provider.Quote) (bool, s
 		if IsIndicatorCondition(s.Type) {
 			return evaluateIndicator(tmp, prices)
 		}
-		return evaluate(tmp, q.Price, e.refPrices[q.Symbol])
+		return evaluate(tmp, q, e.refPrices[q.Symbol])
 	}
 
 	switch match {

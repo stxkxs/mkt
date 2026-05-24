@@ -15,6 +15,8 @@ const (
 	CondSMACrossAbove Condition = "sma_cross_above"
 	CondSMACrossBelow Condition = "sma_cross_below"
 	CondMACDCross     Condition = "macd_cross"
+	CondVolumeAbove   Condition = "volume_above"
+	CondStddevAbove   Condition = "stddev_above"
 )
 
 // AllConditions returns all available alert conditions.
@@ -24,13 +26,14 @@ func AllConditions() []Condition {
 		CondRSIAbove, CondRSIBelow,
 		CondSMACrossAbove, CondSMACrossBelow,
 		CondMACDCross,
+		CondVolumeAbove, CondStddevAbove,
 	}
 }
 
 // IsIndicatorCondition returns true if the condition requires price history.
 func IsIndicatorCondition(c Condition) bool {
 	switch c {
-	case CondRSIAbove, CondRSIBelow, CondSMACrossAbove, CondSMACrossBelow, CondMACDCross:
+	case CondRSIAbove, CondRSIBelow, CondSMACrossAbove, CondSMACrossBelow, CondMACDCross, CondStddevAbove:
 		return true
 	}
 	return false
