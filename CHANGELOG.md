@@ -8,6 +8,7 @@
 - `indicator.ATR` (Wilder-smoothed True Range) and `indicator.Stochastic` (%K and %D), wired into the chart `i` menu as keys `8` and `9`. Both render in the sub-panel; Stoch shows 20/80 reference lines.
 - `indicator.ADX` (trend strength with +DI/-DI) and `indicator.PivotsClassic` (floor-trader pivot levels). Toggled via the chart `i` menu with letter keys `a` (ADX sub-panel, ref at 25) and `p` (pivot lines overlaid on the main chart).
 - `indicator.VolumeProfile` and `indicator.POC`. Toggled via the chart `i` menu with key `v` — draws a horizontal volume histogram in a right-side gutter with the point-of-control row highlighted; the candle area narrows to make room.
+- `indicator.Patterns` detects Doji, Hammer, Shooting Star, Bullish Engulfing, and Bearish Engulfing. Toggled via the chart `i` menu with key `k` — marker glyphs appear on the candlestick chart (▲ green for bullish, ▼ red for bearish, ◇ accent for doji); summary line shows the latest detected pattern.
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.
