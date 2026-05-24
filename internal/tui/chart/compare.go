@@ -169,6 +169,18 @@ func (m CompareModel) Update(msg tea.Msg) (CompareModel, tea.Cmd) {
 				return m, m.fetchAll()
 			}
 		}
+
+	case tea.MouseWheelMsg:
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			if m.zoom > 10 {
+				m.zoom -= 10
+			}
+		case tea.MouseWheelDown:
+			if m.zoom < 200 {
+				m.zoom += 10
+			}
+		}
 	}
 	return m, nil
 }

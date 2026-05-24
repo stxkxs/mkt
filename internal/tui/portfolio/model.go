@@ -86,8 +86,51 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.cursor = 0
 			}
 		}
+	case tea.MouseWheelMsg:
+		holdings := m.activePortfolio().Holdings
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case tea.MouseWheelDown:
+			if m.cursor < len(holdings)-1 {
+				m.cursor++
+			}
+		}
+	case tea.MouseClickMsg:
+		holdings := m.activePortfolio().Holdings
+		if len(holdings) == 0 {
+			return m, nil
+		}
+		row := msg.Y - 3 // local header: portfolio name + column header + separator
+		if row < 0 {
+			return m, nil
+		}
+		start := portfolioViewportStart(m.cursor, len(holdings), m.height)
+		idx := start + row
+		if idx >= 0 && idx < len(holdings) {
+			m.cursor = idx
+		}
 	}
 	return m, nil
+}
+
+// portfolioViewportStart returns the first visible holding index.
+// Mirrors the offset calculation in View so click handling stays consistent.
+func portfolioViewportStart(cursor, total, height int) int {
+	maxRows := height - 6
+	if maxRows < 1 || maxRows >= total {
+		return 0
+	}
+	start := cursor - maxRows + 1
+	if start < 0 {
+		start = 0
+	}
+	if start+maxRows > total {
+		start = total - maxRows
+	}
+	return start
 }
 
 // View renders the portfolio.

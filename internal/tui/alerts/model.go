@@ -86,6 +86,28 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				}
 			}
 		}
+	case tea.MouseWheelMsg:
+		rules := m.engine.Rules()
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case tea.MouseWheelDown:
+			if m.cursor < len(rules)-1 {
+				m.cursor++
+			}
+		}
+	case tea.MouseClickMsg:
+		rules := m.engine.Rules()
+		if len(rules) == 0 {
+			return m, nil
+		}
+		// Local header: section header + column header + separator = 3 rows.
+		row := msg.Y - 3
+		if row >= 0 && row < len(rules) {
+			m.cursor = row
+		}
 	}
 	return m, nil
 }

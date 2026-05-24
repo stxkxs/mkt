@@ -213,6 +213,19 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case "i":
 			m.indicatorMenu = true
 		}
+
+	case tea.MouseWheelMsg:
+		// Wheel up = zoom in (fewer candles); wheel down = zoom out (more).
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			if m.zoom > 10 {
+				m.zoom -= 10
+			}
+		case tea.MouseWheelDown:
+			if m.zoom < 200 {
+				m.zoom += 10
+			}
+		}
 	}
 	return m, nil
 }

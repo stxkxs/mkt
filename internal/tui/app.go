@@ -281,34 +281,83 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseClickMsg:
 		if msg.Y == 0 {
-			// Tab bar click
 			tab := a.tabAtX(msg.X)
 			if tab >= 0 {
 				a.activeTab = tab
 			}
 			return a, nil
 		}
-		// Forward to active content with adjusted Y
-		if a.activeTab == TabWatchlist {
-			adjusted := tea.MouseClickMsg{
-				X:      msg.X,
-				Y:      msg.Y - 1, // subtract tab bar height
-				Button: msg.Button,
-			}
+		// Full-screen overlays take mouse focus before tab routing.
+		if a.chart.Active() {
 			var cmd tea.Cmd
-			a.watchlist, cmd = a.watchlist.Update(adjusted)
+			a.chart, cmd = a.chart.Update(msg)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+			return a, tea.Batch(cmds...)
+		}
+		if a.compare.Active() {
+			var cmd tea.Cmd
+			a.compare, cmd = a.compare.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return a, tea.Batch(cmds...)
+		}
+		adjusted := tea.MouseClickMsg{
+			X:      msg.X,
+			Y:      msg.Y - 1, // subtract tab bar height
+			Button: msg.Button,
+		}
+		var cmd tea.Cmd
+		switch a.activeTab {
+		case TabWatchlist:
+			a.watchlist, cmd = a.watchlist.Update(adjusted)
+		case TabPortfolio:
+			a.portfolio, cmd = a.portfolio.Update(adjusted)
+		case TabAlerts:
+			a.alerts, cmd = a.alerts.Update(adjusted)
+		case TabNews:
+			a.news, cmd = a.news.Update(adjusted)
+		case TabHeatmap:
+			a.heatmap, cmd = a.heatmap.Update(adjusted)
+		}
+		if cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 
 	case tea.MouseWheelMsg:
-		if a.activeTab == TabWatchlist {
+		if a.chart.Active() {
 			var cmd tea.Cmd
-			a.watchlist, cmd = a.watchlist.Update(msg)
+			a.chart, cmd = a.chart.Update(msg)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+			return a, tea.Batch(cmds...)
+		}
+		if a.compare.Active() {
+			var cmd tea.Cmd
+			a.compare, cmd = a.compare.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return a, tea.Batch(cmds...)
+		}
+		var cmd tea.Cmd
+		switch a.activeTab {
+		case TabWatchlist:
+			a.watchlist, cmd = a.watchlist.Update(msg)
+		case TabPortfolio:
+			a.portfolio, cmd = a.portfolio.Update(msg)
+		case TabAlerts:
+			a.alerts, cmd = a.alerts.Update(msg)
+		case TabNews:
+			a.news, cmd = a.news.Update(msg)
+		case TabHeatmap:
+			a.heatmap, cmd = a.heatmap.Update(msg)
+		}
+		if cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 
 	case QuoteUpdateMsg:
