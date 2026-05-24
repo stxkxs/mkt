@@ -18,6 +18,7 @@ import (
 	heatmapview "github.com/stxkxs/mkt/internal/tui/heatmap"
 	macroview "github.com/stxkxs/mkt/internal/tui/macro"
 	newsview "github.com/stxkxs/mkt/internal/tui/news"
+	optionsview "github.com/stxkxs/mkt/internal/tui/options"
 	portfolioview "github.com/stxkxs/mkt/internal/tui/portfolio"
 	"github.com/stxkxs/mkt/internal/tui/statusbar"
 	"github.com/stxkxs/mkt/internal/tui/symbolinfo"
@@ -42,6 +43,7 @@ type App struct {
 	macro       macroview.Model
 	news        newsview.Model
 	heatmap     heatmapview.Model
+	options     optionsview.Model
 	statusbar   statusbar.Model
 	alertDialog alertdialog.Model
 	symbolInfo  symbolinfo.Model
@@ -61,6 +63,7 @@ func NewApp(symbols []string, cache *market.Cache, histProvider chart.HistoryPro
 		macro:       macroview.New(),
 		news:        newsview.New(),
 		heatmap:     heatmapview.New(),
+		options:     optionsview.New(yahooProv),
 		statusbar:   statusbar.New(),
 		alertDialog: alertdialog.New(alertEngine),
 		symbolInfo:  symbolinfo.New(yahooProv),
@@ -249,6 +252,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return a, cmd
 				}
 				return a, nil
+			case "O":
+				sym := a.watchlist.SelectedSymbol()
+				if sym != "" {
+					a.activeTab = TabOptions
+					cmd := a.options.LoadSymbol(sym)
+					return a, cmd
+				}
+				return a, nil
 			}
 			var cmd tea.Cmd
 			a.watchlist, cmd = a.watchlist.Update(msg)
@@ -290,6 +301,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case TabHeatmap:
 			var cmd tea.Cmd
 			a.heatmap, cmd = a.heatmap.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+
+		case TabOptions:
+			var cmd tea.Cmd
+			a.options, cmd = a.options.Update(msg)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
@@ -337,6 +355,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.news, cmd = a.news.Update(adjusted)
 		case TabHeatmap:
 			a.heatmap, cmd = a.heatmap.Update(adjusted)
+		case TabOptions:
+			a.options, cmd = a.options.Update(adjusted)
 		}
 		if cmd != nil {
 			cmds = append(cmds, cmd)
@@ -371,6 +391,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.news, cmd = a.news.Update(msg)
 		case TabHeatmap:
 			a.heatmap, cmd = a.heatmap.Update(msg)
+		case TabOptions:
+			a.options, cmd = a.options.Update(msg)
 		}
 		if cmd != nil {
 			cmds = append(cmds, cmd)
@@ -436,6 +458,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.alertDialog, cmd = a.alertDialog.Update(msg)
 		cmds = append(cmds, cmd)
 		a.symbolInfo, cmd = a.symbolInfo.Update(msg)
+		cmds = append(cmds, cmd)
+		a.options, cmd = a.options.Update(msg)
 		cmds = append(cmds, cmd)
 		return a, tea.Batch(cmds...)
 
@@ -530,6 +554,9 @@ func (a *App) View() tea.View {
 	case TabHeatmap:
 		a.heatmap.SetSize(contentW, contentH)
 		content = a.heatmap.View()
+	case TabOptions:
+		a.options.SetSize(contentW, contentH)
+		content = a.options.View()
 	}
 
 	panel := a.renderContentPanel(tabNames[a.activeTab], content, contentH)

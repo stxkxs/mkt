@@ -54,12 +54,13 @@ Import supports two CSV formats (auto-detected from the header):
 
 | Key | Action |
 |-----|--------|
-| `1`–`7` | Jump to tab (Watch, Portfolio, Alerts, Chart, Macro, News, Heatmap) |
+| `1`–`8` | Jump to tab (Watch, Portfolio, Alerts, Chart, Macro, News, Heatmap, Options) |
 | `tab` / `shift+tab` | Cycle tabs |
 | `j` / `k` | Navigate rows |
 | `enter` | Detail panel (watchlist) / open link (news) / drill down (heatmap) |
 | `c` | Full-screen chart for selected symbol |
 | `i` | Toggle indicator menu on chart (1-9, a, p, v, k to toggle SMA/EMA/Bollinger/RSI/MACD/VWAP/OBV/ATR/Stoch/ADX/Pivots/VolProfile/Patterns) |
+| `O` | Load options chain for selected symbol (switches to Options tab) |
 | `a` | Add selected symbol to comparison set |
 | `C` | Open multi-symbol comparison chart |
 | `[` / `]` | Change chart interval (1m → 1w) / switch portfolio |
