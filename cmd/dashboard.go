@@ -16,6 +16,7 @@ import (
 	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider"
 	"github.com/stxkxs/mkt/internal/provider/coinbase"
+	"github.com/stxkxs/mkt/internal/provider/fred"
 	"github.com/stxkxs/mkt/internal/provider/recording"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
 	"github.com/stxkxs/mkt/internal/tui"
@@ -140,8 +141,10 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	// Set price source for indicator-based alerts
 	alertEngine.SetPriceSource(cache)
 
-	// Route history requests: Coinbase for crypto, Yahoo for stocks
-	histProvider := market.NewMultiHistoryProvider(coinbaseProv, yahooProv)
+	// Route history requests: fred first (its FRED: prefix is unique), then
+	// Coinbase for crypto, then Yahoo for everything else.
+	fredProv := fred.New()
+	histProvider := market.NewMultiHistoryProvider(fredProv, coinbaseProv, yahooProv)
 	app := tui.NewApp(symbols, cache, histProvider, portfolios, alertEngine, yahooProv)
 	if len(pastTriggers) > 0 {
 		app.LoadPastAlerts(pastTriggers)
