@@ -16,6 +16,7 @@ import (
 	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider"
 	"github.com/stxkxs/mkt/internal/provider/binance"
+	"github.com/stxkxs/mkt/internal/provider/calendar"
 	"github.com/stxkxs/mkt/internal/provider/coinbase"
 	"github.com/stxkxs/mkt/internal/provider/defillama"
 	"github.com/stxkxs/mkt/internal/provider/fred"
@@ -163,6 +164,9 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	if len(pastEquity) > 0 {
 		app.LoadEquityHistory(pastEquity)
 	}
+
+	// Upcoming economic events for the macro tab.
+	app.LoadCalendarEvents(calendar.Upcoming(calendar.EconomicEvents(), time.Now().UTC(), 30*24*time.Hour))
 
 	p = tea.NewProgram(app)
 

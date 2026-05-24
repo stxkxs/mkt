@@ -29,6 +29,7 @@
 - Options chain tab (`8`): `yahoo.FetchOptionsChain` pulls the nearest expiration's calls and puts; new `internal/tui/options` package renders them strike-aligned with a max-pain header. Press `O` on the Watchlist tab to load options for the selected symbol.
 - Coinbase order-book depth: new `coinbase.FetchOrderBook` and `OrderBookDepth` helpers. The detail panel renders the top-5 bids/asks for crypto symbols when opened (REST snapshot per open; WebSocket live updates are a follow-up).
 - Correlation matrix tab (`9`): pairwise Pearson correlation between watchlist symbols using each symbol's recent cached prices. New `portfolio.Correlation` and `CorrelationMatrix` helpers; colored grid render (green positive, red negative).
+- Macro tab "Upcoming Economic Events (30d)" section: lists the next month of FOMC / CPI / NFP / GDP releases from `calendar.EconomicEvents()` with relative `in Xd / Xh` countdowns.
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.

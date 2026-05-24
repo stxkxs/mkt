@@ -9,6 +9,7 @@ import (
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/portfolio"
+	"github.com/stxkxs/mkt/internal/provider/calendar"
 	"github.com/stxkxs/mkt/internal/provider/coinbase"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
 	"github.com/stxkxs/mkt/internal/tui/alertdialog"
@@ -91,6 +92,11 @@ func (a *App) LoadPastAlerts(past []alert.TriggeredAlert) {
 // equity marks. Should be called before Run.
 func (a *App) LoadEquityHistory(byName map[string][]portfolio.EquityMark) {
 	a.portfolio.LoadEquityHistory(byName)
+}
+
+// LoadCalendarEvents seeds the macro tab with upcoming economic events.
+func (a *App) LoadCalendarEvents(events []calendar.Event) {
+	a.macro.UpdateEvents(events)
 }
 
 func (a *App) Init() tea.Cmd {
