@@ -33,6 +33,7 @@
 - Multiple named watchlists: `watchlists: [{name: ..., symbols: [...]}]` in config. Watchlist tab shows the active group name + `[/]: switch (i/n)` and cycles with `[` / `]`. The legacy top-level `watchlist:` field is still honored and appears as "Default". The hub subscribes to the deduplicated union so all groups stay live.
 - Per-symbol notes: `notes:` map in `config.yaml` (`SYMBOL: "free text"`) renders below the sparkline in the detail panel for that symbol. Read-only for now — edit in YAML.
 - Command palette: press `:` to open a tiny prompt at the bottom. Type a tab-name prefix (`watch`, `portfolio`, etc.) to jump, `theme <name>` to switch theme, or `q`/`quit` to exit. `esc` cancels.
+- `mkt daemon` subcommand: runs the hub + alert engine + every configured notifier (desktop, webhook, ntfy, Pushover, history) headlessly. Stops on SIGTERM / SIGINT. Useful for an always-on machine that keeps firing alerts even when the TUI isn't open.
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.
