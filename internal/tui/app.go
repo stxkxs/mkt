@@ -22,6 +22,7 @@ import (
 	macroview "github.com/stxkxs/mkt/internal/tui/macro"
 	newsview "github.com/stxkxs/mkt/internal/tui/news"
 	optionsview "github.com/stxkxs/mkt/internal/tui/options"
+	paletteview "github.com/stxkxs/mkt/internal/tui/palette"
 	portfolioview "github.com/stxkxs/mkt/internal/tui/portfolio"
 	"github.com/stxkxs/mkt/internal/tui/statusbar"
 	"github.com/stxkxs/mkt/internal/tui/symbolinfo"
@@ -48,6 +49,7 @@ type App struct {
 	heatmap     heatmapview.Model
 	options     optionsview.Model
 	correl      correlview.Model
+	palette     paletteview.Model
 	statusbar   statusbar.Model
 	alertDialog alertdialog.Model
 	symbolInfo  symbolinfo.Model
@@ -70,6 +72,7 @@ func NewApp(groups []watchlist.Group, cache *market.Cache, histProvider chart.Hi
 		heatmap:     heatmapview.New(),
 		options:     optionsview.New(yahooProv),
 		correl:      correlview.New(union, cache),
+		palette:     paletteview.New(tabNames),
 		statusbar:   statusbar.New(),
 		alertDialog: alertdialog.New(alertEngine),
 		symbolInfo:  symbolinfo.New(yahooProv),
@@ -152,6 +155,28 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 
 	case tea.KeyPressMsg:
+		// Palette guard: consume all keys while open.
+		if a.palette.Active() {
+			var res paletteview.Result
+			a.palette, res = a.palette.Update(msg)
+			switch res.Action {
+			case paletteview.ActionJumpTab:
+				for i, n := range tabNames {
+					if n == res.Arg {
+						a.activeTab = Tab(i)
+						break
+					}
+				}
+			case paletteview.ActionSetTheme:
+				theme.Apply(res.Arg)
+				a.statusbar.SetThemeName(theme.CurrentName)
+				return a, func() tea.Msg { return theme.ChangedMsg{Name: theme.CurrentName} }
+			case paletteview.ActionQuit:
+				return a, tea.Quit
+			}
+			return a, nil
+		}
+
 		// Search mode guard: route all keys to watchlist while searching
 		if a.activeTab == TabWatchlist && a.watchlist.Searching() {
 			var cmd tea.Cmd
@@ -161,6 +186,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.statusbar.SetSearchQuery(a.watchlist.SearchQuery())
 			return a, tea.Batch(cmds...)
+		}
+
+		// Open palette
+		if msg.String() == ":" {
+			a.palette.Open()
+			return a, nil
 		}
 
 		// Alert dialog guard
@@ -606,10 +637,14 @@ func (a *App) View() tea.View {
 
 	panel := a.renderContentPanel(tabNames[a.activeTab], content, contentH)
 
+	bottom := statusBar
+	if a.palette.Active() {
+		bottom = a.palette.View(a.width) + "\n" + statusBar
+	}
 	s := lipgloss.JoinVertical(lipgloss.Left,
 		tabBar,
 		panel,
-		statusBar,
+		bottom,
 	)
 
 	// Overlay: alert dialog
