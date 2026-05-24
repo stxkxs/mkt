@@ -54,7 +54,7 @@ Import supports two CSV formats (auto-detected from the header):
 
 | Key | Action |
 |-----|--------|
-| `1`–`8` | Jump to tab (Watch, Portfolio, Alerts, Chart, Macro, News, Heatmap, Options) |
+| `1`–`9` | Jump to tab (Watch, Portfolio, Alerts, Chart, Macro, News, Heatmap, Options, Correl) |
 | `tab` / `shift+tab` | Cycle tabs |
 | `j` / `k` | Navigate rows |
 | `enter` | Detail panel (watchlist) / open link (news) / drill down (heatmap) |
