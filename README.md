@@ -38,8 +38,16 @@ mkt config show                 # view configuration
 mkt config add TSLA LINK-USD    # add symbols to watchlist
 mkt config remove DOGE-USD      # remove a symbol
 mkt config set poll_interval 30s
+mkt portfolio import --portfolio Tech schwab-export.csv   # import broker CSV
 mkt version
 ```
+
+Import supports two CSV formats (auto-detected from the header):
+
+- **generic** — `date,type,symbol,quantity,price,fee,note` where `type` is `buy|sell|dividend`
+- **schwab** — Charles Schwab transaction export (Buy / Sell / Reinvest Dividend)
+
+`--dry-run` parses and prints a summary without modifying the config; `--format` overrides auto-detect.
 
 ### TUI Keybindings
 
