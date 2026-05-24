@@ -386,6 +386,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.news.UpdateHeadlines(msg.Headlines)
 		return a, nil
 
+	case DeFiUpdateMsg:
+		a.macro.UpdateDeFi(msg.Chains)
+		return a, nil
+
 	case AlertTriggeredMsg:
 		a.alerts.AddTriggered(msg.Alert)
 		a.statusbar.SetAlertCount(a.alerts.TriggeredCount())

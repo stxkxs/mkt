@@ -16,6 +16,7 @@ import (
 	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider"
 	"github.com/stxkxs/mkt/internal/provider/coinbase"
+	"github.com/stxkxs/mkt/internal/provider/defillama"
 	"github.com/stxkxs/mkt/internal/provider/fred"
 	"github.com/stxkxs/mkt/internal/provider/recording"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
@@ -186,6 +187,30 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 				if len(quotes) > 0 {
 					p.Send(tui.MacroUpdateMsg{Quotes: quotes})
 				}
+			}
+		}
+	}()
+
+	// DeFi TVL polling — DeFiLlama public API.
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		fetch := func() {
+			chains, err := defillama.FetchChains(ctx)
+			if err != nil {
+				return
+			}
+			if len(chains) > 0 {
+				p.Send(tui.DeFiUpdateMsg{Chains: chains})
+			}
+		}
+		fetch()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				fetch()
 			}
 		}
 	}()
