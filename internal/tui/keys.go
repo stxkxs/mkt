@@ -13,9 +13,10 @@ const (
 	TabMacro
 	TabNews
 	TabHeatmap
+	TabOptions
 )
 
-var tabNames = []string{"Watch", "Portfolio", "Alerts", "Chart", "Macro", "News", "Heatmap"}
+var tabNames = []string{"Watch", "Portfolio", "Alerts", "Chart", "Macro", "News", "Heatmap", "Options"}
 
 func (t Tab) String() string {
 	if int(t) < len(tabNames) {
@@ -46,6 +47,8 @@ func isTabSwitch(msg tea.KeyPressMsg) Tab {
 		return TabNews
 	case "7":
 		return TabHeatmap
+	case "8":
+		return TabOptions
 	default:
 		return -1
 	}
