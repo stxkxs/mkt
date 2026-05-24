@@ -23,6 +23,7 @@
 - Tax-lot accounting: `portfolio.RealizedByMethod(txs, method)` with `TaxMethod` of `TaxFIFO`, `TaxLIFO`, `TaxHIFO`, or `TaxAverage` (empty default, matches existing weighted-average behavior). Per-portfolio `tax_method` YAML key; portfolio tab labels the realized line with the method name when non-default.
 - Dividend tracking: new `dividend` transaction type. `portfolio.Dividends(txs)` and `DividendsYTD(txs, now)`. Dividends are excluded from realized P&L and from `DeriveHoldings`. Portfolio tab shows a "Dividends: $X (YTD: $Y)" line below Realized when any dividend transactions exist.
 - `mkt portfolio import --portfolio <name> [--format auto|generic|schwab] [--dry-run] <file>`: reads a broker CSV export and appends transactions to a named portfolio (creating it if absent). New `internal/importer` package with a `Format` interface, `Generic` and `Schwab` implementations, and header-based auto-detect.
+- `portfolio.Sharpe`, `Sortino`, `Beta`, `MaxDrawdown`: pure-math risk metrics. UI surface deferred to P6 (equity curve) where the inputs naturally live.
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.
