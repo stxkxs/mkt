@@ -97,13 +97,23 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		if len(r.Webhooks) > 0 {
 			anyWebhook = true
 		}
+		var subs []alert.SubCondition
+		for _, s := range r.Conditions {
+			subs = append(subs, alert.SubCondition{
+				Type:   alert.Condition(s.Condition),
+				Value:  s.Value,
+				Period: s.Period,
+			})
+		}
 		rules = append(rules, alert.Rule{
-			Symbol:    r.Symbol,
-			Condition: alert.Condition(r.Condition),
-			Value:     r.Value,
-			Period:    r.Period,
-			Enabled:   r.Enabled,
-			Webhooks:  r.Webhooks,
+			Symbol:     r.Symbol,
+			Condition:  alert.Condition(r.Condition),
+			Value:      r.Value,
+			Period:     r.Period,
+			Enabled:    r.Enabled,
+			Webhooks:   r.Webhooks,
+			Conditions: subs,
+			Match:      r.Match,
 		})
 	}
 	alertEngine.SetRules(rules)

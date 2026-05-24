@@ -82,6 +82,29 @@ alerts:
 
 Alerts have a 5-minute cooldown to prevent spam. Toggle and delete alerts from the TUI.
 
+Compound rules combine multiple conditions with `match: all`, `match: any`, or `match: sequence` (in declared order):
+
+```yaml
+alerts:
+  - symbol: BTC-USD
+    enabled: true
+    match: all                       # every sub-condition must fire
+    conditions:
+      - condition: above
+        value: 100000
+      - condition: rsi_above
+        value: 70
+
+  - symbol: ETH-USD
+    enabled: true
+    match: sequence                  # first crossed up, then dropped
+    conditions:
+      - condition: above
+        value: 3500
+      - condition: below
+        value: 3300
+```
+
 Alerts can also POST a JSON payload to a webhook on every trigger — useful for Slack/Discord/IFTTT or any custom receiver. Set a default URL at the top level and/or override per rule:
 
 ```yaml

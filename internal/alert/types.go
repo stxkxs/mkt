@@ -36,15 +36,36 @@ func IsIndicatorCondition(c Condition) bool {
 	return false
 }
 
-// Rule is a single alert configuration.
-type Rule struct {
-	Symbol    string
-	Condition Condition
-	Value     float64
-	Period    int // indicator period (default 14 for RSI, 20 for SMA)
-	Enabled   bool
-	Webhooks  []string // per-rule webhook URLs; overrides any global default
+// Match identifies how a compound rule combines its sub-conditions.
+const (
+	MatchAll      = "all"
+	MatchAny      = "any"
+	MatchSequence = "sequence"
+)
+
+// SubCondition is one leaf inside a compound rule.
+type SubCondition struct {
+	Type   Condition
+	Value  float64
+	Period int // indicator period (default 14 for RSI, 20 for SMA)
 }
+
+// Rule is a single alert configuration. When Conditions is non-empty
+// the legacy Condition / Value / Period fields are ignored and the rule
+// is evaluated as a compound according to Match.
+type Rule struct {
+	Symbol     string
+	Condition  Condition // legacy single-condition fields
+	Value      float64
+	Period     int
+	Enabled    bool
+	Webhooks   []string       // per-rule webhook URLs; overrides any global default
+	Conditions []SubCondition // optional; when set, evaluated as a compound
+	Match      string         // "all" | "any" | "sequence"; default "all" when Conditions is set
+}
+
+// IsCompound reports whether the rule should be evaluated as a compound.
+func (r Rule) IsCompound() bool { return len(r.Conditions) > 0 }
 
 // TriggeredAlert is emitted when a rule fires.
 type TriggeredAlert struct {

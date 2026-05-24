@@ -34,6 +34,15 @@ type Engine struct {
 
 	// Track reference prices for pct conditions
 	refPrices map[string]float64 // symbol -> first seen price
+
+	// Per-rule progress for compound rules
+	compoundState map[string]*compoundProgress
+}
+
+// compoundProgress tracks evaluation state for a single compound rule.
+type compoundProgress struct {
+	fired   []bool // for "all" mode — which sub-conditions have fired
+	nextIdx int    // for "sequence" mode — next-expected sub index
 }
 
 // NewEngine creates an alert engine.
@@ -42,10 +51,11 @@ func NewEngine(cooldown time.Duration, onAlert func(TriggeredAlert)) *Engine {
 		cooldown = defaultCooldown
 	}
 	return &Engine{
-		cooldowns: make(map[string]time.Time),
-		cooldown:  cooldown,
-		onAlert:   onAlert,
-		refPrices: make(map[string]float64),
+		cooldowns:     make(map[string]time.Time),
+		cooldown:      cooldown,
+		onAlert:       onAlert,
+		refPrices:     make(map[string]float64),
+		compoundState: make(map[string]*compoundProgress),
 	}
 }
 
@@ -65,11 +75,13 @@ func (e *Engine) AddNotifier(n Notifier) {
 	e.notifiers = append(e.notifiers, n)
 }
 
-// SetRules replaces all rules.
+// SetRules replaces all rules. Any compound-rule progress is cleared
+// because rule indices (and therefore keys) may have changed.
 func (e *Engine) SetRules(rules []Rule) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.rules = rules
+	e.compoundState = make(map[string]*compoundProgress)
 }
 
 // Rules returns a copy of current rules.
@@ -131,7 +143,9 @@ func (e *Engine) Check(q provider.Quote) {
 		var fires bool
 		var msg string
 
-		if IsIndicatorCondition(r.Condition) {
+		if r.IsCompound() {
+			fires, msg = e.evaluateCompound(r, key, q)
+		} else if IsIndicatorCondition(r.Condition) {
 			if e.prices != nil {
 				prices := e.prices.Prices(q.Symbol)
 				fires, msg = evaluateIndicator(r, prices)
@@ -145,6 +159,7 @@ func (e *Engine) Check(q provider.Quote) {
 		}
 
 		e.cooldowns[key] = now.Add(e.cooldown)
+		delete(e.compoundState, key) // reset compound progress on fire
 		triggered = append(triggered, TriggeredAlert{
 			Rule:      r,
 			Price:     q.Price,
@@ -275,4 +290,73 @@ func evaluateIndicator(r Rule, prices []float64) (bool, string) {
 
 func ruleKey(r Rule, idx int) string {
 	return fmt.Sprintf("%d:%s:%s:%.8f", idx, r.Symbol, r.Condition, r.Value)
+}
+
+// evaluateCompound evaluates a compound rule against the latest quote.
+// Caller holds the engine lock. May mutate compoundState.
+func (e *Engine) evaluateCompound(r Rule, key string, q provider.Quote) (bool, string) {
+	if len(r.Conditions) == 0 {
+		return false, ""
+	}
+	prog, ok := e.compoundState[key]
+	if !ok {
+		prog = &compoundProgress{fired: make([]bool, len(r.Conditions))}
+		e.compoundState[key] = prog
+	}
+
+	match := r.Match
+	if match == "" {
+		match = MatchAll
+	}
+	var prices []float64
+	if e.prices != nil {
+		prices = e.prices.Prices(q.Symbol)
+	}
+	evalSub := func(s SubCondition) (bool, string) {
+		tmp := Rule{Symbol: r.Symbol, Condition: s.Type, Value: s.Value, Period: s.Period}
+		if IsIndicatorCondition(s.Type) {
+			return evaluateIndicator(tmp, prices)
+		}
+		return evaluate(tmp, q.Price, e.refPrices[q.Symbol])
+	}
+
+	switch match {
+	case MatchAny:
+		for _, sub := range r.Conditions {
+			if fires, msg := evalSub(sub); fires {
+				return true, "any: " + msg
+			}
+		}
+		return false, ""
+
+	case MatchSequence:
+		if prog.nextIdx >= len(r.Conditions) {
+			// Should have fired and reset; defensive.
+			return true, "sequence complete"
+		}
+		sub := r.Conditions[prog.nextIdx]
+		if fires, _ := evalSub(sub); fires {
+			prog.nextIdx++
+		}
+		if prog.nextIdx >= len(r.Conditions) {
+			return true, fmt.Sprintf("sequence complete (%d steps)", len(r.Conditions))
+		}
+		return false, ""
+
+	default: // MatchAll
+		for i, sub := range r.Conditions {
+			if prog.fired[i] {
+				continue
+			}
+			if fires, _ := evalSub(sub); fires {
+				prog.fired[i] = true
+			}
+		}
+		for _, f := range prog.fired {
+			if !f {
+				return false, ""
+			}
+		}
+		return true, fmt.Sprintf("all conditions met (%d)", len(r.Conditions))
+	}
 }
