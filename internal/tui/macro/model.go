@@ -3,10 +3,12 @@ package macro
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/provider"
 	"github.com/stxkxs/mkt/internal/provider/binance"
+	"github.com/stxkxs/mkt/internal/provider/calendar"
 	"github.com/stxkxs/mkt/internal/provider/defillama"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
 	"github.com/stxkxs/mkt/internal/tui/format"
@@ -55,11 +57,12 @@ var categories = []category{
 
 // Model is the macro dashboard tab.
 type Model struct {
-	quotes  map[string]provider.Quote
-	defi    []defillama.TVLSnapshot
-	futures []binance.FuturesSnapshot
-	width   int
-	height  int
+	quotes   map[string]provider.Quote
+	defi     []defillama.TVLSnapshot
+	futures  []binance.FuturesSnapshot
+	upcoming []calendar.Event
+	width    int
+	height   int
 }
 
 // New creates a macro model.
@@ -90,6 +93,11 @@ func (m *Model) UpdateDeFi(chains []defillama.TVLSnapshot) {
 // UpdateFutures replaces the Binance futures snapshot list.
 func (m *Model) UpdateFutures(snaps []binance.FuturesSnapshot) {
 	m.futures = snaps
+}
+
+// UpdateEvents replaces the upcoming-events list.
+func (m *Model) UpdateEvents(events []calendar.Event) {
+	m.upcoming = events
 }
 
 // RebuildStyles refreshes local styles from current theme colors.
@@ -180,6 +188,30 @@ func (m Model) View() string {
 				styleMacroVal.Render(format.FormatPrice(s.MarkPrice)),
 				fundingStyle.Render(fmt.Sprintf("funding %+.4f%%", pct)),
 				theme.StyleDim.Render("OI "+format.FormatVolume(s.OpenInterest)),
+			))
+		}
+	}
+
+	// Upcoming economic events (next 30 days)
+	if len(m.upcoming) > 0 {
+		sb.WriteString("\n")
+		sb.WriteString(theme.SectionHeader("Upcoming Economic Events (30d)", m.width))
+		sb.WriteString("\n")
+		max := 8
+		if max > len(m.upcoming) {
+			max = len(m.upcoming)
+		}
+		now := time.Now().UTC()
+		for _, e := range m.upcoming[:max] {
+			delta := e.Time.Sub(now)
+			when := fmt.Sprintf("in %dd", int(delta.Hours()/24))
+			if delta < 24*time.Hour {
+				when = fmt.Sprintf("in %dh", int(delta.Hours()))
+			}
+			sb.WriteString(fmt.Sprintf("    %-30s %s   %s\n",
+				styleMacroVal.Render(e.Title),
+				theme.StyleDim.Render(e.Time.Local().Format("Jan 02 15:04")),
+				theme.StyleDim.Render(when),
 			))
 		}
 	}
