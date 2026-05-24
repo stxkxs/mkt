@@ -4,6 +4,7 @@ import (
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/news"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/provider/defillama"
 )
 
 // QuoteUpdateMsg is sent when a new quote arrives from any provider.
@@ -42,6 +43,11 @@ type MacroUpdateMsg struct {
 // NewsUpdateMsg is sent when news headlines are fetched.
 type NewsUpdateMsg struct {
 	Headlines []news.Headline
+}
+
+// DeFiUpdateMsg is sent when DeFi TVL data arrives.
+type DeFiUpdateMsg struct {
+	Chains []defillama.TVLSnapshot
 }
 
 // SpinnerTickMsg drives the braille loading spinner animation.

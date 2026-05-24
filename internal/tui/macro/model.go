@@ -6,6 +6,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/provider/defillama"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
 	"github.com/stxkxs/mkt/internal/tui/format"
 	"github.com/stxkxs/mkt/internal/tui/theme"
@@ -54,6 +55,7 @@ var categories = []category{
 // Model is the macro dashboard tab.
 type Model struct {
 	quotes map[string]provider.Quote
+	defi   []defillama.TVLSnapshot
 	width  int
 	height int
 }
@@ -76,6 +78,11 @@ func (m *Model) UpdateQuotes(quotes []provider.Quote) {
 	for _, q := range quotes {
 		m.quotes[q.Symbol] = q
 	}
+}
+
+// UpdateDeFi replaces the DeFi TVL snapshot list.
+func (m *Model) UpdateDeFi(chains []defillama.TVLSnapshot) {
+	m.defi = chains
 }
 
 // RebuildStyles refreshes local styles from current theme colors.
@@ -148,6 +155,33 @@ func (m Model) View() string {
 			theme.StyleDim.Render("2s10s Spread"),
 			spreadStyle.Render(fmt.Sprintf("%.3f%%", spread)),
 		))
+	}
+
+	// DeFi TVL (top 8 chains)
+	if len(m.defi) > 0 {
+		sb.WriteString("\n")
+		sb.WriteString(theme.SectionHeader("DeFi TVL (top 8 chains)", m.width))
+		sb.WriteString("\n")
+		max := 8
+		if max > len(m.defi) {
+			max = len(m.defi)
+		}
+		for _, c := range m.defi[:max] {
+			oneDay := theme.StyleUp
+			if c.Change1d < 0 {
+				oneDay = theme.StyleDown
+			}
+			sevenDay := theme.StyleUp
+			if c.Change7d < 0 {
+				sevenDay = theme.StyleDown
+			}
+			sb.WriteString(fmt.Sprintf("    %-18s %12s   %s   %s\n",
+				theme.StyleDim.Render(c.Chain),
+				styleMacroVal.Render("$"+format.FormatVolume(c.TVL)),
+				oneDay.Render(fmt.Sprintf("1d %+.2f%%", c.Change1d)),
+				sevenDay.Render(fmt.Sprintf("7d %+.2f%%", c.Change7d)),
+			))
+		}
 	}
 
 	return sb.String()
