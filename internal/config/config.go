@@ -78,9 +78,18 @@ type AlertRule struct {
 	Match      string              `mapstructure:"match,omitempty" yaml:"match,omitempty"` // all | any | sequence
 }
 
+// Watchlist is a named group of symbols. Multiple groups can be defined
+// under `watchlists:` and switched at runtime with `[` / `]` on the
+// watchlist tab.
+type Watchlist struct {
+	Name    string   `mapstructure:"name" yaml:"name"`
+	Symbols []string `mapstructure:"symbols" yaml:"symbols"`
+}
+
 // Config is the application configuration.
 type Config struct {
 	Watchlist     []string    `mapstructure:"watchlist" yaml:"watchlist"`
+	Watchlists    []Watchlist `mapstructure:"watchlists,omitempty" yaml:"watchlists,omitempty"`
 	Portfolios    []Portfolio `mapstructure:"portfolios" yaml:"portfolios"`
 	Alerts        []AlertRule `mapstructure:"alerts" yaml:"alerts"`
 	PollInterval  string      `mapstructure:"poll_interval" yaml:"poll_interval"`

@@ -24,7 +24,24 @@ import (
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
 	"github.com/stxkxs/mkt/internal/tui"
 	"github.com/stxkxs/mkt/internal/tui/theme"
+	watchlistview "github.com/stxkxs/mkt/internal/tui/watchlist"
 )
+
+// dedupeUnion flattens every group's symbols into a deduplicated slice.
+func dedupeUnion(groups []watchlistview.Group) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, g := range groups {
+		for _, s := range g.Symbols {
+			if _, ok := seen[s]; ok {
+				continue
+			}
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 func runDashboard(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
@@ -35,7 +52,26 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	// Apply theme from config before creating any TUI components
 	theme.Apply(cfg.Theme)
 
-	symbols := cfg.Watchlist
+	// Build watchlist groups, preserving backward compat with the legacy
+	// top-level `watchlist:` field.
+	var groups []watchlistview.Group
+	if len(cfg.Watchlists) > 0 {
+		for _, w := range cfg.Watchlists {
+			groups = append(groups, watchlistview.Group{Name: w.Name, Symbols: w.Symbols})
+		}
+	}
+	if len(cfg.Watchlist) > 0 {
+		legacy := watchlistview.Group{Name: "Default", Symbols: cfg.Watchlist}
+		if len(groups) == 0 {
+			groups = []watchlistview.Group{legacy}
+		} else {
+			groups = append([]watchlistview.Group{legacy}, groups...)
+		}
+	}
+	if len(groups) == 0 {
+		groups = []watchlistview.Group{{Name: "Default"}}
+	}
+	symbols := dedupeUnion(groups)
 	cache := market.NewCache(cfg.SparklineLen)
 	coinbaseProv := coinbase.New()
 	yahooProv := yahoo.New(cfg.PollDuration())
@@ -150,7 +186,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	// Coinbase for crypto, then Yahoo for everything else.
 	fredProv := fred.New()
 	histProvider := market.NewMultiHistoryProvider(fredProv, coinbaseProv, yahooProv)
-	app := tui.NewApp(symbols, cache, histProvider, portfolios, alertEngine, yahooProv, coinbaseProv)
+	app := tui.NewApp(groups, cache, histProvider, portfolios, alertEngine, yahooProv, coinbaseProv)
 	if len(pastTriggers) > 0 {
 		app.LoadPastAlerts(pastTriggers)
 	}

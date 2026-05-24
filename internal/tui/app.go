@@ -55,10 +55,11 @@ type App struct {
 }
 
 // NewApp creates the root TUI model.
-func NewApp(symbols []string, cache *market.Cache, histProvider chart.HistoryProvider, portfolios []portfolio.Portfolio, alertEngine *alert.Engine, yahooProv *yahoo.Provider, coinbaseProv *coinbase.Provider) *App {
+func NewApp(groups []watchlist.Group, cache *market.Cache, histProvider chart.HistoryProvider, portfolios []portfolio.Portfolio, alertEngine *alert.Engine, yahooProv *yahoo.Provider, coinbaseProv *coinbase.Provider) *App {
+	union := unionSymbols(groups)
 	a := &App{
 		activeTab:   TabWatchlist,
-		watchlist:   watchlist.New(symbols, cache),
+		watchlist:   watchlist.New(groups, cache),
 		detail:      detail.New(cache, coinbaseProv),
 		chart:       chart.New(histProvider),
 		compare:     chart.NewCompare(histProvider),
@@ -68,7 +69,7 @@ func NewApp(symbols []string, cache *market.Cache, histProvider chart.HistoryPro
 		news:        newsview.New(),
 		heatmap:     heatmapview.New(),
 		options:     optionsview.New(yahooProv),
-		correl:      correlview.New(symbols, cache),
+		correl:      correlview.New(union, cache),
 		statusbar:   statusbar.New(),
 		alertDialog: alertdialog.New(alertEngine),
 		symbolInfo:  symbolinfo.New(yahooProv),
@@ -97,6 +98,22 @@ func (a *App) LoadEquityHistory(byName map[string][]portfolio.EquityMark) {
 // LoadCalendarEvents seeds the macro tab with upcoming economic events.
 func (a *App) LoadCalendarEvents(events []calendar.Event) {
 	a.macro.UpdateEvents(events)
+}
+
+// unionSymbols returns the deduplicated union of every group's symbols.
+func unionSymbols(groups []watchlist.Group) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, g := range groups {
+		for _, s := range g.Symbols {
+			if _, ok := seen[s]; ok {
+				continue
+			}
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (a *App) Init() tea.Cmd {
