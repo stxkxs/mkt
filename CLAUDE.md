@@ -43,7 +43,7 @@ Providers (Coinbase WS, Yahoo HTTP) → chan Quote → Hub → cache + alertEngi
 
 **Concurrency model:** Providers run as goroutines writing to a shared quote channel. Hub reads the channel and dispatches via `program.Send()`. Bubbletea serializes all UI updates — no mutexes in the TUI layer. Mutexes only exist in the market cache and alert engine.
 
-**Symbol routing:** Symbols with `-USD`/`-USDT` suffixes route to Coinbase; bare tickers route to Yahoo.
+**Symbol routing:** Symbols with the `FRED:` prefix route to the FRED economic-data provider (history only); symbols with `-USD`/`-USDT` suffixes route to Coinbase; bare tickers route to Yahoo.
 
 ## Key Patterns
 
