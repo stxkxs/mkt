@@ -15,6 +15,7 @@ type Portfolio struct {
 	Name         string
 	Holdings     []Holding
 	Transactions []Transaction
+	TaxMethod    TaxMethod
 }
 
 // Position is a holding with live P&L calculated.

@@ -20,6 +20,7 @@
 - Binance futures funding + open interest: new `internal/provider/binance` package polls premium-index and open-interest endpoints for BTC/ETH/SOL perps every 2 minutes. Macro tab gains a "Crypto Futures" section showing mark price, funding rate, and open interest.
 - `internal/provider/calendar` package: `Event`, `EventType`, `EconomicEvents()` (curated 2026 schedule for FOMC × 8, CPI × 12, NFP × 12, GDP × 4), `Upcoming(events, now, window)` filter, and an `EarningsSource` interface for a future earnings adapter. Consumed by V4 when it lands.
 - `portfolio.Realized(txs)` computes cumulative realized P&L from sell transactions using weighted-average cost (buy fees fold into cost basis; sell fees subtract from proceeds). `portfolio.Portfolio` gains a `Transactions` field. Portfolio tab shows a colored "Realized: $X.XX" line below unrealized totals when the active portfolio has any transactions.
+- Tax-lot accounting: `portfolio.RealizedByMethod(txs, method)` with `TaxMethod` of `TaxFIFO`, `TaxLIFO`, `TaxHIFO`, or `TaxAverage` (empty default, matches existing weighted-average behavior). Per-portfolio `tax_method` YAML key; portfolio tab labels the realized line with the method name when non-default.
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.
