@@ -43,6 +43,7 @@ type Rule struct {
 	Value     float64
 	Period    int // indicator period (default 14 for RSI, 20 for SMA)
 	Enabled   bool
+	Webhooks  []string // per-rule webhook URLs; overrides any global default
 }
 
 // TriggeredAlert is emitted when a rule fires.

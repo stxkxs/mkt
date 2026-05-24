@@ -58,11 +58,12 @@ func ParseTime(s string) time.Time {
 
 // AlertRule represents a saved alert from config.
 type AlertRule struct {
-	Symbol    string  `mapstructure:"symbol" yaml:"symbol"`
-	Condition string  `mapstructure:"condition" yaml:"condition"` // above, below, pct_up, pct_down, rsi_above, rsi_below, sma_cross_above, sma_cross_below, macd_cross
-	Value     float64 `mapstructure:"value" yaml:"value"`
-	Period    int     `mapstructure:"period,omitempty" yaml:"period,omitempty"`
-	Enabled   bool    `mapstructure:"enabled" yaml:"enabled"`
+	Symbol    string   `mapstructure:"symbol" yaml:"symbol"`
+	Condition string   `mapstructure:"condition" yaml:"condition"` // above, below, pct_up, pct_down, rsi_above, rsi_below, sma_cross_above, sma_cross_below, macd_cross
+	Value     float64  `mapstructure:"value" yaml:"value"`
+	Period    int      `mapstructure:"period,omitempty" yaml:"period,omitempty"`
+	Enabled   bool     `mapstructure:"enabled" yaml:"enabled"`
+	Webhooks  []string `mapstructure:"webhooks,omitempty" yaml:"webhooks,omitempty"`
 }
 
 // Config is the application configuration.
@@ -73,6 +74,7 @@ type Config struct {
 	PollInterval string      `mapstructure:"poll_interval" yaml:"poll_interval"`
 	SparklineLen int         `mapstructure:"sparkline_len" yaml:"sparkline_len"`
 	Theme        string      `mapstructure:"theme" yaml:"theme"`
+	WebhookURL   string      `mapstructure:"webhook_url,omitempty" yaml:"webhook_url,omitempty"`
 }
 
 // configDir returns the config directory path.
@@ -134,6 +136,9 @@ func Save(cfg *Config) error {
 	v.Set("poll_interval", cfg.PollInterval)
 	v.Set("sparkline_len", cfg.SparklineLen)
 	v.Set("theme", cfg.Theme)
+	if cfg.WebhookURL != "" {
+		v.Set("webhook_url", cfg.WebhookURL)
+	}
 
 	return v.WriteConfig()
 }
