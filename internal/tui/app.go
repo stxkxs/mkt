@@ -14,6 +14,7 @@ import (
 	"github.com/stxkxs/mkt/internal/tui/alertdialog"
 	alertsview "github.com/stxkxs/mkt/internal/tui/alerts"
 	"github.com/stxkxs/mkt/internal/tui/chart"
+	correlview "github.com/stxkxs/mkt/internal/tui/correlation"
 	"github.com/stxkxs/mkt/internal/tui/detail"
 	"github.com/stxkxs/mkt/internal/tui/format"
 	heatmapview "github.com/stxkxs/mkt/internal/tui/heatmap"
@@ -45,6 +46,7 @@ type App struct {
 	news        newsview.Model
 	heatmap     heatmapview.Model
 	options     optionsview.Model
+	correl      correlview.Model
 	statusbar   statusbar.Model
 	alertDialog alertdialog.Model
 	symbolInfo  symbolinfo.Model
@@ -65,6 +67,7 @@ func NewApp(symbols []string, cache *market.Cache, histProvider chart.HistoryPro
 		news:        newsview.New(),
 		heatmap:     heatmapview.New(),
 		options:     optionsview.New(yahooProv),
+		correl:      correlview.New(symbols, cache),
 		statusbar:   statusbar.New(),
 		alertDialog: alertdialog.New(alertEngine),
 		symbolInfo:  symbolinfo.New(yahooProv),
@@ -313,6 +316,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+
+		case TabCorrel:
+			var cmd tea.Cmd
+			a.correl, cmd = a.correl.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 
 	case tea.MouseClickMsg:
@@ -463,6 +473,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		a.options, cmd = a.options.Update(msg)
 		cmds = append(cmds, cmd)
+		a.correl, cmd = a.correl.Update(msg)
+		cmds = append(cmds, cmd)
 		return a, tea.Batch(cmds...)
 
 	default:
@@ -559,6 +571,9 @@ func (a *App) View() tea.View {
 	case TabOptions:
 		a.options.SetSize(contentW, contentH)
 		content = a.options.View()
+	case TabCorrel:
+		a.correl.SetSize(contentW, contentH)
+		content = a.correl.View()
 	}
 
 	panel := a.renderContentPanel(tabNames[a.activeTab], content, contentH)
