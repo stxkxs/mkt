@@ -41,10 +41,16 @@ const (
 	IndOBV
 	IndATR
 	IndStoch
+	IndADX
+	IndPivots
 	indCount
 )
 
-var indicatorNames = []string{"SMA(20)", "EMA(20)", "Bollinger", "RSI(14)", "MACD", "VWAP", "OBV", "ATR(14)", "Stoch"}
+var indicatorNames = []string{"SMA(20)", "EMA(20)", "Bollinger", "RSI(14)", "MACD", "VWAP", "OBV", "ATR(14)", "Stoch", "ADX(14)", "Pivots"}
+
+// indicatorKeys is the per-indicator menu key label. Letters take over
+// after the digits run out.
+var indicatorKeys = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "p"}
 
 // ChartMode determines the chart type.
 type ChartMode int
@@ -190,6 +196,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.indicators[IndATR] = !m.indicators[IndATR]
 			case "9":
 				m.indicators[IndStoch] = !m.indicators[IndStoch]
+			case "a":
+				m.indicators[IndADX] = !m.indicators[IndADX]
+			case "p":
+				m.indicators[IndPivots] = !m.indicators[IndPivots]
 			}
 			return m, nil
 		}
@@ -268,9 +278,9 @@ func (m Model) View() string {
 			if m.indicators[i] {
 				marker = "●"
 			}
-			sb.WriteString(fmt.Sprintf(" %d:%s%s", i+1, marker, indicatorNames[i]))
+			sb.WriteString(fmt.Sprintf(" %s:%s%s", indicatorKeys[i], marker, indicatorNames[i]))
 		}
-		sb.WriteString(styleAxis.Render("  (press 1-9 to toggle, i/esc to close)"))
+		sb.WriteString(styleAxis.Render("  (toggle: 1-9, a, p; i/esc to close)"))
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
@@ -302,7 +312,7 @@ func (m Model) View() string {
 	}
 
 	// Determine chart heights
-	hasSubPanel := m.indicators[IndRSI] || m.indicators[IndMACD] || m.indicators[IndOBV] || m.indicators[IndATR] || m.indicators[IndStoch]
+	hasSubPanel := m.indicators[IndRSI] || m.indicators[IndMACD] || m.indicators[IndOBV] || m.indicators[IndATR] || m.indicators[IndStoch] || m.indicators[IndADX]
 	headerLines := 4
 	if m.indicatorMenu {
 		headerLines = 5
@@ -352,6 +362,9 @@ func (m Model) View() string {
 		} else if m.indicators[IndStoch] {
 			highs, lows := extractHL(candles)
 			sb.WriteString(m.renderStoch(highs, lows, closes, m.width-12, subH))
+		} else if m.indicators[IndADX] {
+			highs, lows := extractHL(candles)
+			sb.WriteString(m.renderADX(highs, lows, closes, m.width-12, subH))
 		}
 	}
 
@@ -430,6 +443,18 @@ func (m Model) View() string {
 			if len(parts) > 0 {
 				indVals = append(indVals, "Stoch:"+strings.Join(parts, "/"))
 			}
+		}
+		if m.indicators[IndADX] {
+			highs, lows := extractHL(candles)
+			adx, _, _ := indicator.ADX(highs, lows, closes, 14)
+			if v := adx[len(adx)-1]; !math.IsNaN(v) {
+				indVals = append(indVals, fmt.Sprintf("ADX:%.1f", v))
+			}
+		}
+		if m.indicators[IndPivots] && len(candles) >= 2 {
+			prev := candles[len(candles)-2]
+			piv := indicator.PivotsClassic(prev.High, prev.Low, prev.Close)
+			indVals = append(indVals, fmt.Sprintf("P:%.2f", piv.P))
 		}
 		if len(indVals) > 0 {
 			summary += "  " + lipgloss.NewStyle().Foreground(theme.ColorMagenta).Render(strings.Join(indVals, " "))
@@ -682,6 +707,29 @@ func (m Model) drawOverlays(grid [][]rune, gridColor [][]color.Color, candles []
 		vwap := indicator.VWAP(highs, lows, closes, vols)
 		plotLine(vwap, theme.ColorMagenta)
 	}
+	if m.indicators[IndPivots] && len(candles) >= 2 {
+		prev := candles[len(candles)-2]
+		piv := indicator.PivotsClassic(prev.High, prev.Low, prev.Close)
+		plotHLine := func(v float64, clr color.Color) {
+			row := height - 1 - int((v-minP)*scale)
+			if row < 0 || row >= height {
+				return
+			}
+			for c := range width {
+				if grid[row][c] == ' ' {
+					grid[row][c] = '┄'
+					gridColor[row][c] = clr
+				}
+			}
+		}
+		plotHLine(piv.R3, theme.ColorGreen)
+		plotHLine(piv.R2, theme.ColorGreen)
+		plotHLine(piv.R1, theme.ColorGreen)
+		plotHLine(piv.P, theme.ColorAccent)
+		plotHLine(piv.S1, theme.ColorRed)
+		plotHLine(piv.S2, theme.ColorRed)
+		plotHLine(piv.S3, theme.ColorRed)
+	}
 }
 
 func (m Model) renderRSI(closes []float64, width, height int) string {
@@ -913,6 +961,83 @@ func extractHL(candles []provider.OHLCV) (highs, lows []float64) {
 		lows[i] = c.Low
 	}
 	return highs, lows
+}
+
+func (m Model) renderADX(highs, lows, closes []float64, width, height int) string {
+	if height < 3 || width <= 0 || len(closes) == 0 {
+		return ""
+	}
+	adx, plusDI, minusDI := indicator.ADX(highs, lows, closes, 14)
+
+	grid := make([][]rune, height)
+	gridColor := make([][]color.Color, height)
+	for r := range height {
+		grid[r] = make([]rune, width)
+		gridColor[r] = make([]color.Color, width)
+		for c := range width {
+			grid[r][c] = ' '
+		}
+	}
+
+	// Reference line at 25 (conventional trending threshold)
+	row25 := height - 1 - int(25.0/100.0*float64(height-1))
+	row25 = clampRow(row25, height)
+	for c := range width {
+		grid[row25][c] = '┄'
+		gridColor[row25][c] = theme.ColorDim
+	}
+
+	plotSeries := func(series []float64, clr color.Color, glyph rune) {
+		for i, v := range series {
+			if math.IsNaN(v) {
+				continue
+			}
+			col := i
+			if len(series) > width {
+				col = i * width / len(series)
+			}
+			if col >= width {
+				break
+			}
+			row := height - 1 - int(v/100.0*float64(height-1))
+			row = clampRow(row, height)
+			if grid[row][col] == ' ' || grid[row][col] == '┄' {
+				grid[row][col] = glyph
+				gridColor[row][col] = clr
+			}
+		}
+	}
+	plotSeries(plusDI, theme.ColorGreen, '+')
+	plotSeries(minusDI, theme.ColorRed, '-')
+	plotSeries(adx, theme.ColorAccent, '●')
+
+	var sb strings.Builder
+	labelWidth := 10
+	sb.WriteString(strings.Repeat(" ", labelWidth+1))
+	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("ADX(14) "))
+	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorGreen).Render("+DI "))
+	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorRed).Render("-DI"))
+	sb.WriteString("\n")
+	for r := range height {
+		if r == row25 {
+			sb.WriteString(styleAxis.Render(fmt.Sprintf("%*s ", labelWidth, "25")))
+		} else {
+			sb.WriteString(strings.Repeat(" ", labelWidth+1))
+		}
+		for c := range grid[r] {
+			ch := grid[r][c]
+			clr := gridColor[r][c]
+			if ch == ' ' {
+				sb.WriteRune(' ')
+			} else if clr != nil {
+				sb.WriteString(lipgloss.NewStyle().Foreground(clr).Render(string(ch)))
+			} else {
+				sb.WriteRune(ch)
+			}
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }
 
 func (m Model) renderATR(highs, lows, closes []float64, width, height int) string {
