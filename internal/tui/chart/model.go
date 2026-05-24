@@ -44,14 +44,15 @@ const (
 	IndADX
 	IndPivots
 	IndVolProfile
+	IndPatterns
 	indCount
 )
 
-var indicatorNames = []string{"SMA(20)", "EMA(20)", "Bollinger", "RSI(14)", "MACD", "VWAP", "OBV", "ATR(14)", "Stoch", "ADX(14)", "Pivots", "VolProfile"}
+var indicatorNames = []string{"SMA(20)", "EMA(20)", "Bollinger", "RSI(14)", "MACD", "VWAP", "OBV", "ATR(14)", "Stoch", "ADX(14)", "Pivots", "VolProfile", "Patterns"}
 
 // indicatorKeys is the per-indicator menu key label. Letters take over
 // after the digits run out.
-var indicatorKeys = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "p", "v"}
+var indicatorKeys = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "p", "v", "k"}
 
 // volumeProfileGutterW is the number of columns reserved on the right
 // edge of the main chart for the volume-profile histogram when toggled.
@@ -207,6 +208,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.indicators[IndPivots] = !m.indicators[IndPivots]
 			case "v":
 				m.indicators[IndVolProfile] = !m.indicators[IndVolProfile]
+			case "k":
+				m.indicators[IndPatterns] = !m.indicators[IndPatterns]
 			}
 			return m, nil
 		}
@@ -287,7 +290,7 @@ func (m Model) View() string {
 			}
 			sb.WriteString(fmt.Sprintf(" %s:%s%s", indicatorKeys[i], marker, indicatorNames[i]))
 		}
-		sb.WriteString(styleAxis.Render("  (toggle: 1-9, a, p, v; i/esc to close)"))
+		sb.WriteString(styleAxis.Render("  (toggle: 1-9, a, p, v, k; i/esc to close)"))
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
@@ -470,6 +473,16 @@ func (m Model) View() string {
 				indVals = append(indVals, fmt.Sprintf("POC:%.2f", pocPrice))
 			}
 		}
+		if m.indicators[IndPatterns] {
+			pats := indicator.Patterns(candles)
+			// Walk backwards for the most recent detected pattern
+			for i := len(pats) - 1; i >= 0; i-- {
+				if pats[i] != indicator.PatternNone {
+					indVals = append(indVals, "Pattern:"+pats[i].Name())
+					break
+				}
+			}
+		}
 		if len(indVals) > 0 {
 			summary += "  " + lipgloss.NewStyle().Foreground(theme.ColorMagenta).Render(strings.Join(indVals, " "))
 		}
@@ -585,6 +598,11 @@ func (m Model) renderCandlestickWithIndicators(candles []provider.OHLCV, closes 
 
 	// Overlay indicators (constrained to chart area, not gutter)
 	m.drawOverlays(grid, gridColor, candles, closes, chartW, height, minP, scale, candleWidth)
+
+	// Pattern markers (candlestick mode only — line mode has no candle cues)
+	if m.indicators[IndPatterns] {
+		drawPatternMarkers(grid, gridColor, candles, chartW, height, minP, scale, candleWidth)
+	}
 
 	// Volume profile gutter
 	if m.indicators[IndVolProfile] && chartW < width {
@@ -984,6 +1002,46 @@ func (m Model) renderMACD(closes []float64, width, height int) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// drawPatternMarkers paints a glyph above or below each candle whose
+// pattern was detected. Bullish patterns mark below the low (▲ green),
+// bearish above the high (▼ red), and doji above the high (◇ accent).
+func drawPatternMarkers(grid [][]rune, gridColor [][]color.Color, candles []provider.OHLCV, chartW, height int, minP, scale float64, candleWidth int) {
+	pats := indicator.Patterns(candles)
+	for i, p := range pats {
+		if p == indicator.PatternNone {
+			continue
+		}
+		col := i * candleWidth
+		if col >= chartW {
+			break
+		}
+		var glyph rune
+		var clr color.Color
+		var row int
+		switch {
+		case p.IsBullish():
+			glyph = '▲'
+			clr = theme.ColorGreen
+			lowRow := height - 1 - int((candles[i].Low-minP)*scale)
+			row = clampRow(lowRow+1, height)
+		case p.IsBearish():
+			glyph = '▼'
+			clr = theme.ColorRed
+			highRow := height - 1 - int((candles[i].High-minP)*scale)
+			row = clampRow(highRow-1, height)
+		default: // Doji
+			glyph = '◇'
+			clr = theme.ColorAccent
+			highRow := height - 1 - int((candles[i].High-minP)*scale)
+			row = clampRow(highRow-1, height)
+		}
+		if grid[row][col] == ' ' {
+			grid[row][col] = glyph
+			gridColor[row][col] = clr
+		}
+	}
 }
 
 // drawVolumeProfileGutter paints a horizontal volume histogram into the
