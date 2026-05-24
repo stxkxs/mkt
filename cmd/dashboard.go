@@ -153,6 +153,17 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	if len(pastTriggers) > 0 {
 		app.LoadPastAlerts(pastTriggers)
 	}
+
+	// Portfolio equity history: load past marks and seed the model.
+	equityFile := portfolio.NewEquityFile(filepath.Join(config.ConfigDir(), "equity-history.ndjson"), 1000)
+	pastEquity, eqErr := equityFile.LoadByName()
+	if eqErr != nil {
+		fmt.Fprintf(os.Stderr, "equity history: %v\n", eqErr)
+	}
+	if len(pastEquity) > 0 {
+		app.LoadEquityHistory(pastEquity)
+	}
+
 	p = tea.NewProgram(app)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -236,6 +247,44 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 				return
 			case <-ticker.C:
 				fetch()
+			}
+		}
+	}()
+
+	// Portfolio equity-curve marking — append current portfolio values
+	// to the persisted history every 5 minutes and broadcast the new
+	// mark to the TUI.
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		mark := func() {
+			now := time.Now().UTC()
+			quoteSnap := make(map[string]provider.Quote)
+			for _, sym := range symbols {
+				if pq, ok := cache.Latest(sym); ok {
+					quoteSnap[sym] = provider.Quote{Symbol: sym, Price: pq, Timestamp: now}
+				}
+			}
+			for _, pf := range portfolios {
+				sum := portfolio.Evaluate(pf.Holdings, quoteSnap)
+				if sum.TotalValue == 0 {
+					continue
+				}
+				m := portfolio.EquityMark{Time: now, PortfolioName: pf.Name, Value: sum.TotalValue}
+				if err := equityFile.Append(m); err != nil {
+					fmt.Fprintf(os.Stderr, "equity append: %v\n", err)
+					continue
+				}
+				p.Send(tui.EquityMarkMsg{Mark: m})
+			}
+		}
+		mark()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				mark()
 			}
 		}
 	}()

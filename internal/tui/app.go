@@ -80,6 +80,12 @@ func (a *App) LoadPastAlerts(past []alert.TriggeredAlert) {
 	a.statusbar.SetAlertCount(a.alerts.TriggeredCount())
 }
 
+// LoadEquityHistory seeds the portfolio model with previously persisted
+// equity marks. Should be called before Run.
+func (a *App) LoadEquityHistory(byName map[string][]portfolio.EquityMark) {
+	a.portfolio.LoadEquityHistory(byName)
+}
+
 func (a *App) Init() tea.Cmd {
 	return tea.Every(100*time.Millisecond, func(t time.Time) tea.Msg {
 		return SpinnerTickMsg{}
@@ -392,6 +398,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case FuturesUpdateMsg:
 		a.macro.UpdateFutures(msg.Snapshots)
+		return a, nil
+
+	case EquityMarkMsg:
+		a.portfolio.AppendEquityMark(msg.Mark)
 		return a, nil
 
 	case AlertTriggeredMsg:

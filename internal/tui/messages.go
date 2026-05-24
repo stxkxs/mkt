@@ -3,6 +3,7 @@ package tui
 import (
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/news"
+	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider"
 	"github.com/stxkxs/mkt/internal/provider/binance"
 	"github.com/stxkxs/mkt/internal/provider/defillama"
@@ -54,6 +55,12 @@ type DeFiUpdateMsg struct {
 // FuturesUpdateMsg is sent when Binance futures snapshots arrive.
 type FuturesUpdateMsg struct {
 	Snapshots []binance.FuturesSnapshot
+}
+
+// EquityMarkMsg is sent when a newly persisted portfolio equity mark
+// should be reflected in the TUI.
+type EquityMarkMsg struct {
+	Mark portfolio.EquityMark
 }
 
 // SpinnerTickMsg drives the braille loading spinner animation.
