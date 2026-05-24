@@ -56,11 +56,11 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	// Create alert engine
 	var p *tea.Program
 	alertEngine := alert.NewEngine(5*time.Minute, func(a alert.TriggeredAlert) {
-		alert.Notify(a)
 		if p != nil {
 			p.Send(tui.AlertTriggeredMsg{Alert: a})
 		}
 	})
+	alertEngine.AddNotifier(alert.NewDesktopNotifier())
 
 	// Load alert rules from config
 	var rules []alert.Rule

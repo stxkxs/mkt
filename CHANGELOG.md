@@ -14,6 +14,7 @@
 - `market.Hub` now dispatches `onQuote` on a dedicated goroutine behind a 256-slot buffer; quotes drop when the TUI stalls rather than blocking providers.
 - Yahoo session init failures are now logged instead of silently discarded.
 - Config directory is created with `0o700` permissions; holdings and alert rules were previously world-readable.
+- `alert.Notify` replaced by a `Notifier` interface; `Engine.AddNotifier` registers destinations and `Engine.Check` dispatches each trigger after releasing the lock, with per-call timeouts and error isolation so one failing destination cannot block siblings.
 
 ### Fixed
 - `alert.Engine.Check` now takes the write lock; it mutates `refPrices` and `cooldowns`, which `RLock` did not protect.
