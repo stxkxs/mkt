@@ -15,6 +15,7 @@ import (
 	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider"
 	"github.com/stxkxs/mkt/internal/provider/coinbase"
+	"github.com/stxkxs/mkt/internal/provider/recording"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
 	"github.com/stxkxs/mkt/internal/tui"
 	"github.com/stxkxs/mkt/internal/tui/theme"
@@ -33,7 +34,20 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	cache := market.NewCache(cfg.SparklineLen)
 	coinbaseProv := coinbase.New()
 	yahooProv := yahoo.New(cfg.PollDuration())
-	hub := market.NewHub(cache, coinbaseProv, yahooProv)
+
+	var coinbaseQP provider.QuoteProvider = coinbaseProv
+	var yahooQP provider.QuoteProvider = yahooProv
+	if recordPath := os.Getenv("MKT_RECORD"); recordPath != "" {
+		sink, err := recording.NewSink(recordPath)
+		if err != nil {
+			return fmt.Errorf("recording: %w", err)
+		}
+		defer sink.Close()
+		coinbaseQP = recording.New(coinbaseProv, sink)
+		yahooQP = recording.New(yahooProv, sink)
+	}
+
+	hub := market.NewHub(cache, coinbaseQP, yahooQP)
 
 	// Convert config portfolios
 	var portfolios []portfolio.Portfolio
