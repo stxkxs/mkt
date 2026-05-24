@@ -43,14 +43,19 @@ const (
 	IndStoch
 	IndADX
 	IndPivots
+	IndVolProfile
 	indCount
 )
 
-var indicatorNames = []string{"SMA(20)", "EMA(20)", "Bollinger", "RSI(14)", "MACD", "VWAP", "OBV", "ATR(14)", "Stoch", "ADX(14)", "Pivots"}
+var indicatorNames = []string{"SMA(20)", "EMA(20)", "Bollinger", "RSI(14)", "MACD", "VWAP", "OBV", "ATR(14)", "Stoch", "ADX(14)", "Pivots", "VolProfile"}
 
 // indicatorKeys is the per-indicator menu key label. Letters take over
 // after the digits run out.
-var indicatorKeys = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "p"}
+var indicatorKeys = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "p", "v"}
+
+// volumeProfileGutterW is the number of columns reserved on the right
+// edge of the main chart for the volume-profile histogram when toggled.
+const volumeProfileGutterW = 15
 
 // ChartMode determines the chart type.
 type ChartMode int
@@ -200,6 +205,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.indicators[IndADX] = !m.indicators[IndADX]
 			case "p":
 				m.indicators[IndPivots] = !m.indicators[IndPivots]
+			case "v":
+				m.indicators[IndVolProfile] = !m.indicators[IndVolProfile]
 			}
 			return m, nil
 		}
@@ -280,7 +287,7 @@ func (m Model) View() string {
 			}
 			sb.WriteString(fmt.Sprintf(" %s:%s%s", indicatorKeys[i], marker, indicatorNames[i]))
 		}
-		sb.WriteString(styleAxis.Render("  (toggle: 1-9, a, p; i/esc to close)"))
+		sb.WriteString(styleAxis.Render("  (toggle: 1-9, a, p, v; i/esc to close)"))
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
@@ -456,6 +463,13 @@ func (m Model) View() string {
 			piv := indicator.PivotsClassic(prev.High, prev.Low, prev.Close)
 			indVals = append(indVals, fmt.Sprintf("P:%.2f", piv.P))
 		}
+		if m.indicators[IndVolProfile] {
+			bins := indicator.VolumeProfile(candles, len(candles))
+			if pocIdx, _ := indicator.POC(bins); pocIdx >= 0 {
+				pocPrice := (bins[pocIdx].PriceMin + bins[pocIdx].PriceMax) / 2
+				indVals = append(indVals, fmt.Sprintf("POC:%.2f", pocPrice))
+			}
+		}
 		if len(indVals) > 0 {
 			summary += "  " + lipgloss.NewStyle().Foreground(theme.ColorMagenta).Render(strings.Join(indVals, " "))
 		}
@@ -502,8 +516,13 @@ func (m Model) renderCandlestickWithIndicators(candles []provider.OHLCV, closes 
 	}
 	scale := float64(height) / priceRange
 
+	chartW := width
+	if m.indicators[IndVolProfile] && width > volumeProfileGutterW+10 {
+		chartW = width - volumeProfileGutterW
+	}
+
 	candleWidth := 2
-	maxCandles := width / candleWidth
+	maxCandles := chartW / candleWidth
 	if len(candles) > maxCandles {
 		candles = candles[len(candles)-maxCandles:]
 		closes = closes[len(closes)-maxCandles:]
@@ -523,7 +542,7 @@ func (m Model) renderCandlestickWithIndicators(candles []provider.OHLCV, closes 
 	// Draw candlesticks
 	for i, c := range candles {
 		col := i * candleWidth
-		if col >= width {
+		if col >= chartW {
 			break
 		}
 
@@ -564,8 +583,13 @@ func (m Model) renderCandlestickWithIndicators(candles []provider.OHLCV, closes 
 		}
 	}
 
-	// Overlay indicators
-	m.drawOverlays(grid, gridColor, candles, closes, width, height, minP, scale, candleWidth)
+	// Overlay indicators (constrained to chart area, not gutter)
+	m.drawOverlays(grid, gridColor, candles, closes, chartW, height, minP, scale, candleWidth)
+
+	// Volume profile gutter
+	if m.indicators[IndVolProfile] && chartW < width {
+		drawVolumeProfileGutter(grid, gridColor, candles, chartW, width, height)
+	}
 
 	// Render
 	return renderGrid(grid, gridColor, width, height, maxP, scale)
@@ -610,10 +634,15 @@ func (m Model) renderLineWithIndicators(candles []provider.OHLCV, closes []float
 	}
 	scale := float64(height) / priceRange
 
-	if len(prices) > width {
-		resampled := make([]float64, width)
-		for i := range width {
-			idx := i * len(prices) / width
+	chartW := width
+	if m.indicators[IndVolProfile] && width > volumeProfileGutterW+10 {
+		chartW = width - volumeProfileGutterW
+	}
+
+	if len(prices) > chartW {
+		resampled := make([]float64, chartW)
+		for i := range chartW {
+			idx := i * len(prices) / chartW
 			resampled[i] = prices[idx]
 		}
 		prices = resampled
@@ -637,7 +666,7 @@ func (m Model) renderLineWithIndicators(candles []provider.OHLCV, closes []float
 	}
 
 	for i, p := range prices {
-		if i >= width {
+		if i >= chartW {
 			break
 		}
 		normalized := (p - minP) / priceRange
@@ -651,8 +680,13 @@ func (m Model) renderLineWithIndicators(candles []provider.OHLCV, closes []float
 		gridColor[row][i] = lineColor
 	}
 
-	// Overlay indicators (use original closes, not resampled)
-	m.drawOverlays(grid, gridColor, candles, closes, width, height, minP, scale, 1)
+	// Overlay indicators (use original closes, not resampled; constrained to chartW)
+	m.drawOverlays(grid, gridColor, candles, closes, chartW, height, minP, scale, 1)
+
+	// Volume profile gutter
+	if m.indicators[IndVolProfile] && chartW < width {
+		drawVolumeProfileGutter(grid, gridColor, candles, chartW, width, height)
+	}
 
 	return renderGrid(grid, gridColor, width, height, maxP, scale)
 }
@@ -950,6 +984,45 @@ func (m Model) renderMACD(closes []float64, width, height int) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// drawVolumeProfileGutter paints a horizontal volume histogram into the
+// rightmost columns of the grid. Bins are computed at chart height
+// resolution so each row maps to one bin (lowest price at the bottom row).
+func drawVolumeProfileGutter(grid [][]rune, gridColor [][]color.Color, candles []provider.OHLCV, chartW, totalW, height int) {
+	bins := indicator.VolumeProfile(candles, height)
+	if len(bins) == 0 {
+		return
+	}
+	var maxVol float64
+	for _, b := range bins {
+		if b.Volume > maxVol {
+			maxVol = b.Volume
+		}
+	}
+	if maxVol == 0 {
+		return
+	}
+	pocIdx, _ := indicator.POC(bins)
+	gutterW := totalW - chartW
+	for i, b := range bins {
+		row := height - 1 - i
+		if row < 0 || row >= height {
+			continue
+		}
+		barLen := int(b.Volume / maxVol * float64(gutterW))
+		if b.Volume > 0 && barLen < 1 {
+			barLen = 1
+		}
+		clr := theme.ColorDim
+		if i == pocIdx {
+			clr = theme.ColorAccent
+		}
+		for c := chartW; c < chartW+barLen && c < totalW; c++ {
+			grid[row][c] = '▆'
+			gridColor[row][c] = clr
+		}
+	}
 }
 
 // extractHL pulls high and low slices out of a candle series.
