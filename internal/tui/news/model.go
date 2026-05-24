@@ -16,10 +16,30 @@ var (
 	styleTitle  = lipgloss.NewStyle().Foreground(theme.ColorFg)
 )
 
+// Filter selects which subset of headlines is shown.
+type Filter int
+
+const (
+	FilterAll     Filter = iota // every headline
+	FilterNews                  // only items without a Category (RSS news)
+	FilterFilings               // only items with a Category (SEC filings)
+)
+
+func (f Filter) String() string {
+	switch f {
+	case FilterNews:
+		return "News"
+	case FilterFilings:
+		return "Filings"
+	}
+	return "All"
+}
+
 // Model is the news feed tab.
 type Model struct {
 	headlines []inews.Headline
 	cursor    int
+	filter    Filter
 	width     int
 	height    int
 }
@@ -47,6 +67,27 @@ func RebuildStyles() {
 	styleTitle = lipgloss.NewStyle().Foreground(theme.ColorFg)
 }
 
+// visible returns the headline subset matching the current filter.
+func (m Model) visible() []inews.Headline {
+	if m.filter == FilterAll {
+		return m.headlines
+	}
+	out := make([]inews.Headline, 0, len(m.headlines))
+	for _, h := range m.headlines {
+		switch m.filter {
+		case FilterNews:
+			if h.Category == "" {
+				out = append(out, h)
+			}
+		case FilterFilings:
+			if h.Category != "" {
+				out = append(out, h)
+			}
+		}
+	}
+	return out
+}
+
 // Update handles messages.
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -54,9 +95,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		RebuildStyles()
 		return m, nil
 	case tea.KeyPressMsg:
+		vis := m.visible()
 		switch msg.String() {
 		case "j", "down":
-			if m.cursor < len(m.headlines)-1 {
+			if m.cursor < len(vis)-1 {
 				m.cursor++
 			}
 		case "k", "up":
@@ -66,30 +108,35 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case "g":
 			m.cursor = 0
 		case "G":
-			if len(m.headlines) > 0 {
-				m.cursor = len(m.headlines) - 1
+			if len(vis) > 0 {
+				m.cursor = len(vis) - 1
 			}
+		case "f":
+			m.filter = (m.filter + 1) % 3
+			m.cursor = 0
 		case "enter":
-			if m.cursor < len(m.headlines) {
-				h := m.headlines[m.cursor]
+			if m.cursor < len(vis) {
+				h := vis[m.cursor]
 				if h.Link != "" {
 					_ = inews.OpenURL(h.Link)
 				}
 			}
 		}
 	case tea.MouseWheelMsg:
+		vis := m.visible()
 		switch msg.Button {
 		case tea.MouseWheelUp:
 			if m.cursor > 0 {
 				m.cursor--
 			}
 		case tea.MouseWheelDown:
-			if m.cursor < len(m.headlines)-1 {
+			if m.cursor < len(vis)-1 {
 				m.cursor++
 			}
 		}
 	case tea.MouseClickMsg:
-		if len(m.headlines) == 0 {
+		vis := m.visible()
+		if len(vis) == 0 {
 			return m, nil
 		}
 		// Local header: section header + hint + blank = 3 rows. Each
@@ -98,9 +145,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if row < 0 {
 			return m, nil
 		}
-		start := newsViewportStart(m.cursor, len(m.headlines), m.height)
+		start := newsViewportStart(m.cursor, len(vis), m.height)
 		idx := start + row/2
-		if idx >= 0 && idx < len(m.headlines) {
+		if idx >= 0 && idx < len(vis) {
 			m.cursor = idx
 		}
 	}
@@ -133,13 +180,18 @@ func (m Model) View() string {
 		return ""
 	}
 
+	vis := m.visible()
 	var sb strings.Builder
-	sb.WriteString(theme.SectionHeader("News Feed", m.width))
-	sb.WriteString(theme.StyleDim.Render("  j/k:nav  enter:open  g/G:top/bottom"))
+	sb.WriteString(theme.SectionHeader("News Feed ["+m.filter.String()+"]", m.width))
+	sb.WriteString(theme.StyleDim.Render("  j/k:nav  enter:open  g/G:top/bottom  f:filter"))
 	sb.WriteString("\n\n")
 
-	if len(m.headlines) == 0 {
-		sb.WriteString(theme.StyleDim.Render("  Loading news..."))
+	if len(vis) == 0 {
+		if len(m.headlines) == 0 {
+			sb.WriteString(theme.StyleDim.Render("  Loading news..."))
+		} else {
+			sb.WriteString(theme.StyleDim.Render("  No items match the current filter."))
+		}
 		return sb.String()
 	}
 
@@ -148,24 +200,24 @@ func (m Model) View() string {
 	if maxItems < 1 {
 		maxItems = 1
 	}
-	if maxItems > len(m.headlines) {
-		maxItems = len(m.headlines)
+	if maxItems > len(vis) {
+		maxItems = len(vis)
 	}
 
 	startIdx := 0
-	if len(m.headlines) > maxItems {
+	if len(vis) > maxItems {
 		startIdx = m.cursor - maxItems + 1
 		if startIdx < 0 {
 			startIdx = 0
 		}
-		if startIdx+maxItems > len(m.headlines) {
-			startIdx = len(m.headlines) - maxItems
+		if startIdx+maxItems > len(vis) {
+			startIdx = len(vis) - maxItems
 		}
 	}
 	endIdx := startIdx + maxItems
 
 	for i := startIdx; i < endIdx; i++ {
-		h := m.headlines[i]
+		h := vis[i]
 
 		cursor := "  "
 		if i == m.cursor {

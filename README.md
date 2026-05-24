@@ -164,6 +164,14 @@ Fixed set of macro indicators updated on the same poll interval: 10Y Treasury, 1
 
 Aggregated RSS headlines from Yahoo Finance, MarketWatch, and CNBC. Polls every 3 minutes. Press `enter` to open a headline in your browser.
 
+Optionally, add SEC EDGAR per-ticker filings into the same feed via `edgar_tickers` in config:
+
+```yaml
+edgar_tickers: [AAPL, NVDA, TSLA]
+```
+
+Filings appear with source `SEC:<TICKER>` and a category (8-K, 10-Q, etc.). Press `f` in the News tab to cycle the filter: All / News / Filings.
+
 ### Sector Heatmap
 
 Treemap overview of 18 sectors colored by average daily change (red → green gradient). Press `enter` to drill down into a sector and see individual stock tiles sorted by performance with price, change%, volume, and colored bars. Press `esc` to return to the overview.

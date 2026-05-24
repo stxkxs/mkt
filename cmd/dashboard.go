@@ -190,25 +190,27 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	// News feed polling
+	// News feed polling — RSS + per-ticker SEC EDGAR filings merged.
 	go func() {
 		feeds := news.DefaultFeeds()
 		ticker := time.NewTicker(3 * time.Minute)
 		defer ticker.Stop()
-		// Initial fetch
-		headlines := news.FetchAll(ctx, feeds)
-		if len(headlines) > 0 {
-			p.Send(tui.NewsUpdateMsg{Headlines: headlines})
+		fetch := func() {
+			headlines := news.FetchAll(ctx, feeds)
+			if len(cfg.EDGARTickers) > 0 {
+				headlines = append(headlines, news.FetchEDGAR(ctx, cfg.EDGARTickers, 50)...)
+			}
+			if len(headlines) > 0 {
+				p.Send(tui.NewsUpdateMsg{Headlines: headlines})
+			}
 		}
+		fetch()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				headlines := news.FetchAll(ctx, feeds)
-				if len(headlines) > 0 {
-					p.Send(tui.NewsUpdateMsg{Headlines: headlines})
-				}
+				fetch()
 			}
 		}
 	}()
