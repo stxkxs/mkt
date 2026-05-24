@@ -9,6 +9,7 @@ import (
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/portfolio"
+	"github.com/stxkxs/mkt/internal/provider/coinbase"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
 	"github.com/stxkxs/mkt/internal/tui/alertdialog"
 	alertsview "github.com/stxkxs/mkt/internal/tui/alerts"
@@ -51,11 +52,11 @@ type App struct {
 }
 
 // NewApp creates the root TUI model.
-func NewApp(symbols []string, cache *market.Cache, histProvider chart.HistoryProvider, portfolios []portfolio.Portfolio, alertEngine *alert.Engine, yahooProv *yahoo.Provider) *App {
+func NewApp(symbols []string, cache *market.Cache, histProvider chart.HistoryProvider, portfolios []portfolio.Portfolio, alertEngine *alert.Engine, yahooProv *yahoo.Provider, coinbaseProv *coinbase.Provider) *App {
 	a := &App{
 		activeTab:   TabWatchlist,
 		watchlist:   watchlist.New(symbols, cache),
-		detail:      detail.New(cache),
+		detail:      detail.New(cache, coinbaseProv),
 		chart:       chart.New(histProvider),
 		compare:     chart.NewCompare(histProvider),
 		portfolio:   portfolioview.New(portfolios),
@@ -215,8 +216,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				sym := a.watchlist.SelectedSymbol()
 				if sym != "" {
-					a.detail.SetSymbol(sym)
+					cmd := a.detail.SetSymbol(sym)
 					a.detail.SetActive(true)
+					return a, cmd
 				}
 				return a, nil
 			case "c":

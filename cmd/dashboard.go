@@ -149,7 +149,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	// Coinbase for crypto, then Yahoo for everything else.
 	fredProv := fred.New()
 	histProvider := market.NewMultiHistoryProvider(fredProv, coinbaseProv, yahooProv)
-	app := tui.NewApp(symbols, cache, histProvider, portfolios, alertEngine, yahooProv)
+	app := tui.NewApp(symbols, cache, histProvider, portfolios, alertEngine, yahooProv, coinbaseProv)
 	if len(pastTriggers) > 0 {
 		app.LoadPastAlerts(pastTriggers)
 	}

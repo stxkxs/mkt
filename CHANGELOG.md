@@ -27,6 +27,7 @@
 - Persisted portfolio equity curve: `portfolio.EquityFile` records value marks to `~/.config/mkt/equity-history.ndjson` every 5 minutes; portfolio tab header shows a block-character sparkline of the active portfolio's recent marks plus a `MaxDD: X.XX%` readout.
 - `mkt position` subcommand: computes share count and dollar risk from equity, risk %, and entry/stop (or ATR-implied stop). `portfolio.PositionSize` and `portfolio.ATRStop` helpers.
 - Options chain tab (`8`): `yahoo.FetchOptionsChain` pulls the nearest expiration's calls and puts; new `internal/tui/options` package renders them strike-aligned with a max-pain header. Press `O` on the Watchlist tab to load options for the selected symbol.
+- Coinbase order-book depth: new `coinbase.FetchOrderBook` and `OrderBookDepth` helpers. The detail panel renders the top-5 bids/asks for crypto symbols when opened (REST snapshot per open; WebSocket live updates are a follow-up).
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.
