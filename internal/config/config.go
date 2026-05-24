@@ -88,19 +88,20 @@ type Watchlist struct {
 
 // Config is the application configuration.
 type Config struct {
-	Watchlist     []string    `mapstructure:"watchlist" yaml:"watchlist"`
-	Watchlists    []Watchlist `mapstructure:"watchlists,omitempty" yaml:"watchlists,omitempty"`
-	Portfolios    []Portfolio `mapstructure:"portfolios" yaml:"portfolios"`
-	Alerts        []AlertRule `mapstructure:"alerts" yaml:"alerts"`
-	PollInterval  string      `mapstructure:"poll_interval" yaml:"poll_interval"`
-	SparklineLen  int         `mapstructure:"sparkline_len" yaml:"sparkline_len"`
-	Theme         string      `mapstructure:"theme" yaml:"theme"`
-	WebhookURL    string      `mapstructure:"webhook_url,omitempty" yaml:"webhook_url,omitempty"`
-	NtfyTopic     string      `mapstructure:"ntfy_topic,omitempty" yaml:"ntfy_topic,omitempty"`
-	NtfyServer    string      `mapstructure:"ntfy_server,omitempty" yaml:"ntfy_server,omitempty"`
-	PushoverUser  string      `mapstructure:"pushover_user,omitempty" yaml:"pushover_user,omitempty"`
-	PushoverToken string      `mapstructure:"pushover_token,omitempty" yaml:"pushover_token,omitempty"`
-	EDGARTickers  []string    `mapstructure:"edgar_tickers,omitempty" yaml:"edgar_tickers,omitempty"`
+	Watchlist     []string          `mapstructure:"watchlist" yaml:"watchlist"`
+	Watchlists    []Watchlist       `mapstructure:"watchlists,omitempty" yaml:"watchlists,omitempty"`
+	Portfolios    []Portfolio       `mapstructure:"portfolios" yaml:"portfolios"`
+	Alerts        []AlertRule       `mapstructure:"alerts" yaml:"alerts"`
+	PollInterval  string            `mapstructure:"poll_interval" yaml:"poll_interval"`
+	SparklineLen  int               `mapstructure:"sparkline_len" yaml:"sparkline_len"`
+	Theme         string            `mapstructure:"theme" yaml:"theme"`
+	WebhookURL    string            `mapstructure:"webhook_url,omitempty" yaml:"webhook_url,omitempty"`
+	NtfyTopic     string            `mapstructure:"ntfy_topic,omitempty" yaml:"ntfy_topic,omitempty"`
+	NtfyServer    string            `mapstructure:"ntfy_server,omitempty" yaml:"ntfy_server,omitempty"`
+	PushoverUser  string            `mapstructure:"pushover_user,omitempty" yaml:"pushover_user,omitempty"`
+	PushoverToken string            `mapstructure:"pushover_token,omitempty" yaml:"pushover_token,omitempty"`
+	EDGARTickers  []string          `mapstructure:"edgar_tickers,omitempty" yaml:"edgar_tickers,omitempty"`
+	Notes         map[string]string `mapstructure:"notes,omitempty" yaml:"notes,omitempty"` // per-symbol freeform notes (markdown plaintext)
 }
 
 // ConfigDir returns the application's config / data directory path.

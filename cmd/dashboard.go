@@ -204,6 +204,10 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	// Upcoming economic events for the macro tab.
 	app.LoadCalendarEvents(calendar.Upcoming(calendar.EconomicEvents(), time.Now().UTC(), 30*24*time.Hour))
 
+	if len(cfg.Notes) > 0 {
+		app.LoadNotes(cfg.Notes)
+	}
+
 	p = tea.NewProgram(app)
 
 	ctx, cancel := context.WithCancel(context.Background())

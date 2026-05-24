@@ -100,6 +100,11 @@ func (a *App) LoadCalendarEvents(events []calendar.Event) {
 	a.macro.UpdateEvents(events)
 }
 
+// LoadNotes seeds the detail panel with per-symbol freeform notes.
+func (a *App) LoadNotes(notes map[string]string) {
+	a.detail.SetNotes(notes)
+}
+
 // unionSymbols returns the deduplicated union of every group's symbols.
 func unionSymbols(groups []watchlist.Group) []string {
 	seen := make(map[string]struct{})
