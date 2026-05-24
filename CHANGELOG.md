@@ -10,6 +10,7 @@
 - `indicator.VolumeProfile` and `indicator.POC`. Toggled via the chart `i` menu with key `v` — draws a horizontal volume histogram in a right-side gutter with the point-of-control row highlighted; the candle area narrows to make room.
 - `indicator.Patterns` detects Doji, Hammer, Shooting Star, Bullish Engulfing, and Bearish Engulfing. Toggled via the chart `i` menu with key `k` — marker glyphs appear on the candlestick chart (▲ green for bullish, ▼ red for bearish, ◇ accent for doji); summary line shows the latest detected pattern.
 - `alert.WebhookNotifier` posts triggered alerts as JSON to configured URLs. Config gains a top-level `webhook_url` (default destination) and an optional per-rule `webhooks: [...]` override. Payload is `{symbol, condition, value, price, message, timestamp}`.
+- `alert.NtfyNotifier` and `alert.PushoverNotifier` send alerts to mobile. Config: `ntfy_topic` (optional `ntfy_server`, defaults to `https://ntfy.sh`), `pushover_user` + `pushover_token`.
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.
