@@ -24,6 +24,7 @@
 - Dividend tracking: new `dividend` transaction type. `portfolio.Dividends(txs)` and `DividendsYTD(txs, now)`. Dividends are excluded from realized P&L and from `DeriveHoldings`. Portfolio tab shows a "Dividends: $X (YTD: $Y)" line below Realized when any dividend transactions exist.
 - `mkt portfolio import --portfolio <name> [--format auto|generic|schwab] [--dry-run] <file>`: reads a broker CSV export and appends transactions to a named portfolio (creating it if absent). New `internal/importer` package with a `Format` interface, `Generic` and `Schwab` implementations, and header-based auto-detect.
 - `portfolio.Sharpe`, `Sortino`, `Beta`, `MaxDrawdown`: pure-math risk metrics. UI surface deferred to P6 (equity curve) where the inputs naturally live.
+- Persisted portfolio equity curve: `portfolio.EquityFile` records value marks to `~/.config/mkt/equity-history.ndjson` every 5 minutes; portfolio tab header shows a block-character sparkline of the active portfolio's recent marks plus a `MaxDD: X.XX%` readout.
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.

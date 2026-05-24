@@ -31,6 +31,10 @@ type Model struct {
 	cursor     int
 	width      int
 	height     int
+
+	// Equity history per portfolio name, populated by dashboard at
+	// startup and appended to on EquityMarkMsg.
+	equity map[string][]portfolio.EquityMark
 }
 
 // New creates a portfolio model.
@@ -38,7 +42,27 @@ func New(portfolios []portfolio.Portfolio) Model {
 	return Model{
 		portfolios: portfolios,
 		quotes:     make(map[string]provider.Quote),
+		equity:     make(map[string][]portfolio.EquityMark),
 	}
+}
+
+// LoadEquityHistory seeds the model with previously persisted marks.
+// Should be called before the program runs.
+func (m *Model) LoadEquityHistory(byName map[string][]portfolio.EquityMark) {
+	if m.equity == nil {
+		m.equity = make(map[string][]portfolio.EquityMark)
+	}
+	for k, v := range byName {
+		m.equity[k] = v
+	}
+}
+
+// AppendEquityMark records a new mark for its portfolio.
+func (m *Model) AppendEquityMark(mark portfolio.EquityMark) {
+	if m.equity == nil {
+		m.equity = make(map[string][]portfolio.EquityMark)
+	}
+	m.equity[mark.PortfolioName] = append(m.equity[mark.PortfolioName], mark)
 }
 
 // SetSize updates dimensions.
@@ -152,7 +176,19 @@ func (m Model) View() string {
 	if len(m.portfolios) > 1 {
 		navHint = theme.StyleDim.Render(fmt.Sprintf("  [/]: switch  (%d/%d)", m.activeIdx+1, len(m.portfolios)))
 	}
-	sb.WriteString(styleLabel.Render(fmt.Sprintf("  %s", p.Name)) + navHint + "\n")
+
+	// Equity curve sparkline + max drawdown (if we have history)
+	curveHint := ""
+	if marks := m.equity[p.Name]; len(marks) >= 2 {
+		values := make([]float64, len(marks))
+		for i, mk := range marks {
+			values[i] = mk.Value
+		}
+		spark := sparkline(values, 24)
+		dd := portfolio.MaxDrawdown(values) * 100
+		curveHint = "  " + theme.StyleDim.Render(spark) + theme.StyleDim.Render(fmt.Sprintf("  MaxDD: %.2f%%", dd))
+	}
+	sb.WriteString(styleLabel.Render(fmt.Sprintf("  %s", p.Name)) + curveHint + navHint + "\n")
 
 	if len(p.Holdings) == 0 {
 		sb.WriteString(theme.StyleDim.Render("  No holdings in this portfolio.\n"))
