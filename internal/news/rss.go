@@ -11,12 +11,14 @@ import (
 	"time"
 )
 
-// Headline represents a single news item.
+// Headline represents a single news item. Category is empty for general
+// RSS items; SEC filings populate it with the filing type ("8-K", "10-Q", etc).
 type Headline struct {
-	Title   string
-	Link    string
-	Source  string
-	PubTime time.Time
+	Title    string
+	Link     string
+	Source   string
+	PubTime  time.Time
+	Category string
 }
 
 // Feed defines an RSS source.
@@ -137,6 +139,8 @@ func parseTime(s string) time.Time {
 		time.RFC1123,
 		time.RFC822Z,
 		time.RFC822,
+		time.RFC3339,
+		time.RFC3339Nano,
 		"Mon, 02 Jan 2006 15:04:05 -0700",
 		"2006-01-02T15:04:05Z",
 	}

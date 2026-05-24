@@ -15,6 +15,7 @@
 - Alert conditions `volume_above` (fires when a quote's volume exceeds the value) and `stddev_above` (fires when rolling stddev over `period` quotes exceeds `value` percent of the rolling mean). `indicator.Stddev` helper added.
 - Persisted alert history: triggered alerts are appended to `~/.config/mkt/alert-history.ndjson` and reloaded into the Alerts tab on startup. Up to 500 most-recent entries are loaded. New `alert.HistoryFile` and `alert.HistoryNotifier`. `config.ConfigDir()` is now exported.
 - `internal/provider/fred`: `HistoryProvider` for FRED economic series via the public fredgraph CSV endpoint (no API key). Symbol prefix `FRED:<series_id>` routes here (e.g. `FRED:DFF`, `FRED:T10Y2Y`). Registered in the dashboard's `MultiHistoryProvider` ahead of Coinbase/Yahoo.
+- SEC EDGAR per-ticker filings in the news feed: `news.FetchEDGAR` fetches Atom feeds for configured `edgar_tickers` and merges them into the headline list. `Headline` gains a `Category` field. News tab adds an `f` key cycling between All / News / Filings filters.
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.

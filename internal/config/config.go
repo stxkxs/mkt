@@ -90,6 +90,7 @@ type Config struct {
 	NtfyServer    string      `mapstructure:"ntfy_server,omitempty" yaml:"ntfy_server,omitempty"`
 	PushoverUser  string      `mapstructure:"pushover_user,omitempty" yaml:"pushover_user,omitempty"`
 	PushoverToken string      `mapstructure:"pushover_token,omitempty" yaml:"pushover_token,omitempty"`
+	EDGARTickers  []string    `mapstructure:"edgar_tickers,omitempty" yaml:"edgar_tickers,omitempty"`
 }
 
 // ConfigDir returns the application's config / data directory path.
@@ -165,6 +166,9 @@ func Save(cfg *Config) error {
 	}
 	if cfg.PushoverToken != "" {
 		v.Set("pushover_token", cfg.PushoverToken)
+	}
+	if len(cfg.EDGARTickers) > 0 {
+		v.Set("edgar_tickers", cfg.EDGARTickers)
 	}
 
 	return v.WriteConfig()
