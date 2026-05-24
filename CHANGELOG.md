@@ -12,6 +12,7 @@
 - `alert.WebhookNotifier` posts triggered alerts as JSON to configured URLs. Config gains a top-level `webhook_url` (default destination) and an optional per-rule `webhooks: [...]` override. Payload is `{symbol, condition, value, price, message, timestamp}`.
 - `alert.NtfyNotifier` and `alert.PushoverNotifier` send alerts to mobile. Config: `ntfy_topic` (optional `ntfy_server`, defaults to `https://ntfy.sh`), `pushover_user` + `pushover_token`.
 - Compound alert rules: each alert may declare `conditions: [...]` and `match: all|any|sequence`. The engine tracks per-rule progress across quotes; `all` requires every sub-condition to fire, `any` fires on the first match, and `sequence` requires sub-conditions to fire in declared order. Legacy single-condition rules continue to work unchanged.
+- Alert conditions `volume_above` (fires when a quote's volume exceeds the value) and `stddev_above` (fires when rolling stddev over `period` quotes exceeds `value` percent of the rolling mean). `indicator.Stddev` helper added.
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.
