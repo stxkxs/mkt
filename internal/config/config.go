@@ -56,14 +56,25 @@ func ParseTime(s string) time.Time {
 	return time.Time{}
 }
 
-// AlertRule represents a saved alert from config.
+// AlertSubCondition is one leaf inside a compound alert rule.
+type AlertSubCondition struct {
+	Condition string  `mapstructure:"condition" yaml:"condition"`
+	Value     float64 `mapstructure:"value" yaml:"value"`
+	Period    int     `mapstructure:"period,omitempty" yaml:"period,omitempty"`
+}
+
+// AlertRule represents a saved alert from config. When Conditions is
+// non-empty the legacy Condition / Value / Period fields are ignored
+// and the rule is evaluated as a compound according to Match.
 type AlertRule struct {
-	Symbol    string   `mapstructure:"symbol" yaml:"symbol"`
-	Condition string   `mapstructure:"condition" yaml:"condition"` // above, below, pct_up, pct_down, rsi_above, rsi_below, sma_cross_above, sma_cross_below, macd_cross
-	Value     float64  `mapstructure:"value" yaml:"value"`
-	Period    int      `mapstructure:"period,omitempty" yaml:"period,omitempty"`
-	Enabled   bool     `mapstructure:"enabled" yaml:"enabled"`
-	Webhooks  []string `mapstructure:"webhooks,omitempty" yaml:"webhooks,omitempty"`
+	Symbol     string              `mapstructure:"symbol" yaml:"symbol"`
+	Condition  string              `mapstructure:"condition,omitempty" yaml:"condition,omitempty"`
+	Value      float64             `mapstructure:"value,omitempty" yaml:"value,omitempty"`
+	Period     int                 `mapstructure:"period,omitempty" yaml:"period,omitempty"`
+	Enabled    bool                `mapstructure:"enabled" yaml:"enabled"`
+	Webhooks   []string            `mapstructure:"webhooks,omitempty" yaml:"webhooks,omitempty"`
+	Conditions []AlertSubCondition `mapstructure:"conditions,omitempty" yaml:"conditions,omitempty"`
+	Match      string              `mapstructure:"match,omitempty" yaml:"match,omitempty"` // all | any | sequence
 }
 
 // Config is the application configuration.
