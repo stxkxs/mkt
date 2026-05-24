@@ -17,10 +17,43 @@ type Holding struct {
 	CostBasis float64 `mapstructure:"cost_basis" yaml:"cost_basis"`
 }
 
-// Portfolio is a named collection of holdings.
+// Transaction is a buy or sell event for an optional transaction log.
+// Time is parsed lazily by callers (see ParseTime); zero means "unset".
+type Transaction struct {
+	Type     string  `mapstructure:"type" yaml:"type"` // "buy" or "sell"
+	Symbol   string  `mapstructure:"symbol" yaml:"symbol"`
+	Quantity float64 `mapstructure:"quantity" yaml:"quantity"`
+	Price    float64 `mapstructure:"price" yaml:"price"`
+	Time     string  `mapstructure:"time,omitempty" yaml:"time,omitempty"`
+	Fee      float64 `mapstructure:"fee,omitempty" yaml:"fee,omitempty"`
+	Note     string  `mapstructure:"note,omitempty" yaml:"note,omitempty"`
+}
+
+// Portfolio is a named collection of holdings and optional transactions.
 type Portfolio struct {
-	Name     string    `mapstructure:"name" yaml:"name"`
-	Holdings []Holding `mapstructure:"holdings" yaml:"holdings"`
+	Name         string        `mapstructure:"name" yaml:"name"`
+	Holdings     []Holding     `mapstructure:"holdings" yaml:"holdings,omitempty"`
+	Transactions []Transaction `mapstructure:"transactions,omitempty" yaml:"transactions,omitempty"`
+}
+
+// ParseTime accepts a few common YAML date layouts. Returns the zero
+// time on empty input or any parse failure; callers should treat the
+// zero time as "unset" rather than as an error.
+func ParseTime(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 // AlertRule represents a saved alert from config.
