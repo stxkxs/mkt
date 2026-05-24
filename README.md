@@ -98,6 +98,16 @@ alerts:
 
 The payload is `{symbol, condition, value, price, message, timestamp}`.
 
+For mobile push, configure ntfy.sh (no signup) and/or Pushover (free dev account):
+
+```yaml
+ntfy_topic: mkt-alerts-<your-unique-string>   # subscribe in the ntfy app
+# ntfy_server: https://ntfy.sh                # optional override
+
+pushover_user: u-...                          # your Pushover user key
+pushover_token: a-...                         # your Pushover application token
+```
+
 ### Charts
 
 Press `c` on any symbol for a full-screen candlestick or line chart. Press `i` to overlay technical indicators:

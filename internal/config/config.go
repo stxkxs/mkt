@@ -68,13 +68,17 @@ type AlertRule struct {
 
 // Config is the application configuration.
 type Config struct {
-	Watchlist    []string    `mapstructure:"watchlist" yaml:"watchlist"`
-	Portfolios   []Portfolio `mapstructure:"portfolios" yaml:"portfolios"`
-	Alerts       []AlertRule `mapstructure:"alerts" yaml:"alerts"`
-	PollInterval string      `mapstructure:"poll_interval" yaml:"poll_interval"`
-	SparklineLen int         `mapstructure:"sparkline_len" yaml:"sparkline_len"`
-	Theme        string      `mapstructure:"theme" yaml:"theme"`
-	WebhookURL   string      `mapstructure:"webhook_url,omitempty" yaml:"webhook_url,omitempty"`
+	Watchlist     []string    `mapstructure:"watchlist" yaml:"watchlist"`
+	Portfolios    []Portfolio `mapstructure:"portfolios" yaml:"portfolios"`
+	Alerts        []AlertRule `mapstructure:"alerts" yaml:"alerts"`
+	PollInterval  string      `mapstructure:"poll_interval" yaml:"poll_interval"`
+	SparklineLen  int         `mapstructure:"sparkline_len" yaml:"sparkline_len"`
+	Theme         string      `mapstructure:"theme" yaml:"theme"`
+	WebhookURL    string      `mapstructure:"webhook_url,omitempty" yaml:"webhook_url,omitempty"`
+	NtfyTopic     string      `mapstructure:"ntfy_topic,omitempty" yaml:"ntfy_topic,omitempty"`
+	NtfyServer    string      `mapstructure:"ntfy_server,omitempty" yaml:"ntfy_server,omitempty"`
+	PushoverUser  string      `mapstructure:"pushover_user,omitempty" yaml:"pushover_user,omitempty"`
+	PushoverToken string      `mapstructure:"pushover_token,omitempty" yaml:"pushover_token,omitempty"`
 }
 
 // configDir returns the config directory path.
@@ -138,6 +142,18 @@ func Save(cfg *Config) error {
 	v.Set("theme", cfg.Theme)
 	if cfg.WebhookURL != "" {
 		v.Set("webhook_url", cfg.WebhookURL)
+	}
+	if cfg.NtfyTopic != "" {
+		v.Set("ntfy_topic", cfg.NtfyTopic)
+	}
+	if cfg.NtfyServer != "" {
+		v.Set("ntfy_server", cfg.NtfyServer)
+	}
+	if cfg.PushoverUser != "" {
+		v.Set("pushover_user", cfg.PushoverUser)
+	}
+	if cfg.PushoverToken != "" {
+		v.Set("pushover_token", cfg.PushoverToken)
 	}
 
 	return v.WriteConfig()

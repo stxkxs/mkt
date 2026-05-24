@@ -110,6 +110,12 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	if anyWebhook {
 		alertEngine.AddNotifier(alert.NewWebhookNotifier(cfg.WebhookURL))
 	}
+	if cfg.NtfyTopic != "" {
+		alertEngine.AddNotifier(alert.NewNtfyNotifier(cfg.NtfyServer, cfg.NtfyTopic))
+	}
+	if cfg.PushoverUser != "" && cfg.PushoverToken != "" {
+		alertEngine.AddNotifier(alert.NewPushoverNotifier(cfg.PushoverUser, cfg.PushoverToken))
+	}
 
 	// Set price source for indicator-based alerts
 	alertEngine.SetPriceSource(cache)
