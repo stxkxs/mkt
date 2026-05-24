@@ -82,6 +82,22 @@ alerts:
 
 Alerts have a 5-minute cooldown to prevent spam. Toggle and delete alerts from the TUI.
 
+Alerts can also POST a JSON payload to a webhook on every trigger — useful for Slack/Discord/IFTTT or any custom receiver. Set a default URL at the top level and/or override per rule:
+
+```yaml
+webhook_url: https://hooks.slack.com/services/...   # default destination (optional)
+
+alerts:
+  - symbol: BTC-USD
+    condition: above
+    value: 100000
+    enabled: true
+    webhooks:                                       # per-rule override (optional)
+      - https://discord.com/api/webhooks/...
+```
+
+The payload is `{symbol, condition, value, price, message, timestamp}`.
+
 ### Charts
 
 Press `c` on any symbol for a full-screen candlestick or line chart. Press `i` to overlay technical indicators:

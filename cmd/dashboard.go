@@ -92,16 +92,24 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 
 	// Load alert rules from config
 	var rules []alert.Rule
+	anyWebhook := cfg.WebhookURL != ""
 	for _, r := range cfg.Alerts {
+		if len(r.Webhooks) > 0 {
+			anyWebhook = true
+		}
 		rules = append(rules, alert.Rule{
 			Symbol:    r.Symbol,
 			Condition: alert.Condition(r.Condition),
 			Value:     r.Value,
 			Period:    r.Period,
 			Enabled:   r.Enabled,
+			Webhooks:  r.Webhooks,
 		})
 	}
 	alertEngine.SetRules(rules)
+	if anyWebhook {
+		alertEngine.AddNotifier(alert.NewWebhookNotifier(cfg.WebhookURL))
+	}
 
 	// Set price source for indicator-based alerts
 	alertEngine.SetPriceSource(cache)
