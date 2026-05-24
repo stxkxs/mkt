@@ -39,6 +39,7 @@ mkt config add TSLA LINK-USD    # add symbols to watchlist
 mkt config remove DOGE-USD      # remove a symbol
 mkt config set poll_interval 30s
 mkt portfolio import --portfolio Tech schwab-export.csv   # import broker CSV
+mkt position --equity 100000 --risk 1 --entry 50 --stop 48 # share-sizing calc
 mkt version
 ```
 
