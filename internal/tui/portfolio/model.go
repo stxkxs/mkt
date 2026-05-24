@@ -3,6 +3,7 @@ package portfolio
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -251,6 +252,14 @@ func (m Model) View() string {
 		sb.WriteString(fmt.Sprintf("  %s\n",
 			realizedStyle.Bold(true).Render(fmt.Sprintf("%s: %s$%.2f", label, realizedSign, realized)),
 		))
+
+		divTotal := portfolio.Dividends(p.Transactions)
+		if divTotal > 0 {
+			ytd := portfolio.DividendsYTD(p.Transactions, time.Now())
+			sb.WriteString(fmt.Sprintf("  %s\n",
+				theme.StyleUp.Bold(true).Render(fmt.Sprintf("Dividends: $%.2f  (YTD: $%.2f)", divTotal, ytd)),
+			))
+		}
 	}
 
 	return sb.String()

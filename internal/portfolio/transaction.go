@@ -6,8 +6,9 @@ import "time"
 type TxType string
 
 const (
-	TxBuy  TxType = "buy"
-	TxSell TxType = "sell"
+	TxBuy      TxType = "buy"
+	TxSell     TxType = "sell"
+	TxDividend TxType = "dividend"
 )
 
 // Transaction is a single recorded portfolio action. Time and Fee are
