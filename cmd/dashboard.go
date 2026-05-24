@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -127,12 +128,24 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		alertEngine.AddNotifier(alert.NewPushoverNotifier(cfg.PushoverUser, cfg.PushoverToken))
 	}
 
+	// Persisted alert history: load past triggers and register the
+	// notifier so future ones are appended automatically.
+	historyFile := alert.NewHistoryFile(filepath.Join(config.ConfigDir(), "alert-history.ndjson"), 500)
+	pastTriggers, err := historyFile.LoadAll()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "alert history: %v\n", err)
+	}
+	alertEngine.AddNotifier(alert.NewHistoryNotifier(historyFile))
+
 	// Set price source for indicator-based alerts
 	alertEngine.SetPriceSource(cache)
 
 	// Route history requests: Coinbase for crypto, Yahoo for stocks
 	histProvider := market.NewMultiHistoryProvider(coinbaseProv, yahooProv)
 	app := tui.NewApp(symbols, cache, histProvider, portfolios, alertEngine, yahooProv)
+	if len(pastTriggers) > 0 {
+		app.LoadPastAlerts(pastTriggers)
+	}
 	p = tea.NewProgram(app)
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -70,6 +70,16 @@ func NewApp(symbols []string, cache *market.Cache, histProvider chart.HistoryPro
 	return a
 }
 
+// LoadPastAlerts populates the alerts tab with previously persisted
+// triggers. Should be called before Run so the tab shows the history
+// from first paint. Does not fire any desktop notifications.
+func (a *App) LoadPastAlerts(past []alert.TriggeredAlert) {
+	for _, t := range past {
+		a.alerts.AddTriggered(t)
+	}
+	a.statusbar.SetAlertCount(a.alerts.TriggeredCount())
+}
+
 func (a *App) Init() tea.Cmd {
 	return tea.Every(100*time.Millisecond, func(t time.Time) tea.Msg {
 		return SpinnerTickMsg{}
