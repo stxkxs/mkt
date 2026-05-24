@@ -237,15 +237,19 @@ func (m Model) View() string {
 	))
 
 	if len(p.Transactions) > 0 {
-		realized := portfolio.Realized(p.Transactions)
+		realized := portfolio.RealizedByMethod(p.Transactions, p.TaxMethod)
 		realizedStyle := theme.StyleUp
 		realizedSign := "+"
 		if realized < 0 {
 			realizedStyle = theme.StyleDown
 			realizedSign = ""
 		}
+		label := "Realized"
+		if p.TaxMethod != portfolio.TaxAverage {
+			label = fmt.Sprintf("Realized (%s)", strings.ToUpper(string(p.TaxMethod)))
+		}
 		sb.WriteString(fmt.Sprintf("  %s\n",
-			realizedStyle.Bold(true).Render(fmt.Sprintf("Realized: %s$%.2f", realizedSign, realized)),
+			realizedStyle.Bold(true).Render(fmt.Sprintf("%s: %s$%.2f", label, realizedSign, realized)),
 		))
 	}
 

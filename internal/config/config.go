@@ -34,6 +34,7 @@ type Portfolio struct {
 	Name         string        `mapstructure:"name" yaml:"name"`
 	Holdings     []Holding     `mapstructure:"holdings" yaml:"holdings,omitempty"`
 	Transactions []Transaction `mapstructure:"transactions,omitempty" yaml:"transactions,omitempty"`
+	TaxMethod    string        `mapstructure:"tax_method,omitempty" yaml:"tax_method,omitempty"` // fifo | lifo | hifo (empty = weighted average)
 }
 
 // ParseTime accepts a few common YAML date layouts. Returns the zero

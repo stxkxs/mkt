@@ -83,6 +83,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 			Name:         cp.Name,
 			Holdings:     portfolio.Materialize(holdings, txs),
 			Transactions: txs,
+			TaxMethod:    portfolio.TaxMethod(cp.TaxMethod),
 		})
 	}
 
