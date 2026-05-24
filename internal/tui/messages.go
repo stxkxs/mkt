@@ -4,6 +4,7 @@ import (
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/news"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/provider/binance"
 	"github.com/stxkxs/mkt/internal/provider/defillama"
 )
 
@@ -48,6 +49,11 @@ type NewsUpdateMsg struct {
 // DeFiUpdateMsg is sent when DeFi TVL data arrives.
 type DeFiUpdateMsg struct {
 	Chains []defillama.TVLSnapshot
+}
+
+// FuturesUpdateMsg is sent when Binance futures snapshots arrive.
+type FuturesUpdateMsg struct {
+	Snapshots []binance.FuturesSnapshot
 }
 
 // SpinnerTickMsg drives the braille loading spinner animation.

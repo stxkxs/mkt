@@ -6,6 +6,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/provider/binance"
 	"github.com/stxkxs/mkt/internal/provider/defillama"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
 	"github.com/stxkxs/mkt/internal/tui/format"
@@ -54,10 +55,11 @@ var categories = []category{
 
 // Model is the macro dashboard tab.
 type Model struct {
-	quotes map[string]provider.Quote
-	defi   []defillama.TVLSnapshot
-	width  int
-	height int
+	quotes  map[string]provider.Quote
+	defi    []defillama.TVLSnapshot
+	futures []binance.FuturesSnapshot
+	width   int
+	height  int
 }
 
 // New creates a macro model.
@@ -83,6 +85,11 @@ func (m *Model) UpdateQuotes(quotes []provider.Quote) {
 // UpdateDeFi replaces the DeFi TVL snapshot list.
 func (m *Model) UpdateDeFi(chains []defillama.TVLSnapshot) {
 	m.defi = chains
+}
+
+// UpdateFutures replaces the Binance futures snapshot list.
+func (m *Model) UpdateFutures(snaps []binance.FuturesSnapshot) {
+	m.futures = snaps
 }
 
 // RebuildStyles refreshes local styles from current theme colors.
@@ -155,6 +162,26 @@ func (m Model) View() string {
 			theme.StyleDim.Render("2s10s Spread"),
 			spreadStyle.Render(fmt.Sprintf("%.3f%%", spread)),
 		))
+	}
+
+	// Crypto Futures (Binance)
+	if len(m.futures) > 0 {
+		sb.WriteString("\n")
+		sb.WriteString(theme.SectionHeader("Crypto Futures", m.width))
+		sb.WriteString("\n")
+		for _, s := range m.futures {
+			fundingStyle := theme.StyleUp
+			if s.FundingRate < 0 {
+				fundingStyle = theme.StyleDown
+			}
+			pct := s.FundingRate * 100
+			sb.WriteString(fmt.Sprintf("    %-10s %12s   %s   %s\n",
+				theme.StyleDim.Render(s.Symbol),
+				styleMacroVal.Render(format.FormatPrice(s.MarkPrice)),
+				fundingStyle.Render(fmt.Sprintf("funding %+.4f%%", pct)),
+				theme.StyleDim.Render("OI "+format.FormatVolume(s.OpenInterest)),
+			))
+		}
 	}
 
 	// DeFi TVL (top 8 chains)
