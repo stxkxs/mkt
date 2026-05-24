@@ -50,7 +50,7 @@ mkt version
 | `j` / `k` | Navigate rows |
 | `enter` | Detail panel (watchlist) / open link (news) / drill down (heatmap) |
 | `c` | Full-screen chart for selected symbol |
-| `i` | Toggle indicator menu on chart (1-7 to toggle SMA/EMA/Bollinger/RSI/MACD/VWAP/OBV) |
+| `i` | Toggle indicator menu on chart (1-9 to toggle SMA/EMA/Bollinger/RSI/MACD/VWAP/OBV/ATR/Stoch) |
 | `a` | Add selected symbol to comparison set |
 | `C` | Open multi-symbol comparison chart |
 | `[` / `]` | Change chart interval (1m → 1w) / switch portfolio |
@@ -92,6 +92,8 @@ Press `c` on any symbol for a full-screen candlestick or line chart. Press `i` t
 - **RSI(14)** — relative strength index in a sub-panel (0–100, ref lines at 30/70)
 - **MACD(12,26,9)** — MACD line, signal line, and histogram in a sub-panel
 - **OBV** — on-balance volume in a sub-panel (running signed-volume total)
+- **ATR(14)** — Wilder-smoothed Average True Range in a sub-panel
+- **Stochastic(14,3)** — %K and %D oscillator in a sub-panel (ref lines at 20/80)
 
 Multiple indicators can be active simultaneously.
 
@@ -166,7 +168,7 @@ RSS feeds   ──→ program.Send(NewsUpdateMsg)
 - **Providers** stream/poll quotes into a shared channel
 - **Hub** reads the channel, updates the ring buffer cache, and calls back to send TUI messages
 - **Alert engine** evaluates rules inline on each quote
-- **Indicator package** provides pure-math SMA, EMA, RSI, MACD, Bollinger, VWAP, OBV calculations
+- **Indicator package** provides pure-math SMA, EMA, RSI, MACD, Bollinger, VWAP, OBV, ATR, Stochastic calculations
 - **Bubbletea** serializes all UI updates — no mutexes in the TUI layer
 
 ### Project Layout
@@ -192,7 +194,7 @@ mkt/
     │   └── history.go             # multi-provider history routing
     ├── alert/                     # rule engine, conditions, cooldown, desktop notifications
     ├── portfolio/                 # stateless P&L calculator
-    ├── indicator/                 # SMA, EMA, RSI, MACD, Bollinger, VWAP, OBV
+    ├── indicator/                 # SMA, EMA, RSI, MACD, Bollinger, VWAP, OBV, ATR, Stoch
     ├── news/                      # RSS feed parser, browser URL opener
     └── tui/
         ├── app.go                 # root model: tab switching, message routing
