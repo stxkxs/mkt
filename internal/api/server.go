@@ -42,6 +42,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/quotes/", s.handleQuote)
 	mux.HandleFunc("/alerts", s.handleAlerts)
 	mux.HandleFunc("/metrics", s.handleMetrics)
+	mux.HandleFunc("/webhook/tradingview", s.handleTradingView)
 	s.srv = &http.Server{
 		Addr:              s.addr,
 		Handler:           mux,
@@ -125,4 +126,81 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// tvPayload is the subset of TradingView's webhook body we use. TV lets
+// users template the body freely; we recognize symbol/price/message and
+// pass through anything else as the message.
+type tvPayload struct {
+	Symbol  string  `json:"symbol"`
+	Ticker  string  `json:"ticker"` // alternate name TV templates often use
+	Price   float64 `json:"price"`
+	Close   float64 `json:"close"` // alternate name
+	Message string  `json:"message"`
+	Alert   string  `json:"alert"` // alternate name
+}
+
+// /webhook/tradingview — accept a TradingView alert webhook and inject
+// it through the alert engine's notifier fan-out (desktop, webhook,
+// ntfy, Pushover, history). 200 on accept; 400 on parse failure.
+func (s *Server) handleTradingView(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.engine == nil {
+		http.Error(w, "alerts disabled", http.StatusServiceUnavailable)
+		return
+	}
+	var body tvPayload
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields() // first attempt strict; fall back to loose below
+	if err := dec.Decode(&body); err != nil {
+		// retry loose to tolerate extra TV template fields
+		r2 := json.NewDecoder(strings.NewReader(consumeBody(r)))
+		if err := r2.Decode(&body); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+	}
+	sym := strings.ToUpper(strings.TrimSpace(body.Symbol))
+	if sym == "" {
+		sym = strings.ToUpper(strings.TrimSpace(body.Ticker))
+	}
+	price := body.Price
+	if price == 0 {
+		price = body.Close
+	}
+	msg := strings.TrimSpace(body.Message)
+	if msg == "" {
+		msg = strings.TrimSpace(body.Alert)
+	}
+	if msg == "" {
+		msg = fmt.Sprintf("TradingView alert: %s @ %.4f", sym, price)
+	}
+	s.engine.Inject(alert.TriggeredAlert{
+		Rule:      alert.Rule{Symbol: sym},
+		Price:     price,
+		Message:   msg,
+		Timestamp: time.Now(),
+	})
+	w.WriteHeader(http.StatusOK)
+}
+
+// consumeBody drains the request body into a string. Used for the
+// fallback decode after DisallowUnknownFields rejected the first try.
+func consumeBody(r *http.Request) string {
+	defer r.Body.Close()
+	b := make([]byte, 0, 1024)
+	buf := make([]byte, 1024)
+	for {
+		n, err := r.Body.Read(buf)
+		if n > 0 {
+			b = append(b, buf[:n]...)
+		}
+		if err != nil {
+			break
+		}
+	}
+	return string(b)
 }
