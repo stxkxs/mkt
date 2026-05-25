@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/provider"
 )
@@ -68,5 +69,76 @@ func TestMetrics(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "mkt_symbols_cached 2") {
 		t.Errorf("missing/wrong symbols metric: %s", body)
+	}
+}
+
+func TestAuthRequiredWhenTokenSet(t *testing.T) {
+	_, s := newTestServer(t)
+	s.WithToken("hunter2")
+	h := s.auth(s.handleQuotes)
+
+	noAuth := httptest.NewRecorder()
+	h(noAuth, httptest.NewRequest("GET", "/quotes", nil))
+	if noAuth.Code != http.StatusUnauthorized {
+		t.Errorf("missing token: want 401, got %d", noAuth.Code)
+	}
+
+	wrong := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/quotes", nil)
+	req.Header.Set("Authorization", "Bearer nope")
+	h(wrong, req)
+	if wrong.Code != http.StatusUnauthorized {
+		t.Errorf("wrong token: want 401, got %d", wrong.Code)
+	}
+
+	ok := httptest.NewRecorder()
+	req2 := httptest.NewRequest("GET", "/quotes", nil)
+	req2.Header.Set("Authorization", "Bearer hunter2")
+	h(ok, req2)
+	if ok.Code != http.StatusOK {
+		t.Errorf("correct token: want 200, got %d", ok.Code)
+	}
+
+	queryOK := httptest.NewRecorder()
+	h(queryOK, httptest.NewRequest("GET", "/quotes?token=hunter2", nil))
+	if queryOK.Code != http.StatusOK {
+		t.Errorf("query token: want 200, got %d", queryOK.Code)
+	}
+}
+
+func TestAuthDisabledWhenTokenEmpty(t *testing.T) {
+	_, s := newTestServer(t)
+	h := s.auth(s.handleQuotes)
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest("GET", "/quotes", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("no token configured: want 200, got %d", rec.Code)
+	}
+}
+
+func TestTradingViewBodyTooLarge(t *testing.T) {
+	cache := market.NewCache(60)
+	engine := alert.NewEngine(0, nil)
+	s := New(":0", cache, engine)
+	rec := httptest.NewRecorder()
+	big := strings.Repeat("a", maxWebhookBytes+10)
+	req := httptest.NewRequest("POST", "/webhook/tradingview", strings.NewReader(`{"symbol":"X","alert":"`+big+`"}`))
+	s.handleTradingView(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("oversize body: want 413, got %d", rec.Code)
+	}
+}
+
+func TestTradingViewLooseDecodeAcceptsExtraFields(t *testing.T) {
+	cache := market.NewCache(60)
+	engine := alert.NewEngine(0, nil)
+	s := New(":0", cache, engine)
+	// includes an unknown "exchange" field that strict decode would reject;
+	// the loose-decode fallback must accept it.
+	body := `{"symbol":"AAPL","price":201.5,"exchange":"NASDAQ"}`
+	rec := httptest.NewRecorder()
+	s.handleTradingView(rec, httptest.NewRequest("POST", "/webhook/tradingview", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Errorf("loose decode: want 200, got %d (body=%s)", rec.Code, rec.Body.String())
 	}
 }

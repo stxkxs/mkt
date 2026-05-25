@@ -3,10 +3,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -15,11 +19,17 @@ import (
 	"github.com/stxkxs/mkt/internal/market"
 )
 
+// maxWebhookBytes caps the request body for /webhook/tradingview so an
+// oversize POST can't OOM the process. TradingView alerts are tiny —
+// the body usually fits in a few hundred bytes.
+const maxWebhookBytes = 64 * 1024
+
 // Server is a small read-only HTTP frontend.
 type Server struct {
 	addr    string
 	cache   *market.Cache
 	engine  *alert.Engine
+	token   string // optional bearer token; empty disables auth
 	started time.Time
 	srv     *http.Server
 }
@@ -34,24 +44,55 @@ func New(addr string, cache *market.Cache, engine *alert.Engine) *Server {
 	}
 }
 
-// Start launches the server in a goroutine. Returns the bound port via
-// the server's underlying listener; caller can monitor errors via Wait.
+// WithToken sets a bearer token required on every request. When set,
+// clients must send `Authorization: Bearer <token>` or `?token=<token>`.
+// Empty token (default) leaves the server unauthenticated — only safe
+// when bound to loopback.
+func (s *Server) WithToken(token string) *Server {
+	s.token = token
+	return s
+}
+
+// Start launches the server in a goroutine. ListenAndServe errors are
+// logged through the caller's logger (best-effort: bind failures are
+// surfaced via stderr).
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/quotes", s.handleQuotes)
-	mux.HandleFunc("/quotes/", s.handleQuote)
-	mux.HandleFunc("/alerts", s.handleAlerts)
-	mux.HandleFunc("/metrics", s.handleMetrics)
-	mux.HandleFunc("/webhook/tradingview", s.handleTradingView)
+	mux.HandleFunc("/quotes", s.auth(s.handleQuotes))
+	mux.HandleFunc("/quotes/", s.auth(s.handleQuote))
+	mux.HandleFunc("/alerts", s.auth(s.handleAlerts))
+	mux.HandleFunc("/metrics", s.auth(s.handleMetrics))
+	mux.HandleFunc("/webhook/tradingview", s.auth(s.handleTradingView))
 	s.srv = &http.Server{
 		Addr:              s.addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
-		_ = s.srv.ListenAndServe()
+		if err := s.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "api: listen %s: %v\n", s.addr, err)
+		}
 	}()
 	return nil
+}
+
+// auth wraps a handler with token authentication when a token has been
+// configured. With no token configured it's a no-op.
+func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
+	if s.token == "" {
+		return h
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got == "" {
+			got = r.URL.Query().Get("token")
+		}
+		if subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		h(w, r)
+	}
 }
 
 // Shutdown stops the server.
@@ -152,13 +193,20 @@ func (s *Server) handleTradingView(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "alerts disabled", http.StatusServiceUnavailable)
 		return
 	}
+	// Buffer the body so we can attempt strict decode first, then fall
+	// back to a loose decode if TV's template included extra fields.
+	// MaxBytesReader caps memory regardless of Content-Length.
+	r.Body = http.MaxBytesReader(w, r.Body, maxWebhookBytes)
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
 	var body tvPayload
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields() // first attempt strict; fall back to loose below
-	if err := dec.Decode(&body); err != nil {
-		// retry loose to tolerate extra TV template fields
-		r2 := json.NewDecoder(strings.NewReader(consumeBody(r)))
-		if err := r2.Decode(&body); err != nil {
+	strict := json.NewDecoder(bytes.NewReader(raw))
+	strict.DisallowUnknownFields()
+	if err := strict.Decode(&body); err != nil {
+		if err := json.Unmarshal(raw, &body); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
@@ -185,22 +233,4 @@ func (s *Server) handleTradingView(w http.ResponseWriter, r *http.Request) {
 		Timestamp: time.Now(),
 	})
 	w.WriteHeader(http.StatusOK)
-}
-
-// consumeBody drains the request body into a string. Used for the
-// fallback decode after DisallowUnknownFields rejected the first try.
-func consumeBody(r *http.Request) string {
-	defer r.Body.Close()
-	b := make([]byte, 0, 1024)
-	buf := make([]byte, 1024)
-	for {
-		n, err := r.Body.Read(buf)
-		if n > 0 {
-			b = append(b, buf[:n]...)
-		}
-		if err != nil {
-			break
-		}
-	}
-	return string(b)
 }

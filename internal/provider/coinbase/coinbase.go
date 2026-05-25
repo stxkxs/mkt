@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +22,10 @@ const (
 	restURL      = "https://api.exchange.coinbase.com"
 	reconnectMin = 1 * time.Second
 	reconnectMax = 30 * time.Second
+	// reconnectJitter randomizes up to ±this fraction of the current
+	// backoff to avoid synchronized reconnect storms when many clients
+	// see the same disconnect (e.g. a regional WS outage).
+	reconnectJitter = 0.3
 )
 
 // Provider implements QuoteProvider and HistoryProvider for Coinbase.
@@ -83,10 +89,18 @@ func (p *Provider) Subscribe(ctx context.Context, symbols []string, out chan<- p
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(backoff):
+		case <-time.After(jittered(backoff)):
 		}
 		backoff = min(backoff*2, reconnectMax)
 	}
+}
+
+// jittered returns d ± up to reconnectJitter of d, full-jitter style.
+// Spreads reconnect attempts across the client fleet during a shared
+// outage so we don't all hammer the WS endpoint in lockstep.
+func jittered(d time.Duration) time.Duration {
+	delta := float64(d) * reconnectJitter
+	return d + time.Duration((rand.Float64()*2-1)*delta)
 }
 
 func (p *Provider) connect(ctx context.Context, productIDs []string, out chan<- provider.Quote) error {
@@ -230,12 +244,12 @@ func (p *Provider) History(ctx context.Context, params provider.HistoryParams) (
 		start = params.Start
 	}
 
-	url := fmt.Sprintf("%s/products/%s/candles?granularity=%d&start=%s&end=%s",
-		restURL, productID, granularity,
+	endpoint := fmt.Sprintf("%s/products/%s/candles?granularity=%d&start=%s&end=%s",
+		restURL, url.PathEscape(productID), granularity,
 		start.UTC().Format(time.RFC3339),
 		end.UTC().Format(time.RFC3339))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}

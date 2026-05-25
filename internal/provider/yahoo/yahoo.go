@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -213,14 +214,18 @@ func (p *Provider) fetchParallel(ctx context.Context, symbols []string, out chan
 // fetchBatchQuotes fetches quotes for multiple symbols in a single HTTP request
 // using the v7/finance/quote endpoint.
 func (p *Provider) fetchBatchQuotes(ctx context.Context, symbols []string) ([]provider.Quote, error) {
-	joined := strings.Join(symbols, ",")
+	escaped := make([]string, len(symbols))
+	for i, s := range symbols {
+		escaped[i] = url.QueryEscape(s)
+	}
+	joined := strings.Join(escaped, ",")
 	// Try v7 first (newer), with explicit field list to ensure high/low are returned
-	url := fmt.Sprintf("%s/v7/finance/quote?symbols=%s&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketVolume,regularMarketDayHigh,regularMarketDayLow,regularMarketPreviousClose", baseURL, joined)
+	endpoint := fmt.Sprintf("%s/v7/finance/quote?symbols=%s&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketVolume,regularMarketDayHigh,regularMarketDayLow,regularMarketPreviousClose", baseURL, joined)
 	if p.crumb != "" {
-		url += "&crumb=" + p.crumb
+		endpoint += "&crumb=" + url.QueryEscape(p.crumb)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -281,12 +286,12 @@ func (p *Provider) fetchBatchQuotes(ctx context.Context, symbols []string) ([]pr
 
 // fetchQuoteViaChart uses the v8 chart API which is more reliable than the quote API.
 func (p *Provider) fetchQuoteViaChart(ctx context.Context, symbol string) (provider.Quote, error) {
-	url := fmt.Sprintf("%s/%s?interval=1d&range=2d", chartURL, symbol)
+	endpoint := fmt.Sprintf("%s/%s?interval=1d&range=2d", chartURL, url.PathEscape(symbol))
 	if p.crumb != "" {
-		url += "&crumb=" + p.crumb
+		endpoint += "&crumb=" + url.QueryEscape(p.crumb)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return provider.Quote{}, err
 	}
@@ -403,12 +408,12 @@ func (p *Provider) History(ctx context.Context, params provider.HistoryParams) (
 	interval := yahooInterval(params.Interval)
 	rng := yahooRange(params.Interval, params.Limit)
 
-	url := fmt.Sprintf("%s/%s?interval=%s&range=%s", chartURL, params.Symbol, interval, rng)
+	endpoint := fmt.Sprintf("%s/%s?interval=%s&range=%s", chartURL, url.PathEscape(params.Symbol), interval, rng)
 	if p.crumb != "" {
-		url += "&crumb=" + p.crumb
+		endpoint += "&crumb=" + url.QueryEscape(p.crumb)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}

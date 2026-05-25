@@ -48,6 +48,10 @@
 - `CONTRIBUTING.md`.
 - Yahoo earnings adapter for the calendar: new `yahoo.FetchEarnings` calls the v10 `quoteSummary?modules=calendarEvents` endpoint concurrently per ticker (crumb-authenticated when available). Dashboard wires an `EarningsAdapter` into the calendar source on startup and emits a `CalendarUpdateMsg` so earnings appear alongside the curated economic events.
 - Chart hover crosshair: in the full-screen chart and comparison chart views, the mouse cursor now draws dashed vertical + horizontal lines through the candle area and the OHLCV summary line updates to the hovered candle. Powered by a new `MouseModeAllMotion` path for the chart views; other tabs continue to receive only click + wheel events.
+- Optional bearer-token authentication on the `--listen` HTTP server: new `--listen-token <token>` flag gates `/quotes`, `/quotes/{symbol}`, `/alerts`, `/metrics`, and `/webhook/tradingview` behind `Authorization: Bearer <token>` (or `?token=<token>`). When unset and the bind address is non-loopback, the server logs a warning at startup.
+- `/webhook/tradingview` now wraps the request body in `http.MaxBytesReader` (64KiB cap) and buffers it before attempting strict-then-loose JSON decode. Previously the loose-decode fallback was dead code because `json.Decoder` had already exhausted the body, and an oversize POST could OOM the process.
+- Coinbase WS reconnect backoff gains full jitter (±30% of the current delay). Prevents synchronized reconnect storms when many clients see the same disconnect event (e.g. a regional WS outage).
+- URL-escape user-controlled symbol strings before interpolating them into HTTP endpoints in `provider/yahoo`, `provider/coinbase`, and `news/edgar`. Previously a `/` or `&` in a symbol could inject path segments or extra query parameters; harmless when symbols come from the user's own config but unsound when symbols arrive from MCP/webhook callers.
 
 ### Changed
 - MCP server (`mkt mcp`) expanded to full read-only spec compliance: proper initialize handshake (capabilities for tools/resources/prompts/logging), ping, notifications/initialized + cancelled + progress (silently consumed), logging/setLevel ack, resources/list + read (`mkt://config`, `mkt://watchlist`, `mkt://portfolios`), prompts/list + get (`analyze_symbol`, `portfolio_review`).
@@ -64,5 +68,3 @@
 - Coinbase history requests for `4h` / `1w` now send supported granularities (`3600` / `86400`); previously they sent `14400` / `604800`, which the Coinbase candles API rejects.
 - Modal overlays (symbol info, alert dialog) now composite over the live tab content via `lipgloss.Compositor` instead of replacing the screen with `lipgloss.Place` on a blank canvas.
 
-### Removed
-- Dormant `internal/provider/binance/` package (never imported).

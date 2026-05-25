@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -75,9 +76,9 @@ func fetchEDGARTicker(ctx context.Context, ticker string) []Headline {
 	reqCtx, cancel := context.WithTimeout(ctx, feedTimeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s?action=getcompany&CIK=%s&type=&dateb=&owner=include&count=40&output=atom",
-		EDGARBaseURL, ticker)
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	endpoint := fmt.Sprintf("%s?action=getcompany&CIK=%s&type=&dateb=&owner=include&count=40&output=atom",
+		EDGARBaseURL, url.QueryEscape(ticker))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil
 	}
