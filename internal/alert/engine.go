@@ -66,6 +66,28 @@ func (e *Engine) SetPriceSource(ps PriceSource) {
 	e.prices = ps
 }
 
+// Inject fires a triggered alert through onAlert + every registered
+// notifier as if the engine had detected it. Bypasses rule evaluation
+// and cooldown — intended for inbound webhooks (TradingView etc.).
+func (e *Engine) Inject(a TriggeredAlert) {
+	e.mu.RLock()
+	onAlert := e.onAlert
+	notifiers := make([]Notifier, len(e.notifiers))
+	copy(notifiers, e.notifiers)
+	e.mu.RUnlock()
+
+	if onAlert != nil {
+		onAlert(a)
+	}
+	for _, n := range notifiers {
+		ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+		if err := n.Notify(ctx, a); err != nil {
+			log.Printf("alert notifier %s: %v", n.Name(), err)
+		}
+		cancel()
+	}
+}
+
 // AddNotifier registers a destination that receives every triggered alert.
 // Notifiers are called in registration order with a per-call timeout; errors
 // are logged and never propagated.
