@@ -271,135 +271,66 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	})
 
 	// Macro dashboard polling
-	go func() {
-		ticker := time.NewTicker(cfg.PollDuration())
-		defer ticker.Stop()
-		// Initial fetch
+	go poll(ctx, cfg.PollDuration(), func() {
 		quotes := yahooProv.FetchMacroQuotes(ctx)
 		if len(quotes) > 0 {
 			p.Send(tui.MacroUpdateMsg{Quotes: quotes})
 		}
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				quotes := yahooProv.FetchMacroQuotes(ctx)
-				if len(quotes) > 0 {
-					p.Send(tui.MacroUpdateMsg{Quotes: quotes})
-				}
-			}
-		}
-	}()
+	})
 
-	// Crypto futures polling — Binance funding + OI for major perps.
-	go func() {
-		syms := []string{"BTCUSDT", "ETHUSDT", "SOLUSDT"}
-		ticker := time.NewTicker(2 * time.Minute)
-		defer ticker.Stop()
-		fetch := func() {
-			snaps := binance.FetchFuturesSnapshot(ctx, syms)
-			if len(snaps) > 0 {
-				p.Send(tui.FuturesUpdateMsg{Snapshots: snaps})
-			}
+	// Crypto futures — Binance funding + OI for major perps.
+	go poll(ctx, 2*time.Minute, func() {
+		snaps := binance.FetchFuturesSnapshot(ctx, []string{"BTCUSDT", "ETHUSDT", "SOLUSDT"})
+		if len(snaps) > 0 {
+			p.Send(tui.FuturesUpdateMsg{Snapshots: snaps})
 		}
-		fetch()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				fetch()
-			}
-		}
-	}()
+	})
 
-	// DeFi TVL polling — DeFiLlama public API.
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		fetch := func() {
-			chains, err := defillama.FetchChains(ctx)
-			if err != nil {
-				return
-			}
-			if len(chains) > 0 {
-				p.Send(tui.DeFiUpdateMsg{Chains: chains})
-			}
+	// DeFi TVL — DeFiLlama public API.
+	go poll(ctx, 5*time.Minute, func() {
+		chains, err := defillama.FetchChains(ctx)
+		if err != nil || len(chains) == 0 {
+			return
 		}
-		fetch()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				fetch()
-			}
-		}
-	}()
+		p.Send(tui.DeFiUpdateMsg{Chains: chains})
+	})
 
 	// Portfolio equity-curve marking — append current portfolio values
 	// to the persisted history every 5 minutes and broadcast the new
 	// mark to the TUI.
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		mark := func() {
-			now := time.Now().UTC()
-			quoteSnap := make(map[string]provider.Quote)
-			for _, sym := range symbols {
-				if pq, ok := cache.Latest(sym); ok {
-					quoteSnap[sym] = provider.Quote{Symbol: sym, Price: pq, Timestamp: now}
-				}
-			}
-			for _, pf := range portfolios {
-				sum := portfolio.Evaluate(pf.Holdings, quoteSnap)
-				if sum.TotalValue == 0 {
-					continue
-				}
-				m := portfolio.EquityMark{Time: now, PortfolioName: pf.Name, Value: sum.TotalValue}
-				if err := equityFile.Append(m); err != nil {
-					fmt.Fprintf(os.Stderr, "equity append: %v\n", err)
-					continue
-				}
-				p.Send(tui.EquityMarkMsg{Mark: m})
+	go poll(ctx, 5*time.Minute, func() {
+		now := time.Now().UTC()
+		quoteSnap := make(map[string]provider.Quote)
+		for _, sym := range symbols {
+			if pq, ok := cache.Latest(sym); ok {
+				quoteSnap[sym] = provider.Quote{Symbol: sym, Price: pq, Timestamp: now}
 			}
 		}
-		mark()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				mark()
+		for _, pf := range portfolios {
+			sum := portfolio.Evaluate(pf.Holdings, quoteSnap)
+			if sum.TotalValue == 0 {
+				continue
 			}
+			m := portfolio.EquityMark{Time: now, PortfolioName: pf.Name, Value: sum.TotalValue}
+			if err := equityFile.Append(m); err != nil {
+				fmt.Fprintf(os.Stderr, "equity append: %v\n", err)
+				continue
+			}
+			p.Send(tui.EquityMarkMsg{Mark: m})
 		}
-	}()
+	})
 
-	// News feed polling — RSS + per-ticker SEC EDGAR filings merged.
-	go func() {
-		feeds := news.DefaultFeeds()
-		ticker := time.NewTicker(3 * time.Minute)
-		defer ticker.Stop()
-		fetch := func() {
-			headlines := news.FetchAll(ctx, feeds)
-			if len(cfg.EDGARTickers) > 0 {
-				headlines = append(headlines, news.FetchEDGAR(ctx, cfg.EDGARTickers, 50)...)
-			}
-			if len(headlines) > 0 {
-				p.Send(tui.NewsUpdateMsg{Headlines: headlines})
-			}
+	// News feed — RSS + per-ticker SEC EDGAR filings merged.
+	feeds := news.DefaultFeeds()
+	go poll(ctx, 3*time.Minute, func() {
+		headlines := news.FetchAll(ctx, feeds)
+		if len(cfg.EDGARTickers) > 0 {
+			headlines = append(headlines, news.FetchEDGAR(ctx, cfg.EDGARTickers, 50)...)
 		}
-		fetch()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				fetch()
-			}
+		if len(headlines) > 0 {
+			p.Send(tui.NewsUpdateMsg{Headlines: headlines})
 		}
-	}()
+	})
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
