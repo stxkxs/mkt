@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -28,6 +29,21 @@ import (
 	"github.com/stxkxs/mkt/internal/tui/theme"
 	watchlistview "github.com/stxkxs/mkt/internal/tui/watchlist"
 )
+
+// stockTickers returns the subset of symbols that look like stocks
+// (no -USD/-USDT suffix; not a known bare-crypto symbol). Used to feed
+// Yahoo's earnings endpoint, which doesn't have entries for crypto.
+func stockTickers(symbols []string) []string {
+	var out []string
+	for _, s := range symbols {
+		us := strings.ToUpper(s)
+		if strings.HasSuffix(us, "-USD") || strings.HasSuffix(us, "USDT") || strings.HasPrefix(us, "FRED:") {
+			continue
+		}
+		out = append(out, us)
+	}
+	return out
+}
 
 // dedupeUnion flattens every group's symbols into a deduplicated slice.
 func dedupeUnion(groups []watchlistview.Group) []string {
@@ -210,8 +226,22 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		app.LoadEquityHistory(pastEquity)
 	}
 
-	// Upcoming economic events for the macro tab.
-	app.LoadCalendarEvents(calendar.Upcoming(calendar.EconomicEvents(), time.Now().UTC(), 30*24*time.Hour))
+	// Upcoming events for the macro tab: hardcoded econ schedule plus
+	// per-watchlist-ticker earnings from Yahoo. Earnings fetched
+	// concurrently in the background so startup isn't blocked on a
+	// flaky third-party endpoint.
+	events := calendar.EconomicEvents()
+	app.LoadCalendarEvents(calendar.Upcoming(events, time.Now().UTC(), 30*24*time.Hour))
+	go func() {
+		earningsCtx, earningsCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer earningsCancel()
+		earnings, err := (yahoo.EarningsAdapter{P: yahooProv}).Fetch(earningsCtx, stockTickers(symbols))
+		if err != nil || len(earnings) == 0 {
+			return
+		}
+		merged := append(events, earnings...)
+		p.Send(tui.CalendarUpdateMsg{Events: calendar.Upcoming(merged, time.Now().UTC(), 30*24*time.Hour)})
+	}()
 
 	if len(cfg.Notes) > 0 {
 		app.LoadNotes(cfg.Notes)
