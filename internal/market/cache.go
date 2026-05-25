@@ -51,6 +51,18 @@ func (c *Cache) Prices(symbol string) []float64 {
 	return r.values()
 }
 
+// Symbols returns every symbol currently held by the cache, in
+// undefined order.
+func (c *Cache) Symbols() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]string, 0, len(c.data))
+	for s := range c.data {
+		out = append(out, s)
+	}
+	return out
+}
+
 // Latest returns the most recent quote data for a symbol.
 func (c *Cache) Latest(symbol string) (float64, bool) {
 	c.mu.RLock()
