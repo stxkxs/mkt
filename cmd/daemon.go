@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/stxkxs/mkt/internal/alert"
+	"github.com/stxkxs/mkt/internal/api"
 	"github.com/stxkxs/mkt/internal/config"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/provider"
@@ -100,6 +101,13 @@ SIGTERM or SIGINT.`,
 				log.Printf("daemon: caught %v, shutting down", sig)
 				cancel()
 			}()
+
+			if addr, _ := cmd.Flags().GetString("listen"); addr != "" {
+				srv := api.New(addr, cache, engine)
+				_ = srv.Start()
+				defer func() { _ = srv.Shutdown(context.Background()) }()
+				log.Printf("daemon: api listening on %s", addr)
+			}
 
 			log.Printf("daemon: watching %d symbols, %d alert rules", len(symbols), len(rules))
 			hub.Start(ctx, symbols, func(q provider.Quote) {

@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 	"github.com/stxkxs/mkt/internal/alert"
+	"github.com/stxkxs/mkt/internal/api"
 	"github.com/stxkxs/mkt/internal/config"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/news"
@@ -189,6 +190,13 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	app := tui.NewApp(groups, cache, histProvider, portfolios, alertEngine, yahooProv, coinbaseProv)
 	if len(pastTriggers) > 0 {
 		app.LoadPastAlerts(pastTriggers)
+	}
+
+	if addr, _ := cmd.Flags().GetString("listen"); addr != "" {
+		srv := api.New(addr, cache, alertEngine)
+		_ = srv.Start()
+		defer func() { _ = srv.Shutdown(context.Background()) }()
+		fmt.Fprintf(os.Stderr, "api: listening on %s\n", addr)
 	}
 
 	// Portfolio equity history: load past marks and seed the model.

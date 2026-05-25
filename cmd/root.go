@@ -22,6 +22,7 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.PersistentFlags().String("listen", "", "if set (e.g. :9999), start a read-only HTTP server with /quotes, /alerts, /metrics")
 }
 
 var versionCmd = &cobra.Command{
