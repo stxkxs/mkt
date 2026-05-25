@@ -34,6 +34,9 @@ task build    # or: go build -o mkt .
 ```sh
 mkt                             # launch TUI dashboard
 mkt watch BTC-USD ETH-USD AAPL  # stream prices to stdout (no TUI)
+mkt daemon                      # headless: hub + alerts + notifiers, no TUI
+mkt mcp                         # Model Context Protocol server over stdio
+mkt backtest rules.yaml replay.ndjson   # replay an alert ruleset against a recorded stream
 mkt config show                 # view configuration
 mkt config add TSLA LINK-USD    # add symbols to watchlist
 mkt config remove DOGE-USD      # remove a symbol
@@ -42,6 +45,12 @@ mkt portfolio import --portfolio Tech schwab-export.csv   # import broker CSV
 mkt position --equity 100000 --risk 1 --entry 50 --stop 48 # share-sizing calc
 mkt version
 ```
+
+Global flags (available on every subcommand):
+
+- `--listen :9999` — start a read-only HTTP server exposing `/quotes`, `/quotes/{symbol}`, `/alerts`, `/metrics`, and `/webhook/tradingview`. Works in dashboard or daemon mode.
+- `--listen-token <token>` — require `Authorization: Bearer <token>` (or `?token=<token>`) on every HTTP request. **Set this whenever the bind address is non-loopback** — without it, anyone reachable can hit the TradingView webhook and inject alerts. The server prints a startup warning when this combination is misconfigured.
+- Record a live quote stream for later backtesting: `MKT_RECORD=session.ndjson mkt`. Replay it: `mkt backtest rules.yaml session.ndjson`.
 
 Import supports two CSV formats (auto-detected from the header):
 
@@ -217,33 +226,59 @@ theme: tokyonight
 
 | Source | Protocol | Data | Auth |
 |--------|----------|------|------|
-| [Coinbase Advanced Trade](https://docs.cdp.coinbase.com/advanced-trade-api/docs/ws-overview) | WebSocket | Real-time crypto prices | None |
-| [Coinbase Exchange](https://docs.cloud.coinbase.com/exchange/reference/exchangerestapi_getproductcandles) | REST | Historical crypto candles | None |
-| [Yahoo Finance](https://finance.yahoo.com) | REST (polling) | Stock quotes, history, macro indicators | None (session cookies) |
+| [Coinbase Advanced Trade](https://docs.cdp.coinbase.com/advanced-trade-api/docs/ws-overview) | WebSocket | Real-time crypto prices, level-2 order book | None |
+| [Coinbase Exchange](https://docs.cloud.coinbase.com/exchange/reference/exchangerestapi_getproductcandles) | REST | Historical crypto candles, REST order-book snapshot | None |
+| [Yahoo Finance](https://finance.yahoo.com) | REST (polling) | Stock quotes, history, macro indicators, options chains, earnings calendar | None (session cookies) |
+| [FRED](https://fred.stlouisfed.org/) (St. Louis Fed) | REST (CSV) | Economic series (DFF, T10Y2Y, UNRATE, CPIAUCSL, …) via `FRED:` prefix | None |
+| [DeFiLlama](https://defillama.com/) | REST | Per-chain TVL | None |
+| [Binance Futures](https://binance-docs.github.io/apidocs/futures/) | REST | Funding rate + open interest (BTC/ETH/SOL perps) | None |
 | Yahoo Finance / MarketWatch / CNBC | RSS | News headlines | None |
+| [SEC EDGAR](https://www.sec.gov/cgi-bin/browse-edgar) | Atom (RSS) | Per-ticker filings (8-K, 10-Q, 10-K) | None |
 
-No API keys required. Crypto streams from Coinbase (US-native, no geo-restrictions). Stock data polls from Yahoo Finance's chart API.
+No API keys required. Crypto streams from Coinbase (US-native, no geo-restrictions). Stock data polls from Yahoo Finance.
 
 ---
 
 ## Architecture
 
 ```
-Coinbase WS ──→ chan Quote ──→ Hub ──→ cache.Push()
-Yahoo HTTP  ──→ chan Quote ──↗       ──→ alertEngine.Check()
-                                     ──→ program.Send(QuoteUpdateMsg)
-                                               ↓
-Yahoo macro ──→ program.Send(MacroUpdateMsg)
-RSS feeds   ──→ program.Send(NewsUpdateMsg)
-                                               ↓
-                                     bubbletea Update() → route to views
+Quote providers (Coinbase WS, Yahoo HTTP, recording/replay)
+        │
+        ▼
+   chan Quote (cap 128)
+        │
+        ▼
+       Hub ─────► cache.Push()  (ring buffer per symbol)
+        │  ─────► alertEngine.Check() ──► Notifiers (desktop, webhook, ntfy, Pushover, history)
+        │                              ──► /metrics, /alerts on --listen
+        ▼
+  dispatchCh (cap 256, drops on TUI stall)
+        │
+        ▼
+  program.Send(QuoteUpdateMsg)
+        │
+        ▼
+  bubbletea Update() ──► route to tab views
+
+Background pollers (each its own goroutine):
+  Yahoo macro / earnings ──► MacroUpdateMsg, CalendarUpdateMsg
+  Binance futures        ──► FuturesUpdateMsg
+  DeFiLlama TVL          ──► TVLUpdateMsg
+  RSS + SEC EDGAR        ──► NewsUpdateMsg
+  Portfolio equity mark  ──► EquitySnapshotMsg
+
+External integrations:
+  --listen :9999          → /quotes, /quotes/{sym}, /alerts, /metrics, /webhook/tradingview
+  mkt mcp (stdio)         → MCP tools/resources/prompts for Claude clients
+  MKT_RECORD=path         → tee provider quotes to NDJSON (replay-able via mkt backtest)
 ```
 
-- **Providers** stream/poll quotes into a shared channel
-- **Hub** reads the channel, updates the ring buffer cache, and calls back to send TUI messages
-- **Alert engine** evaluates rules inline on each quote
+- **Providers** stream/poll quotes into a shared channel; `Hub` fans out behind a bounded dispatcher with drop-on-back-pressure semantics
+- **Alert engine** evaluates rules inline on each quote; notifiers run outside the lock with per-call timeouts and error isolation
 - **Indicator package** provides pure-math SMA, EMA, RSI, MACD, Bollinger, VWAP, OBV, ATR, Stochastic, ADX, Pivots, VolumeProfile, Patterns calculations
+- **Portfolio package** is stateless math: transactions → holdings, realized P&L (FIFO/LIFO/HIFO/Average), dividends, risk metrics (Sharpe, Sortino, Beta, MaxDD), correlation matrix, position sizing
 - **Bubbletea** serializes all UI updates — no mutexes in the TUI layer
+- **Webhook receiver** (`/webhook/tradingview`) injects TradingView alerts through the same notifier fan-out, bypassing rule evaluation
 
 ### Project Layout
 
@@ -251,38 +286,56 @@ RSS feeds   ──→ program.Send(NewsUpdateMsg)
 mkt/
 ├── main.go                        # cmd.Execute()
 ├── cmd/
-│   ├── root.go                    # cobra root, version, --quiet
+│   ├── root.go                    # cobra root, --listen, --listen-token, version
 │   ├── dashboard.go               # default cmd — wires providers + hub + TUI
+│   ├── daemon.go                  # mkt daemon — headless hub + alerts + notifiers
 │   ├── watch.go                   # mkt watch — non-TUI price streaming
-│   └── config.go                  # mkt config show/set/add/remove
+│   ├── config.go                  # mkt config show/set/add/remove
+│   ├── portfolio.go               # mkt portfolio import (CSV)
+│   ├── position.go                # mkt position — share-sizing calc
+│   ├── backtest.go                # mkt backtest — replay rules against an NDJSON stream
+│   └── mcp.go                     # mkt mcp — Model Context Protocol server over stdio
 └── internal/
     ├── config/                    # viper load/save ~/.config/mkt/config.yaml
     ├── provider/
     │   ├── provider.go            # QuoteProvider, HistoryProvider interfaces
     │   ├── types.go               # Quote, OHLCV, Interval
-    │   ├── coinbase/              # WebSocket streaming + REST history
-    │   └── yahoo/                 # HTTP polling + chart history + macro quotes
+    │   ├── coinbase/              # WebSocket streaming + REST history + L2 order book
+    │   ├── yahoo/                 # HTTP polling + chart history + macro + options + earnings
+    │   ├── fred/                  # FRED economic series via CSV endpoint
+    │   ├── defillama/             # per-chain TVL
+    │   ├── binance/               # futures funding rate + open interest
+    │   ├── calendar/              # curated economic calendar + EarningsSource interface
+    │   └── recording/             # NDJSON tee decorator + replay provider
     ├── market/
-    │   ├── hub.go                 # aggregates providers, fan-out via callback
+    │   ├── hub.go                 # aggregates providers, fan-out via callback, drop-on-stall
     │   ├── cache.go               # ring buffer per symbol for sparklines
     │   └── history.go             # multi-provider history routing
-    ├── alert/                     # rule engine, conditions, cooldown, desktop notifications
-    ├── portfolio/                 # stateless P&L calculator
+    ├── alert/                     # rule engine, conditions, cooldown, notifier fan-out (desktop/webhook/ntfy/Pushover/history)
+    ├── portfolio/                 # stateless math: P&L, tax lots, dividends, equity curve, risk, correlation, sizing
     ├── indicator/                 # SMA, EMA, RSI, MACD, Bollinger, VWAP, OBV, ATR, Stoch, ADX, Pivots, VolProfile, Patterns
-    ├── news/                      # RSS feed parser, browser URL opener
+    ├── importer/                  # broker CSV formats (generic, Schwab) with header auto-detect
+    ├── news/                      # RSS + SEC EDGAR feed parsing, browser URL opener
+    ├── api/                       # --listen HTTP server (/quotes, /alerts, /metrics, /webhook/tradingview)
+    ├── mcp/                       # JSON-RPC over stdio: tools, resources, prompts
     └── tui/
-        ├── app.go                 # root model: tab switching, message routing
+        ├── app.go                 # root model: tab switching, message routing, full-screen overlays
         ├── keys.go                # keybindings, tab types
         ├── messages.go            # TUI message types
-        ├── theme/                 # color palette, 7 theme presets, Apply/NextTheme
+        ├── theme/                 # color palette, 7 theme presets, panel renderer
         ├── watchlist/             # price table with sparklines
-        ├── detail/                # expanded symbol info panel
-        ├── chart/                 # candlestick/line charts, indicators, comparison
-        ├── portfolio/             # holdings table with live P&L
+        ├── detail/                # expanded symbol info panel with live order book
+        ├── chart/                 # candlestick/line charts, indicators, comparison, hover crosshair
+        ├── portfolio/             # holdings table with live P&L, realized, dividends, equity sparkline
         ├── alerts/                # alert rule management
-        ├── macro/                 # macro dashboard (rates, VIX, commodities)
-        ├── news/                  # RSS news feed with browser open
-        ├── heatmap/               # sector treemap with drill-down
+        ├── macro/                 # macro indicators, futures, TVL, upcoming events
+        ├── news/                  # RSS news feed with EDGAR filings filter
+        ├── heatmap/               # sector treemap with click-to-drill
+        ├── options/               # options chain grid with max-pain
+        ├── correlation/           # rolling-window correlation matrix
+        ├── palette/               # command palette (jump-to-tab, theme switch)
+        ├── alertdialog/           # modal for creating alerts from a symbol
+        ├── symbolinfo/            # modal symbol info overlay
         ├── statusbar/             # connection status, theme name, help
         └── format/                # price/volume formatting utilities
 ```
