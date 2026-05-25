@@ -24,6 +24,7 @@ import (
 	"github.com/stxkxs/mkt/internal/provider/recording"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
 	"github.com/stxkxs/mkt/internal/tui"
+	"github.com/stxkxs/mkt/internal/tui/detail"
 	"github.com/stxkxs/mkt/internal/tui/theme"
 	watchlistview "github.com/stxkxs/mkt/internal/tui/watchlist"
 )
@@ -217,6 +218,8 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	}
 
 	p = tea.NewProgram(app)
+	detail.SetLiveProgram(p)
+	defer detail.SetLiveProgram(nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
