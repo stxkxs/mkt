@@ -46,6 +46,8 @@
 - `theme.ChangedMsg` broadcast so each view rebuilds its cached styles in its own `Update`.
 - Per-feed context timeout in the RSS fetcher.
 - `CONTRIBUTING.md`.
+- Yahoo earnings adapter for the calendar: new `yahoo.FetchEarnings` calls the v10 `quoteSummary?modules=calendarEvents` endpoint concurrently per ticker (crumb-authenticated when available). Dashboard wires an `EarningsAdapter` into the calendar source on startup and emits a `CalendarUpdateMsg` so earnings appear alongside the curated economic events.
+- Chart hover crosshair: in the full-screen chart and comparison chart views, the mouse cursor now draws dashed vertical + horizontal lines through the candle area and the OHLCV summary line updates to the hovered candle. Powered by a new `MouseModeAllMotion` path for the chart views; other tabs continue to receive only click + wheel events.
 
 ### Changed
 - MCP server (`mkt mcp`) expanded to full read-only spec compliance: proper initialize handshake (capabilities for tools/resources/prompts/logging), ping, notifications/initialized + cancelled + progress (silently consumed), logging/setLevel ack, resources/list + read (`mkt://config`, `mkt://watchlist`, `mkt://portfolios`), prompts/list + get (`analyze_symbol`, `portfolio_review`).
@@ -54,6 +56,7 @@
 - Yahoo session init failures are now logged instead of silently discarded.
 - Config directory is created with `0o700` permissions; holdings and alert rules were previously world-readable.
 - `alert.Notify` replaced by a `Notifier` interface; `Engine.AddNotifier` registers destinations and `Engine.Check` dispatches each trigger after releasing the lock, with per-call timeouts and error isolation so one failing destination cannot block siblings.
+- Heatmap mouse: clicking a sector tile in the overview selects it (and a second click on a selected sector drills in); clicking a ticker tile inside the drill-down view opens its full-screen chart. Coordinates resolve against the actual `tileW × tileH` grid so the hit region matches what's drawn on screen.
 
 ### Fixed
 - `alert.Engine.Check` now takes the write lock; it mutates `refPrices` and `cooldowns`, which `RLock` did not protect.
