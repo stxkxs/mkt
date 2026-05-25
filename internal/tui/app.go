@@ -433,6 +433,28 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 
+	case tea.MouseMotionMsg:
+		// Only the full-screen chart views consume motion (for the hover
+		// crosshair). Other tabs ignore it to keep the tab bar coordinate
+		// math simple.
+		if a.chart.Active() {
+			var cmd tea.Cmd
+			a.chart, cmd = a.chart.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return a, tea.Batch(cmds...)
+		}
+		if a.compare.Active() {
+			var cmd tea.Cmd
+			a.compare, cmd = a.compare.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return a, tea.Batch(cmds...)
+		}
+		return a, nil
+
 	case tea.MouseWheelMsg:
 		if a.chart.Active() {
 			var cmd tea.Cmd
@@ -575,12 +597,13 @@ func (a *App) View() tea.View {
 		return tea.NewView(theme.StyleAccentText(spinner + " Loading..."))
 	}
 
-	// Full-screen chart mode
+	// Full-screen chart mode — needs AllMotion so the hover crosshair
+	// can track the cursor without a click.
 	if a.chart.Active() {
 		s := a.chart.View()
 		v := tea.NewView(s)
 		v.AltScreen = true
-		return withMouse(v)
+		return withMouseAllMotion(v)
 	}
 
 	// Comparison chart mode
@@ -588,7 +611,7 @@ func (a *App) View() tea.View {
 		s := a.compare.View()
 		v := tea.NewView(s)
 		v.AltScreen = true
-		return withMouse(v)
+		return withMouseAllMotion(v)
 	}
 
 	// Detail panel overlay
@@ -689,6 +712,13 @@ func (a *App) overlayCenter(bg, overlay string) string {
 
 func withMouse(v tea.View) tea.View {
 	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+// withMouseAllMotion is used by the full-screen chart views so the
+// model receives MouseMotionMsg for hover-crosshair tracking.
+func withMouseAllMotion(v tea.View) tea.View {
+	v.MouseMode = tea.MouseModeAllMotion
 	return v
 }
 

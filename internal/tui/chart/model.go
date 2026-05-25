@@ -83,13 +83,20 @@ type HistoryProvider interface {
 
 // Model is the full-screen chart view.
 type Model struct {
-	symbol        string
-	data          []provider.OHLCV
-	mode          ChartMode
-	intervalIdx   int
-	zoom          int // number of candles to display
-	width         int
-	height        int
+	symbol      string
+	data        []provider.OHLCV
+	mode        ChartMode
+	intervalIdx int
+	zoom        int // number of candles to display
+	width       int
+	height      int
+
+	// Hover crosshair: hoverCol/hoverRow are terminal coordinates of
+	// the last MouseMotionMsg seen; -1 means no hover. The renderer
+	// translates them into grid coordinates and draws dashed crosshair
+	// lines plus a readout for the candle under the cursor.
+	hoverCol      int
+	hoverRow      int
 	active        bool
 	histProvider  HistoryProvider
 	loading       bool
@@ -105,6 +112,8 @@ func New(histProvider HistoryProvider) Model {
 		intervalIdx:  5, // 1d default
 		zoom:         50,
 		histProvider: histProvider,
+		hoverCol:     -1,
+		hoverRow:     -1,
 	}
 }
 
@@ -258,8 +267,23 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.zoom += 10
 			}
 		}
+
+	case tea.MouseMotionMsg:
+		// Track the cursor in terminal coordinates so the renderer can
+		// draw crosshair lines + a per-candle readout. The renderer
+		// itself decides whether the position falls inside the candle
+		// area; here we just store the raw coords.
+		m.hoverCol = msg.X
+		m.hoverRow = msg.Y
 	}
 	return m, nil
+}
+
+// ClearHover resets the hover state. Useful for tests or for the host
+// when the mouse leaves the chart's drawing area.
+func (m *Model) ClearHover() {
+	m.hoverCol = -1
+	m.hoverRow = -1
 }
 
 // View renders the full chart.
@@ -378,12 +402,16 @@ func (m Model) View() string {
 		}
 	}
 
-	// Summary
+	// Summary — shows the hovered candle when the cursor is inside the
+	// chart, otherwise the most recent one.
 	if len(candles) > 0 {
-		last := candles[len(candles)-1]
+		shown := candles[len(candles)-1]
+		if idx := m.hoverCandleIdx(len(candles)); idx >= 0 {
+			shown = candles[idx]
+		}
 		summary := fmt.Sprintf("\n  %s O:%.2f H:%.2f L:%.2f C:%.2f V:%.0f",
-			styleInfo.Render(last.Time.Format("2006-01-02 15:04")),
-			last.Open, last.High, last.Low, last.Close, last.Volume)
+			styleInfo.Render(shown.Time.Format("2006-01-02 15:04")),
+			shown.Open, shown.High, shown.Low, shown.Close, shown.Volume)
 
 		// Append indicator values
 		var indVals []string
@@ -609,8 +637,69 @@ func (m Model) renderCandlestickWithIndicators(candles []provider.OHLCV, closes 
 		drawVolumeProfileGutter(grid, gridColor, candles, chartW, width, height)
 	}
 
+	// Hover crosshair (only when the cursor is inside the candle area).
+	m.drawCrosshair(grid, gridColor, chartW, height)
+
 	// Render
 	return renderGrid(grid, gridColor, width, height, maxP, scale)
+}
+
+// gridLabelWidth is the column count of the price-axis label prefix
+// printed by renderGrid; used to translate hover terminal coordinates
+// to grid coordinates.
+const gridLabelWidth = 10
+
+// hoverHeaderRows is the number of header lines printed by View before
+// the grid begins. Two rows by default (title + blank); three when the
+// indicator menu is open.
+func (m Model) hoverHeaderRows() int {
+	if m.indicatorMenu {
+		return 5
+	}
+	return 4
+}
+
+// hoverCandleIdx returns the index into the visible candles slice that
+// sits under the cursor, or -1 when out of bounds. Assumes candleWidth=2
+// (the value used by renderCandlestickWithIndicators).
+func (m Model) hoverCandleIdx(visible int) int {
+	if m.hoverCol < 0 {
+		return -1
+	}
+	gx := m.hoverCol - (gridLabelWidth + 1)
+	if gx < 0 {
+		return -1
+	}
+	idx := gx / 2
+	if idx < 0 || idx >= visible {
+		return -1
+	}
+	return idx
+}
+
+// drawCrosshair overlays dashed vertical + horizontal lines on the grid
+// at the hover position. No-op when hover is unset or out of bounds.
+func (m Model) drawCrosshair(grid [][]rune, gridColor [][]color.Color, chartW, height int) {
+	if m.hoverCol < 0 || m.hoverRow < 0 {
+		return
+	}
+	gx := m.hoverCol - (gridLabelWidth + 1)
+	gy := m.hoverRow - m.hoverHeaderRows()
+	if gx < 0 || gx >= chartW || gy < 0 || gy >= height {
+		return
+	}
+	for r := range height {
+		if grid[r][gx] == ' ' {
+			grid[r][gx] = '│'
+			gridColor[r][gx] = theme.ColorDim
+		}
+	}
+	for c := range chartW {
+		if grid[gy][c] == ' ' {
+			grid[gy][c] = '─'
+			gridColor[gy][c] = theme.ColorDim
+		}
+	}
 }
 
 // renderLineWithIndicators draws line chart with optional indicator overlays.
