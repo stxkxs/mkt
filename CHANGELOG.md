@@ -48,6 +48,8 @@
 - `CONTRIBUTING.md`.
 
 ### Changed
+- MCP server (`mkt mcp`) expanded to full read-only spec compliance: proper initialize handshake (capabilities for tools/resources/prompts/logging), ping, notifications/initialized + cancelled + progress (silently consumed), logging/setLevel ack, resources/list + read (`mkt://config`, `mkt://watchlist`, `mkt://portfolios`), prompts/list + get (`analyze_symbol`, `portfolio_review`).
+- Coinbase order book in the detail panel updates live via the level2 WebSocket channel instead of just the REST snapshot. New `coinbase.StreamOrderBook` opens a per-product WS, applies snapshot + l2update events to an in-memory book, and emits throttled snapshots (every 250ms). Detail panel starts/stops the streamer when the symbol changes or the panel closes.
 - `market.Hub` now dispatches `onQuote` on a dedicated goroutine behind a 256-slot buffer; quotes drop when the TUI stalls rather than blocking providers.
 - Yahoo session init failures are now logged instead of silently discarded.
 - Config directory is created with `0o700` permissions; holdings and alert rules were previously world-readable.
