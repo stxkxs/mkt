@@ -36,6 +36,10 @@ type Model struct {
 	width  int
 	height int
 	active bool
+
+	// liveCancel cancels the active level2 streamer (if any) so it can
+	// be torn down when the symbol changes or the panel closes.
+	liveCancel context.CancelFunc
 }
 
 // New creates a detail model. The coinbase provider is used to fetch
@@ -49,15 +53,61 @@ func (m *Model) SetNotes(notes map[string]string) {
 	m.notes = notes
 }
 
+// orderBookProgram is satisfied by tea.Program — kept narrow so tests
+// can swap a fake.
+type orderBookProgram interface {
+	Send(msg tea.Msg)
+}
+
+// liveProgram is set by the dashboard before the program starts so the
+// detail panel can push live OrderBook updates into the event loop.
+// Optional — when nil, the panel falls back to the REST snapshot only.
+var liveProgram orderBookProgram
+
+// SetLiveProgram registers the bubbletea program for live-update
+// dispatch from the level2 streamer goroutine. Pass nil to disable.
+func SetLiveProgram(p orderBookProgram) { liveProgram = p }
+
 // SetSymbol updates the displayed symbol and returns a tea.Cmd that
-// fetches an order book if the symbol is crypto. The Cmd is nil for
-// non-crypto symbols or when no coinbase provider is configured.
+// fetches an initial REST snapshot of the order book if the symbol is
+// crypto. The Cmd is nil for non-crypto symbols or when no coinbase
+// provider is configured. SetSymbol also tears down any prior live
+// level2 streamer and (when a liveProgram is registered) starts a new
+// one for the new symbol.
 func (m *Model) SetSymbol(sym string) tea.Cmd {
 	m.symbol = sym
 	m.book = coinbase.OrderBook{}
+
+	if m.liveCancel != nil {
+		m.liveCancel()
+		m.liveCancel = nil
+	}
 	if m.cb == nil || !isCryptoSymbol(sym) {
 		return nil
 	}
+
+	// Start the level2 streamer in a background goroutine when a live
+	// program is registered. Each tick from the WS becomes an
+	// OrderBookUpdateMsg in the bubbletea loop.
+	if liveProgram != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		m.liveCancel = cancel
+		cb := m.cb
+		go func() {
+			out := make(chan coinbase.OrderBook, 4)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				_ = cb.StreamOrderBook(ctx, sym, out)
+				close(out)
+			}()
+			for b := range out {
+				liveProgram.Send(orderBookLoadedMsg{book: b})
+			}
+			<-done
+		}()
+	}
+
 	cb := m.cb
 	return func() tea.Msg {
 		b, err := cb.FetchOrderBook(context.Background(), sym)
@@ -81,9 +131,14 @@ func (m *Model) SetSize(w, h int) {
 	m.height = h
 }
 
-// SetActive sets whether this panel is active.
+// SetActive sets whether this panel is active. When deactivated, any
+// live level2 streamer is cancelled.
 func (m *Model) SetActive(a bool) {
 	m.active = a
+	if !a && m.liveCancel != nil {
+		m.liveCancel()
+		m.liveCancel = nil
+	}
 }
 
 // Active returns whether the panel is active.
