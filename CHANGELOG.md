@@ -34,6 +34,8 @@
 - Per-symbol notes: `notes:` map in `config.yaml` (`SYMBOL: "free text"`) renders below the sparkline in the detail panel for that symbol. Read-only for now — edit in YAML.
 - Command palette: press `:` to open a tiny prompt at the bottom. Type a tab-name prefix (`watch`, `portfolio`, etc.) to jump, `theme <name>` to switch theme, or `q`/`quit` to exit. `esc` cancels.
 - `mkt daemon` subcommand: runs the hub + alert engine + every configured notifier (desktop, webhook, ntfy, Pushover, history) headlessly. Stops on SIGTERM / SIGINT. Useful for an always-on machine that keeps firing alerts even when the TUI isn't open.
+- `--listen <addr>` flag (global, e.g. `--listen :9999`): starts a read-only HTTP server with `/quotes`, `/quotes/{symbol}`, `/alerts`, and `/metrics` (Prometheus text format). Works in both dashboard and daemon modes.
+- `mkt mcp` subcommand: minimal Model Context Protocol server over stdio so Claude Code / Claude Desktop / other MCP clients can query mkt. Tools: `get_quote`, `query_history`, `get_alerts`, `get_portfolio`. Hand-rolled JSON-RPC (no external dep).
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.
