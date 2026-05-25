@@ -6,6 +6,7 @@ import (
 	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider"
 	"github.com/stxkxs/mkt/internal/provider/binance"
+	calendarpkg "github.com/stxkxs/mkt/internal/provider/calendar"
 	"github.com/stxkxs/mkt/internal/provider/defillama"
 )
 
@@ -61,6 +62,12 @@ type FuturesUpdateMsg struct {
 // should be reflected in the TUI.
 type EquityMarkMsg struct {
 	Mark portfolio.EquityMark
+}
+
+// CalendarUpdateMsg is sent when the calendar events list changes
+// (e.g., earnings fetched asynchronously after startup).
+type CalendarUpdateMsg struct {
+	Events []calendarpkg.Event
 }
 
 // SpinnerTickMsg drives the braille loading spinner animation.

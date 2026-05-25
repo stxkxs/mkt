@@ -497,6 +497,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.portfolio.AppendEquityMark(msg.Mark)
 		return a, nil
 
+	case CalendarUpdateMsg:
+		a.macro.UpdateEvents(msg.Events)
+		return a, nil
+
 	case AlertTriggeredMsg:
 		a.alerts.AddTriggered(msg.Alert)
 		a.statusbar.SetAlertCount(a.alerts.TriggeredCount())
