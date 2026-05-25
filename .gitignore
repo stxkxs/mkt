@@ -17,3 +17,6 @@ vendor/
 
 # Config (user-specific)
 # ~/.config/mkt/config.yaml
+
+# Claude Code session state
+.claude/
