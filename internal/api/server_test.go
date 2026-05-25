@@ -10,6 +10,7 @@ import (
 
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/market"
+	"github.com/stxkxs/mkt/internal/observe"
 	"github.com/stxkxs/mkt/internal/provider"
 )
 
@@ -126,6 +127,25 @@ func TestTradingViewBodyTooLarge(t *testing.T) {
 	s.handleTradingView(rec, req)
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("oversize body: want 413, got %d", rec.Code)
+	}
+}
+
+func TestMetricsIncludesRegisteredCounters(t *testing.T) {
+	// Register a counter and bump it; /metrics should emit it in
+	// Prometheus text format with TYPE annotation.
+	c := observe.NewCounter("mkt_test_api_metrics_counter_total")
+	c.Inc()
+	c.Inc()
+
+	_, s := newTestServer(t)
+	rec := httptest.NewRecorder()
+	s.handleMetrics(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "# TYPE mkt_test_api_metrics_counter_total counter") {
+		t.Errorf("missing TYPE line: %s", body)
+	}
+	if !strings.Contains(body, "mkt_test_api_metrics_counter_total 2") {
+		t.Errorf("expected counter value 2, body:\n%s", body)
 	}
 }
 
