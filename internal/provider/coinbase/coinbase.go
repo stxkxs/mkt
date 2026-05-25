@@ -14,8 +14,12 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/stxkxs/mkt/internal/observe"
 	"github.com/stxkxs/mkt/internal/provider"
 )
+
+// Provider-level health counters surfaced on /metrics.
+var wsReconnects = observe.NewCounter("mkt_provider_coinbase_ws_reconnects_total")
 
 const (
 	wsURL        = "wss://advanced-trade-ws.coinbase.com"
@@ -83,6 +87,7 @@ func (p *Provider) Subscribe(ctx context.Context, symbols []string, out chan<- p
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		wsReconnects.Inc()
 		log.Printf("coinbase ws disconnected: %v, reconnecting in %v", err, backoff)
 		p.notifyStatus(false)
 

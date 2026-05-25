@@ -14,7 +14,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stxkxs/mkt/internal/observe"
 	"github.com/stxkxs/mkt/internal/provider"
+)
+
+// Provider-level failure counters surfaced on /metrics.
+var (
+	batchFailures   = observe.NewCounter("mkt_provider_yahoo_batch_failures_total")
+	sessionFailures = observe.NewCounter("mkt_provider_yahoo_session_init_failures_total")
 )
 
 const (
@@ -134,6 +141,7 @@ func (p *Provider) initSession(ctx context.Context) error {
 func (p *Provider) Subscribe(ctx context.Context, symbols []string, out chan<- provider.Quote) error {
 	// Non-fatal: some endpoints work without a crumb, so we log and proceed.
 	if err := p.initSession(ctx); err != nil {
+		sessionFailures.Inc()
 		log.Printf("yahoo: session init failed, continuing without crumb: %v", err)
 	}
 
@@ -166,6 +174,7 @@ func (p *Provider) fetchAndSend(ctx context.Context, symbols []string, out chan<
 
 		quotes, err := p.fetchBatchQuotes(ctx, batch)
 		if err != nil {
+			batchFailures.Inc()
 			// Fallback: parallel per-symbol chart API
 			p.fetchParallel(ctx, batch, out)
 			continue

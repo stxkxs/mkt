@@ -17,6 +17,7 @@ import (
 
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/market"
+	"github.com/stxkxs/mkt/internal/observe"
 )
 
 // maxWebhookBytes caps the request body for /webhook/tradingview so an
@@ -160,6 +161,14 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(&sb, "# HELP mkt_alert_rules Configured alert rules\n")
 		fmt.Fprintf(&sb, "# TYPE mkt_alert_rules gauge\n")
 		fmt.Fprintf(&sb, "mkt_alert_rules %d\n", len(s.engine.Rules()))
+	}
+	// Provider health counters self-registered with the observe package
+	// (yahoo batch + session failures, coinbase WS reconnects, etc.).
+	// Names are emitted in stable lex order so Prometheus diffs stay tidy.
+	snap := observe.Snapshot()
+	for _, name := range observe.SortedNames() {
+		fmt.Fprintf(&sb, "# TYPE %s counter\n", name)
+		fmt.Fprintf(&sb, "%s %d\n", name, snap[name])
 	}
 	_, _ = w.Write([]byte(sb.String()))
 }
