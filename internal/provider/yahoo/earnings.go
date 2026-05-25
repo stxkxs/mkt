@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"sync"
 	"time"
@@ -69,11 +70,11 @@ func (p *Provider) FetchEarnings(ctx context.Context, tickers []string) ([]calen
 }
 
 func (p *Provider) fetchEarningsOne(ctx context.Context, ticker string) []calendar.Event {
-	url := fmt.Sprintf("%s/%s?modules=calendarEvents", QuoteSummaryURL, ticker)
+	endpoint := fmt.Sprintf("%s/%s?modules=calendarEvents", QuoteSummaryURL, url.PathEscape(ticker))
 	if p.crumb != "" {
-		url += "&crumb=" + p.crumb
+		endpoint += "&crumb=" + url.QueryEscape(p.crumb)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil
 	}

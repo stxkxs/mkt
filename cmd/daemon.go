@@ -103,7 +103,9 @@ SIGTERM or SIGINT.`,
 			}()
 
 			if addr, _ := cmd.Flags().GetString("listen"); addr != "" {
-				srv := api.New(addr, cache, engine)
+				token, _ := cmd.Flags().GetString("listen-token")
+				warnIfUnsafeListen(addr, token)
+				srv := api.New(addr, cache, engine).WithToken(token)
 				_ = srv.Start()
 				defer func() { _ = srv.Shutdown(context.Background()) }()
 				log.Printf("daemon: api listening on %s", addr)

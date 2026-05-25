@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -64,11 +65,11 @@ func (p *Provider) FetchOptionsChain(ctx context.Context, symbol string) (Option
 		// Non-fatal — some endpoints work without crumb
 		_ = err
 	}
-	url := fmt.Sprintf("%s/%s", OptionsBaseURL, symbol)
+	endpoint := fmt.Sprintf("%s/%s", OptionsBaseURL, url.PathEscape(symbol))
 	if p.crumb != "" {
-		url += "?crumb=" + p.crumb
+		endpoint += "?crumb=" + url.QueryEscape(p.crumb)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return OptionsChain{}, fmt.Errorf("options: build: %w", err)
 	}

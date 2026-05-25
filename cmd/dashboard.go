@@ -210,7 +210,9 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	}
 
 	if addr, _ := cmd.Flags().GetString("listen"); addr != "" {
-		srv := api.New(addr, cache, alertEngine)
+		token, _ := cmd.Flags().GetString("listen-token")
+		warnIfUnsafeListen(addr, token)
+		srv := api.New(addr, cache, alertEngine).WithToken(token)
 		_ = srv.Start()
 		defer func() { _ = srv.Shutdown(context.Background()) }()
 		fmt.Fprintf(os.Stderr, "api: listening on %s\n", addr)

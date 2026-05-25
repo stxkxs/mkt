@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 )
@@ -38,8 +39,8 @@ type rawBook struct {
 // product (e.g., BTC-USD). Bids are sorted descending, asks ascending.
 func (p *Provider) FetchOrderBook(ctx context.Context, productID string) (OrderBook, error) {
 	productID = toCoinbaseSymbol(productID)
-	url := fmt.Sprintf("%s/%s/book?level=2", OrderBookURL, productID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	endpoint := fmt.Sprintf("%s/%s/book?level=2", OrderBookURL, url.PathEscape(productID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return OrderBook{}, fmt.Errorf("orderbook: build: %w", err)
 	}
