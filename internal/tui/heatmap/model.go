@@ -85,6 +85,63 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.cursor++
 			}
 		}
+
+	case tea.MouseClickMsg:
+		// Click coordinates already have the tab-bar Y-1 adjustment from
+		// the app router. The heatmap view prepends a section header
+		// (1 line), a hint (1), and a blank (1) before painting the
+		// treemap, plus a leading space column. Translate to grid
+		// coordinates.
+		const headerLines = 3
+		const leadCol = 1
+		gridX := msg.X - leadCol
+		gridY := msg.Y - headerLines
+		if gridX < 0 || gridY < 0 {
+			return m, nil
+		}
+		if m.sectorIdx < 0 {
+			// Overview: click a sector rect to select it; second click on
+			// the already-selected sector drills in.
+			chartH := m.height - 4
+			chartW := m.width - 2
+			if chartH < 3 || chartW < 10 {
+				return m, nil
+			}
+			rects := layoutTreemap(len(m.sectors), chartW, chartH)
+			for i, r := range rects {
+				if gridX >= r.X && gridX < r.X+r.W && gridY >= r.Y && gridY < r.Y+r.H {
+					if m.cursor == i {
+						m.sectorIdx = i
+						m.cursor = 0
+					} else {
+						m.cursor = i
+					}
+					return m, nil
+				}
+			}
+			return m, nil
+		}
+		// Drilldown: a click on a tile selects that stock. Tiles are
+		// laid out at tileW = 22 cols wide and tileH = 4 lines tall.
+		// The drilldown view inserts a 2-line title header + a 2-line
+		// separator/blank before the first tile.
+		const tileW = 22
+		const tileH = 4
+		const drillHeader = 4
+		dx := msg.X - 2 // leading "  " padding
+		dy := msg.Y - drillHeader
+		if dx < 0 || dy < 0 {
+			return m, nil
+		}
+		cols := m.tileCols()
+		col := dx / (tileW + 1) // +1 for inter-tile space
+		row := dy / tileH
+		sect := m.sectors[m.sectorIdx]
+		idx := row*cols + col
+		if idx < 0 || idx >= len(sect.Symbols) {
+			return m, nil
+		}
+		m.cursor = idx
 	}
 	return m, nil
 }
