@@ -37,6 +37,7 @@
 - `--listen <addr>` flag (global, e.g. `--listen :9999`): starts a read-only HTTP server with `/quotes`, `/quotes/{symbol}`, `/alerts`, and `/metrics` (Prometheus text format). Works in both dashboard and daemon modes.
 - `mkt mcp` subcommand: minimal Model Context Protocol server over stdio so Claude Code / Claude Desktop / other MCP clients can query mkt. Tools: `get_quote`, `query_history`, `get_alerts`, `get_portfolio`. Hand-rolled JSON-RPC (no external dep).
 - TradingView webhook receiver at `POST /webhook/tradingview` (when `--listen` is set): parses TradingView's freeform JSON body (`symbol`/`ticker`, `price`/`close`, `message`/`alert`) and fans it out through every configured notifier via the new `alert.Engine.Inject`. Bypasses rule evaluation and cooldown so TV's own rules drive timing.
+- `mkt backtest <rules.yaml> <replay.ndjson>` subcommand: replays a recorded quote stream (from `MKT_RECORD`) against a YAML alert-rules file and prints per-rule fire counts plus first/last trigger timestamps. Read-only — no notifiers fire.
 - Indicator test coverage: `RSI`, `SMA`, `EMA`, `MACD`, `Bollinger`.
 - Hub fan-out test verifying provider reader is isolated from a slow quote consumer.
 - GitHub Actions workflow running `go vet`, `go test -race`, and `golangci-lint`.
