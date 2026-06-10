@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stxkxs/mkt/internal/config"
+	"github.com/stxkxs/mkt/internal/tui/theme"
 	"gopkg.in/yaml.v3"
 )
 
@@ -43,8 +45,14 @@ func init() {
 
 			switch args[0] {
 			case "poll_interval":
+				if d, err := time.ParseDuration(args[1]); err != nil || d <= 0 {
+					return fmt.Errorf("invalid poll_interval %q: must be a positive duration (e.g. 15s, 1m)", args[1])
+				}
 				cfg.PollInterval = args[1]
 			case "theme":
+				if !validTheme(args[1]) {
+					return fmt.Errorf("unknown theme %q (valid: %v)", args[1], theme.ThemeNames)
+				}
 				cfg.Theme = args[1]
 			default:
 				return fmt.Errorf("unknown config key: %s", args[0])
@@ -98,6 +106,35 @@ func init() {
 		},
 	}
 
-	configCmd.AddCommand(showCmd, setCmd, addSymbolCmd, removeSymbolCmd)
+	validateCmd := &cobra.Command{
+		Use:   "validate",
+		Short: "Check the config file for invalid values",
+		Long: `Check ~/.config/mkt/config.yaml for values that the dashboard would
+otherwise silently ignore or replace with defaults: malformed durations,
+unknown themes, unknown alert conditions, bad tax methods, and malformed
+transactions. Exits non-zero if any issues are found.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			issues := validateConfig(cfg)
+			if len(issues) > 0 {
+				for _, issue := range issues {
+					fmt.Println("✗ " + issue)
+				}
+				return fmt.Errorf("%d issue(s) found", len(issues))
+			}
+			symbols := len(cfg.Watchlist)
+			for _, w := range cfg.Watchlists {
+				symbols += len(w.Symbols)
+			}
+			fmt.Printf("Config OK: %d watchlist symbols, %d portfolios, %d alerts\n",
+				symbols, len(cfg.Portfolios), len(cfg.Alerts))
+			return nil
+		},
+	}
+
+	configCmd.AddCommand(showCmd, setCmd, addSymbolCmd, removeSymbolCmd, validateCmd)
 	rootCmd.AddCommand(configCmd)
 }

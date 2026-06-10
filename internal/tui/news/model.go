@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	inews "github.com/stxkxs/mkt/internal/news"
+	"github.com/stxkxs/mkt/internal/tui/format"
 	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
@@ -161,17 +162,7 @@ func newsViewportStart(cursor, total, height int) int {
 	if maxItems < 1 {
 		maxItems = 1
 	}
-	if maxItems >= total {
-		return 0
-	}
-	start := cursor - maxItems + 1
-	if start < 0 {
-		start = 0
-	}
-	if start+maxItems > total {
-		start = total - maxItems
-	}
-	return start
+	return format.ViewportStart(cursor, total, maxItems)
 }
 
 // View renders the news feed.
@@ -204,17 +195,11 @@ func (m Model) View() string {
 		maxItems = len(vis)
 	}
 
-	startIdx := 0
-	if len(vis) > maxItems {
-		startIdx = m.cursor - maxItems + 1
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		if startIdx+maxItems > len(vis) {
-			startIdx = len(vis) - maxItems
-		}
-	}
+	startIdx := newsViewportStart(m.cursor, len(vis), m.height)
 	endIdx := startIdx + maxItems
+	if endIdx > len(vis) {
+		endIdx = len(vis)
+	}
 
 	for i := startIdx; i < endIdx; i++ {
 		h := vis[i]
@@ -235,9 +220,8 @@ func (m Model) View() string {
 
 		// Line 2: title (indented)
 		title := h.Title
-		maxTitleWidth := m.width - 6
-		if maxTitleWidth > 0 && len(title) > maxTitleWidth {
-			title = title[:maxTitleWidth-1] + "…"
+		if maxTitleWidth := m.width - 6; maxTitleWidth > 0 {
+			title = format.Truncate(title, maxTitleWidth)
 		}
 		titleStyle := styleTitle
 		if i == m.cursor {

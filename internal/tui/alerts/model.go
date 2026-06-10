@@ -30,12 +30,16 @@ type Model struct {
 	width   int
 	height  int
 	history []alert.TriggeredAlert
+
+	// confirmDelete is the rule index awaiting y/n confirmation, or -1.
+	confirmDelete int
 }
 
 // New creates an alerts model.
 func New(engine *alert.Engine) Model {
 	return Model{
-		engine: engine,
+		engine:        engine,
+		confirmDelete: -1,
 	}
 }
 
@@ -67,6 +71,17 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		rules := m.engine.Rules()
+		// Pending delete: y confirms, anything else cancels.
+		if m.confirmDelete >= 0 {
+			if msg.String() == "y" && m.confirmDelete < len(rules) {
+				m.engine.RemoveRule(m.confirmDelete)
+				if m.cursor >= len(rules)-1 && m.cursor > 0 {
+					m.cursor--
+				}
+			}
+			m.confirmDelete = -1
+			return m, nil
+		}
 		switch msg.String() {
 		case "j", "down":
 			if m.cursor < len(rules)-1 {
@@ -79,11 +94,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case "t":
 			m.engine.ToggleRule(m.cursor)
 		case "d", "delete":
-			if len(rules) > 0 {
-				m.engine.RemoveRule(m.cursor)
-				if m.cursor >= len(rules)-1 && m.cursor > 0 {
-					m.cursor--
-				}
+			if len(rules) > 0 && m.cursor < len(rules) {
+				m.confirmDelete = m.cursor
 			}
 		}
 	case tea.MouseWheelMsg:
@@ -176,7 +188,17 @@ func (m Model) View() string {
 		}
 
 		sb.WriteString("\n")
-		sb.WriteString(theme.StyleDim.Render("  t: toggle  d: delete  j/k: navigate"))
+		if m.confirmDelete >= 0 && m.confirmDelete < len(rules) {
+			r := rules[m.confirmDelete]
+			what := string(r.Condition)
+			if r.IsCompound() {
+				what = "compound rule"
+			}
+			sb.WriteString(styleOff.Render(fmt.Sprintf("  Delete %s %s?", r.Symbol, what)))
+			sb.WriteString(theme.StyleDim.Render("  y: confirm  any other key: cancel"))
+		} else {
+			sb.WriteString(theme.StyleDim.Render("  t: toggle  d: delete  j/k: navigate"))
+		}
 		sb.WriteString("\n")
 	}
 
