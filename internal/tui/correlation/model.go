@@ -102,6 +102,10 @@ func (m Model) View() string {
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
+	if len(syms) < len(m.symbols) {
+		sb.WriteString(theme.StyleDim.Render(fmt.Sprintf("  showing %d of %d symbols (enlarge terminal for more)", len(syms), len(m.symbols))))
+		sb.WriteString("\n")
+	}
 	sb.WriteString(theme.StyleDim.Render("  Positive = green; negative = red; intensity by magnitude."))
 	return sb.String()
 }

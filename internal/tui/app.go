@@ -19,6 +19,7 @@ import (
 	"github.com/stxkxs/mkt/internal/tui/detail"
 	"github.com/stxkxs/mkt/internal/tui/format"
 	heatmapview "github.com/stxkxs/mkt/internal/tui/heatmap"
+	helpview "github.com/stxkxs/mkt/internal/tui/help"
 	macroview "github.com/stxkxs/mkt/internal/tui/macro"
 	newsview "github.com/stxkxs/mkt/internal/tui/news"
 	optionsview "github.com/stxkxs/mkt/internal/tui/options"
@@ -53,6 +54,7 @@ type App struct {
 	statusbar   statusbar.Model
 	alertDialog alertdialog.Model
 	symbolInfo  symbolinfo.Model
+	help        helpview.Model
 	cache       *market.Cache
 }
 
@@ -76,6 +78,7 @@ func NewApp(groups []watchlist.Group, cache *market.Cache, histProvider chart.Hi
 		statusbar:   statusbar.New(),
 		alertDialog: alertdialog.New(alertEngine),
 		symbolInfo:  symbolinfo.New(yahooProv),
+		help:        helpview.New(),
 		cache:       cache,
 	}
 	a.statusbar.SetThemeName(theme.CurrentName)
@@ -146,6 +149,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.compare.SetSize(msg.Width, msg.Height-2)
 		a.alertDialog.SetSize(msg.Width, msg.Height)
 		a.symbolInfo.SetSize(msg.Width, msg.Height)
+		a.help.SetSize(msg.Width, msg.Height)
 		return a, nil
 
 	case SpinnerTickMsg:
@@ -186,6 +190,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.statusbar.SetSearchQuery(a.watchlist.SearchQuery())
 			return a, tea.Batch(cmds...)
+		}
+
+		// Help overlay guard: any key closes.
+		if a.help.Active() {
+			a.help, _ = a.help.Update(msg)
+			return a, nil
 		}
 
 		// Open palette
@@ -257,6 +267,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, func() tea.Msg { return theme.ChangedMsg{Name: name} }
 		}
 
+		// Keybinding reference for the active tab
+		if msg.String() == "?" {
+			a.help.Open(tabNames[a.activeTab])
+			return a, nil
+		}
+
 		// Tab switching
 		if tab := isTabSwitch(msg); tab >= 0 {
 			a.activeTab = tab
@@ -309,7 +325,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.alertDialog.Open(sym, price)
 				}
 				return a, nil
-			case "?":
+			case "i":
 				sym := a.watchlist.SelectedSymbol()
 				if sym != "" {
 					cmd := a.symbolInfo.Open(sym)
@@ -682,6 +698,11 @@ func (a *App) View() tea.View {
 	// Overlay: symbol info
 	if a.symbolInfo.Active() {
 		s = a.overlayCenter(s, a.symbolInfo.View())
+	}
+
+	// Overlay: keybinding help
+	if a.help.Active() {
+		s = a.overlayCenter(s, a.help.View())
 	}
 
 	v := tea.NewView(s)

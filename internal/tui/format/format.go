@@ -217,6 +217,36 @@ func resample(prices []float64, n int) []float64 {
 	return out
 }
 
+// Truncate shortens s to at most max display cells, appending "…" when
+// anything was cut. Rune-safe: never splits a multibyte character.
+func Truncate(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max-1]) + "…"
+}
+
+// ViewportStart returns the first visible item index for a scrolling list
+// so the cursor stays inside a window of `visible` rows. Every scrolling
+// tab uses this same calculation so click handling and rendering agree.
+func ViewportStart(cursor, total, visible int) int {
+	if visible < 1 || visible >= total {
+		return 0
+	}
+	start := cursor - visible + 1
+	if start < 0 {
+		start = 0
+	}
+	if start+visible > total {
+		start = total - visible
+	}
+	return start
+}
+
 // BrailleSpinner frames for animated loading indicators.
 var BrailleSpinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 

@@ -2,6 +2,7 @@ package watchlist
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -39,6 +40,29 @@ type Group struct {
 	Symbols []string
 }
 
+// sortMode selects the row ordering. Quotes update live, so non-config
+// orders are recomputed every render and rows can move as prices change.
+type sortMode int
+
+const (
+	sortConfig sortMode = iota // config order
+	sortChange                 // change% descending
+	sortVolume                 // volume descending
+	sortPrice                  // price descending
+)
+
+func (s sortMode) String() string {
+	switch s {
+	case sortChange:
+		return "change"
+	case sortVolume:
+		return "volume"
+	case sortPrice:
+		return "price"
+	}
+	return "config"
+}
+
 // Model is the watchlist view.
 type Model struct {
 	groups    []Group
@@ -46,7 +70,8 @@ type Model struct {
 	symbols   []string // active group's symbols; mirrored from groups[activeIdx]
 	quotes    map[string]provider.Quote
 	cache     *market.Cache
-	cursor    int
+	cursor    int // position in display order (see order())
+	sortMode  sortMode
 	width     int
 	height    int
 
@@ -97,10 +122,57 @@ func (m Model) Symbols() []string {
 	return m.symbols
 }
 
+// order returns indices into m.symbols in display order. Config order is
+// the identity; other modes sort descending by the quote field, with
+// unquoted symbols last (stable, so they keep their config order).
+func (m Model) order() []int {
+	idx := make([]int, len(m.symbols))
+	for i := range idx {
+		idx[i] = i
+	}
+	if m.sortMode == sortConfig {
+		return idx
+	}
+	key := func(i int) (float64, bool) {
+		q, ok := m.quotes[m.symbols[i]]
+		if !ok {
+			return 0, false
+		}
+		switch m.sortMode {
+		case sortVolume:
+			return q.Volume, true
+		case sortPrice:
+			return q.Price, true
+		default:
+			return q.ChangePct, true
+		}
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		va, oka := key(idx[a])
+		vb, okb := key(idx[b])
+		if oka != okb {
+			return oka
+		}
+		return va > vb
+	})
+	return idx
+}
+
+// posOf returns the display position of a symbols-slice index.
+func (m Model) posOf(symIdx int) int {
+	for pos, si := range m.order() {
+		if si == symIdx {
+			return pos
+		}
+	}
+	return 0
+}
+
 // SelectedSymbol returns the currently selected symbol.
 func (m Model) SelectedSymbol() string {
-	if m.cursor < len(m.symbols) {
-		return m.symbols[m.cursor]
+	ord := m.order()
+	if m.cursor < len(ord) {
+		return m.symbols[ord[m.cursor]]
 	}
 	return ""
 }
@@ -164,13 +236,28 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			if len(m.symbols) > 0 {
 				m.cursor = len(m.symbols) - 1
 			}
+		case "s":
+			// Keep the selection on the same symbol across the re-sort.
+			sym := m.SelectedSymbol()
+			m.sortMode = (m.sortMode + 1) % 4
+			if sym != "" {
+				for pos, si := range m.order() {
+					if m.symbols[si] == sym {
+						m.cursor = pos
+						break
+					}
+				}
+			}
 		case "[":
 			m.switchGroup(-1)
 		case "]":
 			m.switchGroup(1)
 		}
 	case tea.MouseClickMsg:
-		row := msg.Y - 1 // -1 for header
+		row := msg.Y - m.headerLines()
+		if row < 0 {
+			return m, nil
+		}
 		startIdx := m.viewportStart()
 		idx := startIdx + row
 		if idx >= 0 && idx < len(m.symbols) {
@@ -196,7 +283,7 @@ func (m Model) updateSearch(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	switch key {
 	case "enter":
 		if len(m.filtered) > 0 && m.filterCur < len(m.filtered) {
-			m.cursor = m.filtered[m.filterCur]
+			m.cursor = m.posOf(m.filtered[m.filterCur])
 		}
 		m.searching = false
 		m.searchQuery = ""
@@ -281,19 +368,22 @@ func (m *Model) UpdateQuote(q provider.Quote) {
 	m.quotes[q.Symbol] = q
 }
 
+// headerLines counts the fixed rows above the first symbol row: column
+// header + separator, plus the group/sort hint line when shown.
+func (m Model) headerLines() int {
+	if m.showHintLine() {
+		return 3
+	}
+	return 2
+}
+
+// showHintLine reports whether the group-switcher / sort hint row renders.
+func (m Model) showHintLine() bool {
+	return len(m.groups) > 1 || m.sortMode != sortConfig
+}
+
 func (m Model) viewportStart() int {
-	maxRows := m.height - 1
-	if maxRows < 1 || maxRows >= len(m.symbols) {
-		return 0
-	}
-	startIdx := m.cursor - maxRows + 1
-	if startIdx < 0 {
-		startIdx = 0
-	}
-	if startIdx+maxRows > len(m.symbols) {
-		startIdx = len(m.symbols) - maxRows
-	}
-	return startIdx
+	return format.ViewportStart(m.cursor, len(m.symbols), m.height-m.headerLines())
 }
 
 const rangeWidth = 8
@@ -312,11 +402,19 @@ func (m Model) View() string {
 		return m.viewSearch(sparkWidth)
 	}
 
-	// Group switcher hint when multiple watchlists are configured.
-	if len(m.groups) > 1 {
+	// Hint line: group switcher and/or active sort mode.
+	if m.showHintLine() {
 		sb.WriteString("  ")
-		sb.WriteString(theme.StyleAccentText(m.ActiveGroupName()))
-		sb.WriteString(theme.StyleDim.Render(fmt.Sprintf("  [/]: switch  (%d/%d)\n", m.activeIdx+1, len(m.groups))))
+		if len(m.groups) > 1 {
+			sb.WriteString(theme.StyleAccentText(m.ActiveGroupName()))
+			sb.WriteString(theme.StyleDim.Render(fmt.Sprintf("  [/]: switch  (%d/%d)", m.activeIdx+1, len(m.groups))))
+		}
+		if m.sortMode != sortConfig {
+			sb.WriteString(theme.StyleDim.Render("  sort: "))
+			sb.WriteString(theme.StyleAccentText(m.sortMode.String() + " ↓"))
+			sb.WriteString(theme.StyleDim.Render("  s: cycle"))
+		}
+		sb.WriteString("\n")
 	}
 
 	// Header
@@ -327,8 +425,8 @@ func (m Model) View() string {
 	sb.WriteString(theme.StyleBorderChar.Render(strings.Repeat("─", m.width)))
 	sb.WriteString("\n")
 
-	// Compute visible window (2 rows for header + separator)
-	maxRows := m.height - 2
+	// Compute visible window below the fixed header rows.
+	maxRows := m.height - m.headerLines()
 	if maxRows < 1 || maxRows >= len(m.symbols) {
 		maxRows = len(m.symbols)
 	}
@@ -338,9 +436,10 @@ func (m Model) View() string {
 		endIdx = len(m.symbols)
 	}
 
-	// Rows
-	for i := startIdx; i < endIdx; i++ {
-		m.renderRow(&sb, i, i == m.cursor, sparkWidth)
+	// Rows, in display order
+	ord := m.order()
+	for pos := startIdx; pos < endIdx; pos++ {
+		m.renderRow(&sb, ord[pos], pos == m.cursor, sparkWidth)
 	}
 
 	return sb.String()
@@ -373,16 +472,7 @@ func (m Model) viewSearch(sparkWidth int) string {
 	if maxRows < 1 {
 		maxRows = 1
 	}
-	startIdx := 0
-	if len(m.filtered) > maxRows {
-		startIdx = m.filterCur - maxRows + 1
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		if startIdx+maxRows > len(m.filtered) {
-			startIdx = len(m.filtered) - maxRows
-		}
-	}
+	startIdx := format.ViewportStart(m.filterCur, len(m.filtered), maxRows)
 	endIdx := startIdx + maxRows
 	if endIdx > len(m.filtered) {
 		endIdx = len(m.filtered)

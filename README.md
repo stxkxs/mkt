@@ -41,6 +41,7 @@ mkt config show                 # view configuration
 mkt config add TSLA LINK-USD    # add symbols to watchlist
 mkt config remove DOGE-USD      # remove a symbol
 mkt config set poll_interval 30s
+mkt config validate             # check config for invalid values
 mkt portfolio import --portfolio Tech schwab-export.csv   # import broker CSV
 mkt position --equity 100000 --risk 1 --entry 50 --stop 48 # share-sizing calc
 mkt version
@@ -66,9 +67,11 @@ Import supports two CSV formats (auto-detected from the header):
 | `1`–`9` | Jump to tab (Watch, Portfolio, Alerts, Chart, Macro, News, Heatmap, Options, Correl) |
 | `tab` / `shift+tab` | Cycle tabs |
 | `j` / `k` | Navigate rows |
+| `?` | Keybinding help for the active tab |
 | `enter` | Detail panel (watchlist) / open link (news) / drill down (heatmap) |
+| `s` | Cycle watchlist sort (config order → change% → volume → price) |
 | `c` | Full-screen chart for selected symbol |
-| `i` | Toggle indicator menu on chart (1-9, a, p, v, k to toggle SMA/EMA/Bollinger/RSI/MACD/VWAP/OBV/ATR/Stoch/ADX/Pivots/VolProfile/Patterns) |
+| `i` | Symbol info (watchlist) / toggle indicator menu on chart (1-9, a, p, v, k to toggle SMA/EMA/Bollinger/RSI/MACD/VWAP/OBV/ATR/Stoch/ADX/Pivots/VolProfile/Patterns) |
 | `O` | Load options chain for selected symbol (switches to Options tab) |
 | `:` | Open command palette (type a tab name, `theme <name>`, or `q`) |
 | `a` | Add selected symbol to comparison set |
@@ -290,7 +293,7 @@ mkt/
 │   ├── dashboard.go               # default cmd — wires providers + hub + TUI
 │   ├── daemon.go                  # mkt daemon — headless hub + alerts + notifiers
 │   ├── watch.go                   # mkt watch — non-TUI price streaming
-│   ├── config.go                  # mkt config show/set/add/remove
+│   ├── config.go                  # mkt config show/set/add/remove/validate
 │   ├── portfolio.go               # mkt portfolio import (CSV)
 │   ├── position.go                # mkt position — share-sizing calc
 │   ├── backtest.go                # mkt backtest — replay rules against an NDJSON stream

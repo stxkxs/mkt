@@ -9,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/tui/format"
 	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
@@ -144,18 +145,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 // portfolioViewportStart returns the first visible holding index.
 // Mirrors the offset calculation in View so click handling stays consistent.
 func portfolioViewportStart(cursor, total, height int) int {
-	maxRows := height - 6
-	if maxRows < 1 || maxRows >= total {
-		return 0
-	}
-	start := cursor - maxRows + 1
-	if start < 0 {
-		start = 0
-	}
-	if start+maxRows > total {
-		start = total - maxRows
-	}
-	return start
+	return format.ViewportStart(cursor, total, height-6)
 }
 
 // View renders the portfolio.
@@ -210,16 +200,7 @@ func (m Model) View() string {
 	if maxRows < 1 || maxRows >= len(summary.Positions) {
 		maxRows = len(summary.Positions)
 	}
-	startIdx := 0
-	if len(summary.Positions) > maxRows {
-		startIdx = m.cursor - maxRows + 1
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		if startIdx+maxRows > len(summary.Positions) {
-			startIdx = len(summary.Positions) - maxRows
-		}
-	}
+	startIdx := portfolioViewportStart(m.cursor, len(summary.Positions), m.height)
 	endIdx := startIdx + maxRows
 	if endIdx > len(summary.Positions) {
 		endIdx = len(summary.Positions)
@@ -239,10 +220,7 @@ func (m Model) View() string {
 			sign = ""
 		}
 
-		name := pos.Name
-		if len(name) > 22 {
-			name = name[:21] + "…"
-		}
+		name := format.Truncate(pos.Name, 22)
 
 		row := fmt.Sprintf("%s%s %s %s %s %s %s %s",
 			cursor,
