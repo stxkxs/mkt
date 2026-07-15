@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/stxkxs/mkt/internal/httpx"
 )
 
 // DefaultEDGARBase is the SEC EDGAR Atom-feed endpoint base.
@@ -78,22 +78,10 @@ func fetchEDGARTicker(ctx context.Context, ticker string) []Headline {
 
 	endpoint := fmt.Sprintf("%s?action=getcompany&CIK=%s&type=&dateb=&owner=include&count=40&output=atom",
 		EDGARBaseURL, url.QueryEscape(ticker))
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil
-	}
-	req.Header.Set("User-Agent", edgarUserAgent)
-	req.Header.Set("Accept", "application/atom+xml")
-
-	resp, err := feedClient.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil
-	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := httpx.Get(reqCtx, feedClient, endpoint, map[string]string{
+		"User-Agent": edgarUserAgent,
+		"Accept":     "application/atom+xml",
+	})
 	if err != nil {
 		return nil
 	}

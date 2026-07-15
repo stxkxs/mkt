@@ -430,22 +430,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Y:      msg.Y - 1, // subtract tab bar height
 			Button: msg.Button,
 		}
-		var cmd tea.Cmd
-		switch a.activeTab {
-		case TabWatchlist:
-			a.watchlist, cmd = a.watchlist.Update(adjusted)
-		case TabPortfolio:
-			a.portfolio, cmd = a.portfolio.Update(adjusted)
-		case TabAlerts:
-			a.alerts, cmd = a.alerts.Update(adjusted)
-		case TabNews:
-			a.news, cmd = a.news.Update(adjusted)
-		case TabHeatmap:
-			a.heatmap, cmd = a.heatmap.Update(adjusted)
-		case TabOptions:
-			a.options, cmd = a.options.Update(adjusted)
-		}
-		if cmd != nil {
+		if cmd := a.forwardMouseToActiveTab(adjusted); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 
@@ -488,22 +473,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, tea.Batch(cmds...)
 		}
-		var cmd tea.Cmd
-		switch a.activeTab {
-		case TabWatchlist:
-			a.watchlist, cmd = a.watchlist.Update(msg)
-		case TabPortfolio:
-			a.portfolio, cmd = a.portfolio.Update(msg)
-		case TabAlerts:
-			a.alerts, cmd = a.alerts.Update(msg)
-		case TabNews:
-			a.news, cmd = a.news.Update(msg)
-		case TabHeatmap:
-			a.heatmap, cmd = a.heatmap.Update(msg)
-		case TabOptions:
-			a.options, cmd = a.options.Update(msg)
-		}
-		if cmd != nil {
+		if cmd := a.forwardMouseToActiveTab(msg); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 
@@ -605,6 +575,30 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return a, tea.Batch(cmds...)
+}
+
+// forwardMouseToActiveTab routes a mouse message to the model backing the
+// active tab and returns its command. Only the tabs that consume mouse
+// input are listed; the full-screen chart/compare overlays are handled by
+// the caller before this point. Shared by the click and wheel handlers so
+// the tab dispatch isn't written twice.
+func (a *App) forwardMouseToActiveTab(msg tea.Msg) tea.Cmd {
+	var cmd tea.Cmd
+	switch a.activeTab {
+	case TabWatchlist:
+		a.watchlist, cmd = a.watchlist.Update(msg)
+	case TabPortfolio:
+		a.portfolio, cmd = a.portfolio.Update(msg)
+	case TabAlerts:
+		a.alerts, cmd = a.alerts.Update(msg)
+	case TabNews:
+		a.news, cmd = a.news.Update(msg)
+	case TabHeatmap:
+		a.heatmap, cmd = a.heatmap.Update(msg)
+	case TabOptions:
+		a.options, cmd = a.options.Update(msg)
+	}
+	return cmd
 }
 
 func (a *App) View() tea.View {

@@ -2,15 +2,13 @@ package yahoo
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/stxkxs/mkt/internal/httpx"
 	"github.com/stxkxs/mkt/internal/provider/calendar"
 )
 
@@ -74,26 +72,9 @@ func (p *Provider) fetchEarningsOne(ctx context.Context, ticker string) []calend
 	if p.crumb != "" {
 		endpoint += "&crumb=" + url.QueryEscape(p.crumb)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	req.Header.Set("Accept", "application/json")
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil
-	}
 	var raw quoteSummaryResp
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := httpx.GetJSON(ctx, p.client, endpoint, yahooJSONHeaders, &raw); err != nil {
+		p.resetCrumbOnAuthError(err)
 		return nil
 	}
 	if len(raw.QuoteSummary.Result) == 0 {

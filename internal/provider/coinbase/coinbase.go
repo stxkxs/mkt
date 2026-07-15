@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"math/rand/v2"
 	"net/http"
@@ -14,8 +13,10 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/stxkxs/mkt/internal/httpx"
 	"github.com/stxkxs/mkt/internal/observe"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/symbol"
 )
 
 // Provider-level health counters surfaced on /metrics.
@@ -30,6 +31,13 @@ const (
 	// backoff to avoid synchronized reconnect storms when many clients
 	// see the same disconnect (e.g. a regional WS outage).
 	reconnectJitter = 0.3
+	// WS liveness: actively ping the server on this cadence and give the
+	// pong this long to arrive. A silently half-open connection (no data,
+	// no error — common through NAT/proxies/load balancers) blocks Read
+	// forever; a failed ping round-trip cancels the read loop so the
+	// existing reconnect logic kicks in.
+	pingInterval = 15 * time.Second
+	pingTimeout  = 10 * time.Second
 )
 
 // Provider implements QuoteProvider and HistoryProvider for Coinbase.
@@ -48,24 +56,12 @@ func New() *Provider {
 
 func (p *Provider) Name() string { return "coinbase" }
 
-// Supports returns true for crypto symbols in Coinbase format (XXX-USD, XXX-USDT)
-// or bare symbols that we can convert (BTC, ETH, etc).
-func (p *Provider) Supports(symbol string) bool {
-	s := strings.ToUpper(symbol)
-	// Direct Coinbase format
-	if strings.Contains(s, "-") {
-		return strings.HasSuffix(s, "-USD") || strings.HasSuffix(s, "-USDT")
-	}
-	// Bare crypto symbols we know about
-	knownCrypto := map[string]bool{
-		"BTC": true, "ETH": true, "SOL": true, "XRP": true,
-		"ADA": true, "DOGE": true, "AVAX": true, "DOT": true,
-		"MATIC": true, "LINK": true, "UNI": true, "ATOM": true,
-		"LTC": true, "NEAR": true, "FIL": true, "APT": true,
-		"ARB": true, "OP": true, "SUI": true, "SEI": true,
-		"BNB": true, "PEPE": true, "SHIB": true, "WIF": true,
-	}
-	return knownCrypto[s]
+// Supports returns true for crypto symbols in Coinbase format (XXX-USD,
+// XXX-USDT), Binance bare-pair format (XXXUSDT), or a known bare base
+// (BTC, ETH, …). Classification is delegated to the shared symbol package
+// so it can't drift from the other providers.
+func (p *Provider) Supports(sym string) bool {
+	return symbol.IsCrypto(sym)
 }
 
 // StatusChan returns a channel that receives connection status updates.
@@ -133,8 +129,14 @@ func (p *Provider) connect(ctx context.Context, productIDs []string, out chan<- 
 
 	p.notifyStatus(true)
 
+	// Probe liveness in the background so a stalled-but-open stream is
+	// detected and reconnected instead of blocking Read indefinitely.
+	connCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go keepAlive(connCtx, ws, cancel)
+
 	for {
-		_, data, err := ws.Read(ctx)
+		_, data, err := ws.Read(connCtx)
 		if err != nil {
 			return fmt.Errorf("read: %w", err)
 		}
@@ -156,10 +158,34 @@ func (p *Provider) connect(ctx context.Context, productIDs []string, out chan<- 
 				}
 				select {
 				case out <- q:
-				case <-ctx.Done():
+				case <-connCtx.Done():
 					ws.Close(websocket.StatusNormalClosure, "closing")
-					return ctx.Err()
+					return connCtx.Err()
 				}
+			}
+		}
+	}
+}
+
+// keepAlive pings the server every pingInterval and gives each pong
+// pingTimeout to arrive. A failed ping means the connection is dead (or
+// half-open), so it cancels connCtx — unblocking the read loop, which then
+// returns and lets Subscribe reconnect. This is the liveness check that a
+// bare blocking Read cannot provide.
+func keepAlive(ctx context.Context, ws *websocket.Conn, cancel context.CancelFunc) {
+	t := time.NewTicker(pingInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pingCtx, pcancel := context.WithTimeout(ctx, pingTimeout)
+			err := ws.Ping(pingCtx)
+			pcancel()
+			if err != nil {
+				cancel()
+				return
 			}
 		}
 	}
@@ -254,30 +280,9 @@ func (p *Provider) History(ctx context.Context, params provider.HistoryParams) (
 		start.UTC().Format(time.RFC3339),
 		end.UTC().Format(time.RFC3339))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "mkt/1.0")
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("coinbase API error %d: %s", resp.StatusCode, string(body))
-	}
-
 	var raw [][]float64
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("parse candles: %w", err)
+	if err := httpx.GetJSON(ctx, p.client, endpoint, map[string]string{"User-Agent": "mkt/1.0"}, &raw); err != nil {
+		return nil, fmt.Errorf("coinbase candles: %w", err)
 	}
 
 	// Coinbase returns newest first, reverse to chronological

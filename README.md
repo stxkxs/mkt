@@ -49,8 +49,8 @@ mkt version
 
 Global flags (available on every subcommand):
 
-- `--listen :9999` — start a read-only HTTP server exposing `/quotes`, `/quotes/{symbol}`, `/alerts`, `/metrics`, and `/webhook/tradingview`. Works in dashboard or daemon mode.
-- `--listen-token <token>` — require `Authorization: Bearer <token>` (or `?token=<token>`) on every HTTP request. **Set this whenever the bind address is non-loopback** — without it, anyone reachable can hit the TradingView webhook and inject alerts. The server prints a startup warning when this combination is misconfigured.
+- `--listen 127.0.0.1:9999` — start a read-only HTTP server exposing `/quotes`, `/quotes/{symbol}`, `/alerts`, `/metrics`, and `/webhook/tradingview`. Works in dashboard or daemon mode.
+- `--listen-token <token>` — require `Authorization: Bearer <token>` (header only; query-string tokens are rejected so secrets don't leak into logs) on every HTTP request. **This is mandatory for any non-loopback bind** — a loopback bind (`127.0.0.1:9999`) may omit it, but `mkt` **refuses to start** on any other address (including the all-interfaces form `:9999` / `0.0.0.0`) without a token, since `/webhook/tradingview` can inject alerts and `/alerts` leaks configured destinations. The webhook is also rate-limited to guard against notification spam.
 - Record a live quote stream for later backtesting: `MKT_RECORD=session.ndjson mkt`. Replay it: `mkt backtest rules.yaml session.ndjson`.
 
 Import supports two CSV formats (auto-detected from the header):
@@ -271,7 +271,7 @@ Background pollers (each its own goroutine):
   Portfolio equity mark  ──► EquitySnapshotMsg
 
 External integrations:
-  --listen :9999          → /quotes, /quotes/{sym}, /alerts, /metrics, /webhook/tradingview
+  --listen 127.0.0.1:9999 → /quotes, /quotes/{sym}, /alerts, /metrics, /webhook/tradingview
   mkt mcp (stdio)         → MCP tools/resources/prompts for Claude clients
   MKT_RECORD=path         → tee provider quotes to NDJSON (replay-able via mkt backtest)
 ```

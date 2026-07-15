@@ -2,7 +2,7 @@ package yahoo
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,8 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stxkxs/mkt/internal/httpx"
 	"github.com/stxkxs/mkt/internal/observe"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/symbol"
 )
 
 // Provider-level failure counters surfaced on /metrics.
@@ -24,10 +26,30 @@ var (
 	sessionFailures = observe.NewCounter("mkt_provider_yahoo_session_init_failures_total")
 )
 
-const (
-	baseURL  = "https://query1.finance.yahoo.com"
-	chartURL = "https://query1.finance.yahoo.com/v8/finance/chart"
+// Yahoo endpoint bases. Declared as vars (not consts) so tests can point
+// them at an httptest server; production uses the real hosts. This is the
+// same pattern the side endpoints (OptionsBaseURL, QuoteSummaryURL) already
+// use — extending it to the core quote/chart paths makes Subscribe and the
+// batch-quote path testable without network access.
+var (
+	baseURL    = "https://query1.finance.yahoo.com"
+	chartURL   = "https://query1.finance.yahoo.com/v8/finance/chart"
+	sessionURL = "https://finance.yahoo.com/quote/AAPL/"
+	crumbURL   = "https://query2.finance.yahoo.com/v1/test/getcrumb"
 )
+
+// yahooHeaders is the browser-like header set the core quote/chart/summary
+// endpoints expect. Read-only; shared across requests.
+var yahooHeaders = map[string]string{
+	"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+}
+
+// yahooJSONHeaders additionally advertises a JSON Accept for the v10
+// quoteSummary (earnings) and v7 options endpoints, which are JSON-only.
+var yahooJSONHeaders = map[string]string{
+	"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+	"Accept":     "application/json",
+}
 
 // Provider implements QuoteProvider and HistoryProvider for Yahoo Finance.
 type Provider struct {
@@ -55,28 +77,11 @@ func New(pollInterval time.Duration) *Provider {
 
 func (p *Provider) Name() string { return "yahoo" }
 
-// Supports returns true for stock symbols (not crypto pairs).
-func (p *Provider) Supports(symbol string) bool {
-	s := strings.ToUpper(symbol)
-	// Not a crypto pair (Coinbase format or Binance format)
-	if strings.Contains(s, "-USD") || strings.HasSuffix(s, "USDT") || strings.HasSuffix(s, "BUSD") {
-		return false
-	}
-	// Known crypto bare symbols
-	knownCrypto := map[string]bool{
-		"BTC": true, "ETH": true, "SOL": true, "XRP": true,
-		"ADA": true, "DOGE": true, "AVAX": true, "BNB": true,
-	}
-	if knownCrypto[s] {
-		return false
-	}
-	// Stock-like: 1-5 uppercase letters, possibly with dots (BRK.B)
-	for _, c := range s {
-		if !((c >= 'A' && c <= 'Z') || c == '.' || c == '-') {
-			return false
-		}
-	}
-	return len(s) >= 1 && len(s) <= 10
+// Supports returns true for stock-shaped symbols (not crypto, not FRED).
+// Classification is delegated to the shared symbol package so Yahoo can't
+// disagree with Coinbase about whether something is crypto.
+func (p *Provider) Supports(sym string) bool {
+	return symbol.IsStock(sym)
 }
 
 // initSession fetches Yahoo homepage to get cookies and crumb.
@@ -89,7 +94,7 @@ func (p *Provider) initSession(ctx context.Context) error {
 	}
 
 	// Step 1: Hit finance page to get cookies
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://finance.yahoo.com/quote/AAPL/", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sessionURL, nil)
 	if err != nil {
 		return err
 	}
@@ -100,7 +105,7 @@ func (p *Provider) initSession(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("fetch yahoo page: %w", err)
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, httpx.MaxResponseBytes))
 	resp.Body.Close()
 
 	// Step 2: Extract crumb from page content
@@ -114,8 +119,7 @@ func (p *Provider) initSession(ctx context.Context) error {
 	}
 
 	// Alternative: try the crumb endpoint directly
-	crumbReq, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		"https://query2.finance.yahoo.com/v1/test/getcrumb", nil)
+	crumbReq, err := http.NewRequestWithContext(ctx, http.MethodGet, crumbURL, nil)
 	if err != nil {
 		return err
 	}
@@ -125,7 +129,7 @@ func (p *Provider) initSession(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("fetch crumb: %w", err)
 	}
-	crumbBody, _ := io.ReadAll(crumbResp.Body)
+	crumbBody, _ := io.ReadAll(io.LimitReader(crumbResp.Body, httpx.MaxResponseBytes))
 	crumbResp.Body.Close()
 
 	if crumbResp.StatusCode == 200 && len(crumbBody) > 0 {
@@ -135,6 +139,19 @@ func (p *Provider) initSession(ctx context.Context) error {
 
 	// If we can't get a crumb, try without one (some endpoints work without it)
 	return nil
+}
+
+// resetCrumbOnAuthError clears the cached crumb when err reports a 401/403,
+// so the next poll re-establishes the session. Returns whether it matched.
+func (p *Provider) resetCrumbOnAuthError(err error) bool {
+	var se *httpx.StatusError
+	if errors.As(err, &se) && (se.Code == http.StatusUnauthorized || se.Code == http.StatusForbidden) {
+		p.mu.Lock()
+		p.crumb = ""
+		p.mu.Unlock()
+		return true
+	}
+	return false
 }
 
 // Subscribe polls Yahoo Finance at regular intervals.
@@ -234,37 +251,10 @@ func (p *Provider) fetchBatchQuotes(ctx context.Context, symbols []string) ([]pr
 		endpoint += "&crumb=" + url.QueryEscape(p.crumb)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		p.mu.Lock()
-		p.crumb = ""
-		p.mu.Unlock()
-		return nil, fmt.Errorf("yahoo auth error %d, resetting crumb", resp.StatusCode)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("yahoo batch quote error %d", resp.StatusCode)
-	}
-
 	var result batchQuoteResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse batch quotes: %w", err)
+	if err := httpx.GetJSON(ctx, p.client, endpoint, yahooHeaders, &result); err != nil {
+		p.resetCrumbOnAuthError(err)
+		return nil, fmt.Errorf("yahoo batch quote: %w", err)
 	}
 
 	if result.QuoteResponse.Error != nil {
@@ -300,38 +290,10 @@ func (p *Provider) fetchQuoteViaChart(ctx context.Context, symbol string) (provi
 		endpoint += "&crumb=" + url.QueryEscape(p.crumb)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return provider.Quote{}, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return provider.Quote{}, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return provider.Quote{}, err
-	}
-
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		// Reset crumb and retry on next poll
-		p.mu.Lock()
-		p.crumb = ""
-		p.mu.Unlock()
-		return provider.Quote{}, fmt.Errorf("yahoo auth error %d, resetting crumb", resp.StatusCode)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return provider.Quote{}, fmt.Errorf("yahoo API error %d", resp.StatusCode)
-	}
-
 	var result chartResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return provider.Quote{}, fmt.Errorf("parse chart: %w", err)
+	if err := httpx.GetJSON(ctx, p.client, endpoint, yahooHeaders, &result); err != nil {
+		p.resetCrumbOnAuthError(err)
+		return provider.Quote{}, fmt.Errorf("yahoo chart quote: %w", err)
 	}
 
 	if result.Chart.Error != nil {
@@ -422,30 +384,10 @@ func (p *Provider) History(ctx context.Context, params provider.HistoryParams) (
 		endpoint += "&crumb=" + url.QueryEscape(p.crumb)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("yahoo chart error %d: %s", resp.StatusCode, string(body))
-	}
-
 	var result chartResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse yahoo chart: %w", err)
+	if err := httpx.GetJSON(ctx, p.client, endpoint, yahooHeaders, &result); err != nil {
+		p.resetCrumbOnAuthError(err)
+		return nil, fmt.Errorf("yahoo chart history: %w", err)
 	}
 
 	if result.Chart.Error != nil {

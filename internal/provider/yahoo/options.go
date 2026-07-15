@@ -2,12 +2,11 @@ package yahoo
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/stxkxs/mkt/internal/httpx"
 )
 
 // OptionsBaseURL is the v7 options endpoint base; exported so tests can
@@ -69,27 +68,10 @@ func (p *Provider) FetchOptionsChain(ctx context.Context, symbol string) (Option
 	if p.crumb != "" {
 		endpoint += "?crumb=" + url.QueryEscape(p.crumb)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return OptionsChain{}, fmt.Errorf("options: build: %w", err)
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	req.Header.Set("Accept", "application/json")
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return OptionsChain{}, fmt.Errorf("options %s: %w", symbol, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return OptionsChain{}, fmt.Errorf("options %s: status %d", symbol, resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return OptionsChain{}, fmt.Errorf("options %s: read: %w", symbol, err)
-	}
 	var raw optionsResp
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return OptionsChain{}, fmt.Errorf("options %s: decode: %w", symbol, err)
+	if err := httpx.GetJSON(ctx, p.client, endpoint, yahooJSONHeaders, &raw); err != nil {
+		p.resetCrumbOnAuthError(err)
+		return OptionsChain{}, fmt.Errorf("options %s: %w", symbol, err)
 	}
 	if len(raw.OptionChain.Result) == 0 || len(raw.OptionChain.Result[0].Options) == 0 {
 		return OptionsChain{Symbol: symbol}, nil

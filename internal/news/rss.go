@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/stxkxs/mkt/internal/httpx"
 )
 
 // Headline represents a single news item. Category is empty for general
@@ -98,19 +99,7 @@ func fetchFeed(ctx context.Context, feed Feed) []Headline {
 	reqCtx, cancel := context.WithTimeout(ctx, feedTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, feed.URL, nil)
-	if err != nil {
-		return nil
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-
-	resp, err := feedClient.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
+	body, err := httpx.Get(reqCtx, feedClient, feed.URL, map[string]string{"User-Agent": "Mozilla/5.0"})
 	if err != nil {
 		return nil
 	}

@@ -2,28 +2,36 @@ package cmd
 
 import (
 	"fmt"
+	"net"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
 
-// warnIfUnsafeListen prints a stderr warning when the user has bound
-// the HTTP server to a non-loopback address without setting a token —
-// /webhook/tradingview can inject alerts that fan out to desktop /
-// push / webhook destinations, and /alerts leaks configured rule
-// destinations, so a bare public bind is almost never what they meant.
-func warnIfUnsafeListen(addr, token string) {
+// checkListenSafety fails closed on an unsafe HTTP bind. A non-loopback
+// address (which includes the all-interfaces form ":9999" / 0.0.0.0) with
+// no token would expose /webhook/tradingview — which injects alerts that
+// fan out to desktop / push / webhook destinations — and /alerts, which
+// leaks configured destinations, to anyone reachable. Only an explicit
+// loopback host is allowed without a token; everything else must set
+// --listen-token. Returns an error the caller surfaces to refuse startup
+// (previously this only printed a warning and served anyway).
+func checkListenSafety(addr, token string) error {
 	if token != "" {
-		return
+		return nil
 	}
-	host, _, _ := strings.Cut(addr, ":")
-	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
-		return
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = "" // unparseable → treat as non-loopback and require a token
 	}
-	fmt.Fprintf(os.Stderr,
-		"api: WARNING: --listen %s has no --listen-token; /quotes /alerts /metrics and the TradingView webhook are world-reachable. Bind to 127.0.0.1 or set --listen-token to silence this.\n",
-		addr)
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return nil
+	}
+	return fmt.Errorf("refusing to bind --listen %s without --listen-token: "+
+		"the TradingView webhook can inject alerts and /alerts leaks configured "+
+		"destinations to anyone reachable. Bind to 127.0.0.1:<port> for local use, "+
+		"or set --listen-token to serve on %s", addr, addr)
 }
 
 var (
@@ -41,8 +49,8 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(versionCmd)
-	rootCmd.PersistentFlags().String("listen", "", "if set (e.g. :9999 or 127.0.0.1:9999), start a read-only HTTP server with /quotes, /alerts, /metrics, /webhook/tradingview")
-	rootCmd.PersistentFlags().String("listen-token", "", "optional bearer token required on every HTTP request when --listen is set; omit only when binding to loopback")
+	rootCmd.PersistentFlags().String("listen", "", "if set (e.g. 127.0.0.1:9999), start a read-only HTTP server with /quotes, /alerts, /metrics, /webhook/tradingview; any non-loopback bind requires --listen-token")
+	rootCmd.PersistentFlags().String("listen-token", "", "bearer token required in the Authorization header on every HTTP request; mandatory for any non-loopback (e.g. :9999 / 0.0.0.0) bind")
 }
 
 var versionCmd = &cobra.Command{

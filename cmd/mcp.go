@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -19,6 +18,54 @@ import (
 	"github.com/stxkxs/mkt/internal/provider/fred"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
 )
+
+// maxHistoryLimit caps how many bars an MCP client can request in one
+// query_history call, so a caller can't ask for an unbounded series.
+const maxHistoryLimit = 1000
+
+// MCP tool result shapes. Returning typed structs (rather than pre-formatted
+// prose) means the server emits them as structuredContent JSON an agent can
+// parse directly — see mcp.toolResult.
+type quoteResult struct {
+	Symbol string  `json:"symbol"`
+	Price  float64 `json:"price"`
+	AsOf   string  `json:"asOf"`
+}
+
+type ohlcvBar struct {
+	Date   string  `json:"date"`
+	Open   float64 `json:"open"`
+	High   float64 `json:"high"`
+	Low    float64 `json:"low"`
+	Close  float64 `json:"close"`
+	Volume float64 `json:"volume"`
+}
+
+type historyResult struct {
+	Symbol string     `json:"symbol"`
+	Count  int        `json:"count"`
+	Bars   []ohlcvBar `json:"bars"`
+}
+
+type alertRuleResult struct {
+	Symbol    string  `json:"symbol"`
+	Condition string  `json:"condition"`
+	Value     float64 `json:"value"`
+	Enabled   bool    `json:"enabled"`
+}
+
+type alertsResult struct {
+	Count int               `json:"count"`
+	Rules []alertRuleResult `json:"rules"`
+}
+
+type portfolioResult struct {
+	Name       string  `json:"name"`
+	Cost       float64 `json:"cost"`
+	Value      float64 `json:"value"`
+	PnL        float64 `json:"pnl"`
+	PnLPercent float64 `json:"pnlPercent"`
+}
 
 func init() {
 	mcpCmd := &cobra.Command{
@@ -65,7 +112,7 @@ Tools:
 							return nil, fmt.Errorf("no data for %s", sym)
 						}
 						last := p[len(p)-1]
-						return fmt.Sprintf("%s: $%.4f (as of %s)", sym, last.Close, last.Time.Format(time.RFC3339)), nil
+						return quoteResult{Symbol: sym, Price: last.Close, AsOf: last.Time.Format(time.RFC3339)}, nil
 					},
 				},
 				{
@@ -81,21 +128,32 @@ Tools:
 					},
 					Handler: func(ctx context.Context, args map[string]any) (any, error) {
 						sym, _ := args["symbol"].(string)
+						if sym == "" {
+							return nil, fmt.Errorf("symbol required")
+						}
 						limit := 30
 						if v, ok := args["limit"].(float64); ok && v > 0 {
 							limit = int(v)
+						}
+						if limit > maxHistoryLimit {
+							limit = maxHistoryLimit
 						}
 						bars, err := histProvider.History(ctx, provider.HistoryParams{Symbol: sym, Interval: provider.Interval1d, Limit: limit})
 						if err != nil {
 							return nil, err
 						}
-						var sb strings.Builder
-						sb.WriteString(fmt.Sprintf("%s (%d bars):\n", sym, len(bars)))
+						res := historyResult{Symbol: sym, Count: len(bars), Bars: make([]ohlcvBar, 0, len(bars))}
 						for _, b := range bars {
-							sb.WriteString(fmt.Sprintf("  %s O=%.2f H=%.2f L=%.2f C=%.2f V=%.0f\n",
-								b.Time.Format("2006-01-02"), b.Open, b.High, b.Low, b.Close, b.Volume))
+							res.Bars = append(res.Bars, ohlcvBar{
+								Date:   b.Time.Format("2006-01-02"),
+								Open:   b.Open,
+								High:   b.High,
+								Low:    b.Low,
+								Close:  b.Close,
+								Volume: b.Volume,
+							})
 						}
-						return sb.String(), nil
+						return res, nil
 					},
 				},
 				{
@@ -103,12 +161,16 @@ Tools:
 					Description: "List configured alert rules.",
 					InputSchema: map[string]any{"type": "object"},
 					Handler: func(ctx context.Context, args map[string]any) (any, error) {
-						var sb strings.Builder
-						sb.WriteString(fmt.Sprintf("%d alert rule(s):\n", len(cfg.Alerts)))
+						res := alertsResult{Count: len(cfg.Alerts), Rules: make([]alertRuleResult, 0, len(cfg.Alerts))}
 						for _, r := range cfg.Alerts {
-							sb.WriteString(fmt.Sprintf("  %s %s %v (enabled=%v)\n", r.Symbol, r.Condition, r.Value, r.Enabled))
+							res.Rules = append(res.Rules, alertRuleResult{
+								Symbol:    r.Symbol,
+								Condition: r.Condition,
+								Value:     r.Value,
+								Enabled:   r.Enabled,
+							})
 						}
-						return sb.String(), nil
+						return res, nil
 					},
 				},
 				{
@@ -140,8 +202,13 @@ Tools:
 								}
 							}
 							sum := portfolio.Evaluate(holdings, quotes)
-							return fmt.Sprintf("%s: cost=$%.2f value=$%.2f pnl=$%.2f (%+.2f%%)",
-								name, sum.TotalCost, sum.TotalValue, sum.TotalPnL, sum.TotalPnLPct), nil
+							return portfolioResult{
+								Name:       name,
+								Cost:       sum.TotalCost,
+								Value:      sum.TotalValue,
+								PnL:        sum.TotalPnL,
+								PnLPercent: sum.TotalPnLPct,
+							}, nil
 						}
 						return nil, fmt.Errorf("portfolio %q not found", name)
 					},

@@ -202,9 +202,7 @@ func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 		if err != nil {
 			return errReply(rq.ID, errAppError, err.Error()), false
 		}
-		return resp{JSONRPC: "2.0", ID: rq.ID, Result: map[string]any{
-			"content": []map[string]any{{"type": "text", "text": fmt.Sprintf("%v", out)}},
-		}}, false
+		return resp{JSONRPC: "2.0", ID: rq.ID, Result: toolResult(out)}, false
 
 	case "resources/list":
 		var rs []map[string]any
@@ -289,4 +287,28 @@ func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 
 func errReply(id json.RawMessage, code int, msg string) resp {
 	return resp{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: code, Message: msg}}
+}
+
+// toolResult renders a tool handler's return value as a tools/call result.
+// A string is returned as a plain text block (for prose-style tools). Any
+// other value is JSON-encoded into structuredContent — so an agent can
+// parse it directly instead of scraping prose — and the same JSON is also
+// placed in a text block, which the MCP spec requires alongside
+// structuredContent for clients that only read content.
+func toolResult(out any) map[string]any {
+	if s, ok := out.(string); ok {
+		return map[string]any{
+			"content": []map[string]any{{"type": "text", "text": s}},
+		}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return map[string]any{
+			"content": []map[string]any{{"type": "text", "text": fmt.Sprintf("%v", out)}},
+		}
+	}
+	return map[string]any{
+		"content":           []map[string]any{{"type": "text", "text": string(b)}},
+		"structuredContent": out,
+	}
 }

@@ -100,10 +100,12 @@ func TestAuthRequiredWhenTokenSet(t *testing.T) {
 		t.Errorf("correct token: want 200, got %d", ok.Code)
 	}
 
-	queryOK := httptest.NewRecorder()
-	h(queryOK, httptest.NewRequest("GET", "/quotes?token=hunter2", nil))
-	if queryOK.Code != http.StatusOK {
-		t.Errorf("query token: want 200, got %d", queryOK.Code)
+	// The token is header-only; a query-string token must be rejected so
+	// secrets don't leak into proxy/access logs.
+	queryRejected := httptest.NewRecorder()
+	h(queryRejected, httptest.NewRequest("GET", "/quotes?token=hunter2", nil))
+	if queryRejected.Code != http.StatusUnauthorized {
+		t.Errorf("query token must be rejected: want 401, got %d", queryRejected.Code)
 	}
 }
 
@@ -146,6 +148,27 @@ func TestMetricsIncludesRegisteredCounters(t *testing.T) {
 	}
 	if !strings.Contains(body, "mkt_test_api_metrics_counter_total 2") {
 		t.Errorf("expected counter value 2, body:\n%s", body)
+	}
+}
+
+func TestTradingViewRateLimited(t *testing.T) {
+	cache := market.NewCache(60)
+	engine := alert.NewEngine(0, nil)
+	s := New(":0", cache, engine)
+	body := `{"symbol":"AAPL","price":201.5}`
+
+	// The initial burst is allowed; the request past the burst is throttled.
+	for i := 0; i < webhookBurst; i++ {
+		rec := httptest.NewRecorder()
+		s.handleTradingView(rec, httptest.NewRequest("POST", "/webhook/tradingview", strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("burst request %d: want 200, got %d", i, rec.Code)
+		}
+	}
+	over := httptest.NewRecorder()
+	s.handleTradingView(over, httptest.NewRequest("POST", "/webhook/tradingview", strings.NewReader(body)))
+	if over.Code != http.StatusTooManyRequests {
+		t.Errorf("past burst: want 429, got %d", over.Code)
 	}
 }
 

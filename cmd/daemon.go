@@ -104,7 +104,9 @@ SIGTERM or SIGINT.`,
 
 			if addr, _ := cmd.Flags().GetString("listen"); addr != "" {
 				token, _ := cmd.Flags().GetString("listen-token")
-				warnIfUnsafeListen(addr, token)
+				if err := checkListenSafety(addr, token); err != nil {
+					return err
+				}
 				srv := api.New(addr, cache, engine).WithToken(token)
 				_ = srv.Start()
 				defer func() { _ = srv.Shutdown(context.Background()) }()
