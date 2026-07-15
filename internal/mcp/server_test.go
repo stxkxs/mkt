@@ -83,6 +83,33 @@ func TestToolsListAndCall(t *testing.T) {
 	}
 }
 
+func TestToolsCallStructuredContent(t *testing.T) {
+	// A tool returning a non-string value must yield structuredContent (so
+	// an agent can parse it) plus the same JSON serialized in a text block.
+	srv := New("test", "1.0").WithTools(Tool{
+		Name:        "bar",
+		Description: "returns a bar",
+		InputSchema: map[string]any{"type": "object"},
+		Handler: func(ctx context.Context, args map[string]any) (any, error) {
+			return map[string]any{"open": 1.5, "close": 2.0}, nil
+		},
+	})
+	called := runOne(t, srv, `{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"bar","arguments":{}}}`)
+	result := called["result"].(map[string]any)
+	sc, ok := result["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing structuredContent: %+v", result)
+	}
+	if sc["open"] != 1.5 || sc["close"] != 2.0 {
+		t.Errorf("structuredContent = %+v", sc)
+	}
+	// The text block must carry the same JSON for backward compatibility.
+	content := result["content"].([]any)[0].(map[string]any)
+	if txt, _ := content["text"].(string); !strings.Contains(txt, `"open":1.5`) {
+		t.Errorf("text block should carry JSON, got %q", content["text"])
+	}
+}
+
 func TestResourcesListAndRead(t *testing.T) {
 	srv := New("test", "1.0").WithResources(Resource{
 		URI: "mkt://config", Name: "Config", Description: "current config",

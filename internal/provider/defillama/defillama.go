@@ -4,12 +4,12 @@ package defillama
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"time"
+
+	"github.com/stxkxs/mkt/internal/httpx"
 )
 
 // BaseURL is the DeFiLlama API root; exported so tests can override.
@@ -39,27 +39,9 @@ type apiChain struct {
 
 // FetchChains returns DeFi TVL per chain, sorted descending by TVL.
 func FetchChains(ctx context.Context) ([]TVLSnapshot, error) {
-	url := BaseURL + "/v2/chains"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("defillama: build request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("defillama: get: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("defillama: status %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("defillama: read: %w", err)
-	}
 	var raw []apiChain
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("defillama: decode: %w", err)
+	if err := httpx.GetJSON(ctx, client, BaseURL+"/v2/chains", map[string]string{"Accept": "application/json"}, &raw); err != nil {
+		return nil, fmt.Errorf("defillama: %w", err)
 	}
 	out := make([]TVLSnapshot, 0, len(raw))
 	for _, c := range raw {

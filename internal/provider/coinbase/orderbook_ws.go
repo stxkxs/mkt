@@ -62,13 +62,21 @@ func (p *Provider) StreamOrderBook(ctx context.Context, productID string, out ch
 		return fmt.Errorf("orderbook write subscribe: %w", err)
 	}
 
+	// Probe liveness so a stalled level2 stream reconnects instead of
+	// blocking Read forever. Book updates are event-driven and can be
+	// quiet on an illiquid product, so a data-gap timeout would false-
+	// positive; an active ping does not.
+	connCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go keepAlive(connCtx, ws, cancel)
+
 	bids := map[float64]float64{}
 	asks := map[float64]float64{}
 	var lastSent time.Time
 	var lastSeq int64
 
 	for {
-		_, data, err := ws.Read(ctx)
+		_, data, err := ws.Read(connCtx)
 		if err != nil {
 			return fmt.Errorf("orderbook read: %w", err)
 		}
@@ -91,8 +99,8 @@ func (p *Provider) StreamOrderBook(ctx context.Context, productID string, out ch
 		select {
 		case out <- book:
 			lastSent = time.Now()
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-connCtx.Done():
+			return connCtx.Err()
 		default:
 			// consumer slow; drop this snapshot
 		}

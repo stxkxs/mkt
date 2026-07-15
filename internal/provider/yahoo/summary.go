@@ -2,10 +2,9 @@ package yahoo
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+
+	"github.com/stxkxs/mkt/internal/httpx"
 )
 
 // SymbolSummary holds fundamental data for a symbol.
@@ -34,37 +33,10 @@ func (p *Provider) FetchSummary(ctx context.Context, symbol string) (SymbolSumma
 		url += "&crumb=" + p.crumb
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return SymbolSummary{}, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return SymbolSummary{}, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return SymbolSummary{}, err
-	}
-
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		p.mu.Lock()
-		p.crumb = ""
-		p.mu.Unlock()
-		return SymbolSummary{}, fmt.Errorf("yahoo auth error %d", resp.StatusCode)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return SymbolSummary{}, fmt.Errorf("yahoo summary error %d", resp.StatusCode)
-	}
-
 	var result quoteSummaryResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return SymbolSummary{}, fmt.Errorf("parse summary: %w", err)
+	if err := httpx.GetJSON(ctx, p.client, url, yahooHeaders, &result); err != nil {
+		p.resetCrumbOnAuthError(err)
+		return SymbolSummary{}, fmt.Errorf("yahoo summary: %w", err)
 	}
 
 	if result.QuoteSummary.Error != nil {

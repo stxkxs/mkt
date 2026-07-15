@@ -24,23 +24,23 @@ import (
 	"github.com/stxkxs/mkt/internal/provider/fred"
 	"github.com/stxkxs/mkt/internal/provider/recording"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
+	"github.com/stxkxs/mkt/internal/symbol"
 	"github.com/stxkxs/mkt/internal/tui"
 	"github.com/stxkxs/mkt/internal/tui/detail"
 	"github.com/stxkxs/mkt/internal/tui/theme"
 	watchlistview "github.com/stxkxs/mkt/internal/tui/watchlist"
 )
 
-// stockTickers returns the subset of symbols that look like stocks
-// (no -USD/-USDT suffix; not a known bare-crypto symbol). Used to feed
-// Yahoo's earnings endpoint, which doesn't have entries for crypto.
+// stockTickers returns the subset of symbols that look like stocks. Used
+// to feed Yahoo's earnings endpoint, which has no entries for crypto or
+// FRED series. Classification is delegated to the shared symbol package.
 func stockTickers(symbols []string) []string {
 	var out []string
 	for _, s := range symbols {
-		us := strings.ToUpper(s)
-		if strings.HasSuffix(us, "-USD") || strings.HasSuffix(us, "USDT") || strings.HasPrefix(us, "FRED:") {
+		if symbol.IsCrypto(s) || symbol.IsFRED(s) {
 			continue
 		}
-		out = append(out, us)
+		out = append(out, strings.ToUpper(s))
 	}
 	return out
 }
@@ -211,7 +211,9 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 
 	if addr, _ := cmd.Flags().GetString("listen"); addr != "" {
 		token, _ := cmd.Flags().GetString("listen-token")
-		warnIfUnsafeListen(addr, token)
+		if err := checkListenSafety(addr, token); err != nil {
+			return err
+		}
 		srv := api.New(addr, cache, alertEngine).WithToken(token)
 		_ = srv.Start()
 		defer func() { _ = srv.Shutdown(context.Background()) }()

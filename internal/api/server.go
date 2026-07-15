@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/observe"
@@ -25,30 +27,44 @@ import (
 // the body usually fits in a few hundred bytes.
 const maxWebhookBytes = 64 * 1024
 
+// webhook rate limit: the /webhook/tradingview endpoint injects alerts
+// that fan out to desktop / push / webhook notifiers, so an unthrottled
+// caller could drive notification spam (and drain a paid Pushover quota).
+// Legitimate TradingView alerts are infrequent; 1/s sustained with a
+// small burst is generous while capping abuse.
+const (
+	webhookRatePerSec = 1
+	webhookBurst      = 5
+)
+
 // Server is a small read-only HTTP frontend.
 type Server struct {
-	addr    string
-	cache   *market.Cache
-	engine  *alert.Engine
-	token   string // optional bearer token; empty disables auth
-	started time.Time
-	srv     *http.Server
+	addr           string
+	cache          *market.Cache
+	engine         *alert.Engine
+	token          string // optional bearer token; empty disables auth
+	started        time.Time
+	srv            *http.Server
+	webhookLimiter *rate.Limiter
 }
 
 // New constructs a Server. addr is e.g. ":9999".
 func New(addr string, cache *market.Cache, engine *alert.Engine) *Server {
 	return &Server{
-		addr:    addr,
-		cache:   cache,
-		engine:  engine,
-		started: time.Now(),
+		addr:           addr,
+		cache:          cache,
+		engine:         engine,
+		started:        time.Now(),
+		webhookLimiter: rate.NewLimiter(rate.Limit(webhookRatePerSec), webhookBurst),
 	}
 }
 
 // WithToken sets a bearer token required on every request. When set,
-// clients must send `Authorization: Bearer <token>` or `?token=<token>`.
-// Empty token (default) leaves the server unauthenticated — only safe
-// when bound to loopback.
+// clients must send it in the `Authorization: Bearer <token>` header.
+// The token is deliberately not accepted as a query parameter — query
+// strings leak into proxy and access logs. Empty token (default) leaves
+// the server unauthenticated, which the caller only permits for loopback
+// binds (see checkListenSafety).
 func (s *Server) WithToken(token string) *Server {
 	s.token = token
 	return s
@@ -85,9 +101,6 @@ func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got == "" {
-			got = r.URL.Query().Get("token")
-		}
 		if subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -196,6 +209,10 @@ type tvPayload struct {
 func (s *Server) handleTradingView(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.webhookLimiter.Allow() {
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
 		return
 	}
 	if s.engine == nil {

@@ -4,14 +4,15 @@ package binance
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/stxkxs/mkt/internal/httpx"
 )
+
+var jsonHeaders = map[string]string{"Accept": "application/json"}
 
 // PremiumIndexURL and OpenInterestURL are exported so tests can override
 // them with httptest servers.
@@ -69,7 +70,7 @@ func fetchOne(ctx context.Context, symbol string) FuturesSnapshot {
 	go func() {
 		defer wg.Done()
 		var pi premiumIndexResp
-		if err := getJSON(ctx, PremiumIndexURL+"?symbol="+symbol, &pi); err == nil {
+		if err := httpx.GetJSON(ctx, client, PremiumIndexURL+"?symbol="+symbol, jsonHeaders, &pi); err == nil {
 			snap.FundingRate, _ = strconv.ParseFloat(pi.LastFundingRate, 64)
 			snap.MarkPrice, _ = strconv.ParseFloat(pi.MarkPrice, 64)
 		}
@@ -78,32 +79,11 @@ func fetchOne(ctx context.Context, symbol string) FuturesSnapshot {
 	go func() {
 		defer wg.Done()
 		var oi openInterestResp
-		if err := getJSON(ctx, OpenInterestURL+"?symbol="+symbol, &oi); err == nil {
+		if err := httpx.GetJSON(ctx, client, OpenInterestURL+"?symbol="+symbol, jsonHeaders, &oi); err == nil {
 			snap.OpenInterest, _ = strconv.ParseFloat(oi.OpenInterest, 64)
 		}
 	}()
 
 	wg.Wait()
 	return snap
-}
-
-func getJSON(ctx context.Context, url string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("get %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("get %s: status %d", url, resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", url, err)
-	}
-	return json.Unmarshal(body, out)
 }

@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
+
+	"github.com/stxkxs/mkt/internal/httpx"
 )
 
 // OrderBookURL is the REST level-2 endpoint base; exported so tests can
@@ -40,22 +40,9 @@ type rawBook struct {
 func (p *Provider) FetchOrderBook(ctx context.Context, productID string) (OrderBook, error) {
 	productID = toCoinbaseSymbol(productID)
 	endpoint := fmt.Sprintf("%s/%s/book?level=2", OrderBookURL, url.PathEscape(productID))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return OrderBook{}, fmt.Errorf("orderbook: build: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	resp, err := p.client.Do(req)
+	body, err := httpx.Get(ctx, p.client, endpoint, map[string]string{"Accept": "application/json"})
 	if err != nil {
 		return OrderBook{}, fmt.Errorf("orderbook %s: %w", productID, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return OrderBook{}, fmt.Errorf("orderbook %s: status %d", productID, resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return OrderBook{}, fmt.Errorf("orderbook %s: read: %w", productID, err)
 	}
 	var raw rawBook
 	if err := json.Unmarshal(body, &raw); err != nil {
