@@ -79,6 +79,72 @@ func optsFromFlags(cmd *cobra.Command, serveMode bool) backendOpts {
 	return o
 }
 
+// registerNotifiers wires the desktop + third-party notifiers onto engine,
+// honoring the notification hardening toggles. The caller adds the history
+// notifier (it owns the history file). Shared by the dashboard/serve backend
+// and the daemon so every surface gates identically:
+//   - --no-notify / notifications:false silences all of them (rules + history
+//     still run);
+//   - desktop is gated by --no-desktop-notify / desktop_notify and defaults
+//     OFF under `mkt serve`.
+func registerNotifiers(engine *alert.Engine, cfg *config.Config, opts backendOpts) {
+	notifyOn := !opts.noNotify && (cfg.Notifications == nil || *cfg.Notifications)
+	desktopOn := notifyOn && !opts.noDesktopNotify
+	if cfg.DesktopNotify != nil {
+		desktopOn = desktopOn && *cfg.DesktopNotify
+	} else {
+		desktopOn = desktopOn && !opts.serveMode
+	}
+	if desktopOn {
+		engine.AddNotifier(alert.NewDesktopNotifier())
+	}
+	if !notifyOn {
+		return
+	}
+	anyWebhook := cfg.WebhookURL != ""
+	for _, r := range cfg.Alerts {
+		if len(r.Webhooks) > 0 {
+			anyWebhook = true
+		}
+	}
+	if anyWebhook {
+		engine.AddNotifier(alert.NewWebhookNotifier(cfg.WebhookURL))
+	}
+	if cfg.NtfyTopic != "" {
+		engine.AddNotifier(alert.NewNtfyNotifier(cfg.NtfyServer, cfg.NtfyTopic))
+	}
+	if cfg.PushoverUser != "" && cfg.PushoverToken != "" {
+		engine.AddNotifier(alert.NewPushoverNotifier(cfg.PushoverUser, cfg.PushoverToken))
+	}
+}
+
+// startReadAPI starts the read-only HTTP surface when --listen is set. The
+// inbound webhook is mounted only with --enable-webhook and always requires a
+// token; --require-token forces a token even on loopback. Shared by the
+// dashboard/serve backend and the daemon.
+func startReadAPI(cmd *cobra.Command, cache *market.Cache, engine *alert.Engine, opts backendOpts) (func(), error) {
+	addr, _ := cmd.Flags().GetString("listen")
+	if addr == "" {
+		return func() {}, nil
+	}
+	token, _ := cmd.Flags().GetString("listen-token")
+	if opts.requireToken && token == "" {
+		return nil, fmt.Errorf("--require-token set but --listen-token is empty")
+	}
+	if opts.enableWebhook && token == "" {
+		return nil, fmt.Errorf("--enable-webhook requires --listen-token: the inbound webhook injects alerts into the notifier fan-out and must never be unauthenticated, even on loopback")
+	}
+	if !opts.requireToken {
+		if err := checkListenSafety(addr, token); err != nil {
+			return nil, err
+		}
+	}
+	srv := api.New(addr, cache, engine).WithToken(token).WithWebhook(opts.enableWebhook)
+	_ = srv.Start()
+	fmt.Fprintf(os.Stderr, "api: listening on %s (webhook=%v)\n", addr, opts.enableWebhook)
+	return func() { _ = srv.Shutdown(context.Background()) }, nil
+}
+
 // setupBackend wires providers, hub, alert engine, and portfolios and
 // loads persisted history — everything except creating a tea.Program.
 // The returned cleanup closes any recording sink; callers must defer it.
@@ -174,11 +240,7 @@ func setupBackend(opts backendOpts) (*backend, func(), error) {
 
 	// Load alert rules from config.
 	var rules []alert.Rule
-	anyWebhook := cfg.WebhookURL != ""
 	for _, r := range cfg.Alerts {
-		if len(r.Webhooks) > 0 {
-			anyWebhook = true
-		}
 		var subs []alert.SubCondition
 		for _, s := range r.Conditions {
 			subs = append(subs, alert.SubCondition{
@@ -200,33 +262,9 @@ func setupBackend(opts backendOpts) (*backend, func(), error) {
 	}
 	alertEngine.SetRules(rules)
 
-	// Notifier registration, gated for cautious deployments. --no-notify (or
-	// notifications:false) silences every desktop + third-party notifier while
-	// keeping rule evaluation and the local alert-history file below.
-	notifyOn := !opts.noNotify && (cfg.Notifications == nil || *cfg.Notifications)
-	// Desktop default: on for the local dashboard, OFF in serve mode (a remote
-	// session's alert — or a webhook injection — would otherwise ring the
-	// server operator's desktop), unless desktop_notify is set explicitly.
-	desktopOn := notifyOn && !opts.noDesktopNotify
-	if cfg.DesktopNotify != nil {
-		desktopOn = desktopOn && *cfg.DesktopNotify
-	} else {
-		desktopOn = desktopOn && !opts.serveMode
-	}
-	if desktopOn {
-		alertEngine.AddNotifier(alert.NewDesktopNotifier())
-	}
-	if notifyOn {
-		if anyWebhook {
-			alertEngine.AddNotifier(alert.NewWebhookNotifier(cfg.WebhookURL))
-		}
-		if cfg.NtfyTopic != "" {
-			alertEngine.AddNotifier(alert.NewNtfyNotifier(cfg.NtfyServer, cfg.NtfyTopic))
-		}
-		if cfg.PushoverUser != "" && cfg.PushoverToken != "" {
-			alertEngine.AddNotifier(alert.NewPushoverNotifier(cfg.PushoverUser, cfg.PushoverToken))
-		}
-	}
+	// Notifier registration (gated by the hardening toggles) — shared with
+	// the daemon path so every headless/attended surface gates identically.
+	registerNotifiers(alertEngine, cfg, opts)
 
 	// Persisted alert history: load past triggers and register the
 	// notifier so future ones are appended automatically.
@@ -419,25 +457,5 @@ func (b *backend) startDataPlane(ctx context.Context) {
 // --require-token opt-in forces a token even on loopback for the read
 // routes (loopback is not a trust boundary on multi-user hosts).
 func (b *backend) startAPIIfRequested(cmd *cobra.Command) (func(), error) {
-	addr, _ := cmd.Flags().GetString("listen")
-	if addr == "" {
-		return func() {}, nil
-	}
-	token, _ := cmd.Flags().GetString("listen-token")
-	if b.opts.requireToken && token == "" {
-		return nil, fmt.Errorf("--require-token set but --listen-token is empty")
-	}
-	if b.opts.enableWebhook && token == "" {
-		return nil, fmt.Errorf("--enable-webhook requires --listen-token: the inbound webhook injects alerts into the notifier fan-out and must never be unauthenticated, even on loopback")
-	}
-	if !b.opts.requireToken {
-		if err := checkListenSafety(addr, token); err != nil {
-			return nil, err
-		}
-	}
-	srv := api.New(addr, b.cache, b.alertEngine).WithToken(token).WithWebhook(b.opts.enableWebhook)
-	_ = srv.Start()
-	msg := fmt.Sprintf("api: listening on %s (webhook=%v)", addr, b.opts.enableWebhook)
-	fmt.Fprintln(os.Stderr, msg)
-	return func() { _ = srv.Shutdown(context.Background()) }, nil
+	return startReadAPI(cmd, b.cache, b.alertEngine, b.opts)
 }

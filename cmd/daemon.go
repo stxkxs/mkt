@@ -12,7 +12,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/stxkxs/mkt/internal/alert"
-	"github.com/stxkxs/mkt/internal/api"
 	"github.com/stxkxs/mkt/internal/config"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/provider"
@@ -52,11 +51,7 @@ SIGTERM or SIGINT.`,
 			// Alert engine + notifiers (mirror dashboard wiring).
 			engine := alert.NewEngine(5*time.Minute, nil)
 			var rules []alert.Rule
-			anyWebhook := cfg.WebhookURL != ""
 			for _, r := range cfg.Alerts {
-				if len(r.Webhooks) > 0 {
-					anyWebhook = true
-				}
 				var subs []alert.SubCondition
 				for _, s := range r.Conditions {
 					subs = append(subs, alert.SubCondition{
@@ -78,16 +73,9 @@ SIGTERM or SIGINT.`,
 			}
 			engine.SetRules(rules)
 			engine.SetPriceSource(cache)
-			engine.AddNotifier(alert.NewDesktopNotifier())
-			if anyWebhook {
-				engine.AddNotifier(alert.NewWebhookNotifier(cfg.WebhookURL))
-			}
-			if cfg.NtfyTopic != "" {
-				engine.AddNotifier(alert.NewNtfyNotifier(cfg.NtfyServer, cfg.NtfyTopic))
-			}
-			if cfg.PushoverUser != "" && cfg.PushoverToken != "" {
-				engine.AddNotifier(alert.NewPushoverNotifier(cfg.PushoverUser, cfg.PushoverToken))
-			}
+			// Same notifier gating as the dashboard/serve path (--no-notify,
+			// --no-desktop-notify, notifications:false, per-notifier cap).
+			registerNotifiers(engine, cfg, optsFromFlags(cmd, false))
 			historyFile := alert.NewHistoryFile(filepath.Join(config.ConfigDir(), "alert-history.ndjson"), 500)
 			engine.AddNotifier(alert.NewHistoryNotifier(historyFile))
 
@@ -102,16 +90,13 @@ SIGTERM or SIGINT.`,
 				cancel()
 			}()
 
-			if addr, _ := cmd.Flags().GetString("listen"); addr != "" {
-				token, _ := cmd.Flags().GetString("listen-token")
-				if err := checkListenSafety(addr, token); err != nil {
-					return err
-				}
-				srv := api.New(addr, cache, engine).WithToken(token)
-				_ = srv.Start()
-				defer func() { _ = srv.Shutdown(context.Background()) }()
-				log.Printf("daemon: api listening on %s", addr)
+			// Read-only HTTP surface, gated identically to the dashboard path
+			// (honors --require-token / --enable-webhook).
+			apiShutdown, err := startReadAPI(cmd, cache, engine, optsFromFlags(cmd, false))
+			if err != nil {
+				return err
 			}
+			defer apiShutdown()
 
 			log.Printf("daemon: watching %d symbols, %d alert rules", len(symbols), len(rules))
 			hub.Start(ctx, symbols, func(q provider.Quote) {
