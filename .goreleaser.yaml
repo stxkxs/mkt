@@ -45,6 +45,26 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# Software bill of materials per archive (syft), for downstream provenance.
+sboms:
+  - artifacts: archive
+
+# Keyless (OIDC) signature over the checksums file via cosign — verifiable
+# with `cosign verify-blob --certificate checksums.txt.pem
+# --signature checksums.txt.sig checksums.txt`.
+signs:
+  - cmd: cosign
+    certificate: '${artifact}.pem'
+    signature: '${artifact}.sig'
+    args:
+      - sign-blob
+      - '--output-certificate=${certificate}'
+      - '--output-signature=${signature}'
+      - '${artifact}'
+      - '--yes'
+    artifacts: checksum
+    output: true
+
 changelog:
   sort: asc
   use: github
