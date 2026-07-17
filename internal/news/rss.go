@@ -32,7 +32,7 @@ type Feed struct {
 func DefaultFeeds() []Feed {
 	return []Feed{
 		{Name: "Yahoo", URL: "https://finance.yahoo.com/news/rssindex"},
-		{Name: "MarketWatch", URL: "http://feeds.marketwatch.com/marketwatch/topstories"},
+		{Name: "MarketWatch", URL: "https://feeds.marketwatch.com/marketwatch/topstories"},
 		{Name: "CNBC", URL: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"},
 	}
 }

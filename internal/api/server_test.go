@@ -180,6 +180,45 @@ func TestAuthDisabledWhenTokenEmpty(t *testing.T) {
 	}
 }
 
+func TestWebhookRouteMountedOnlyWhenEnabled(t *testing.T) {
+	cache := market.NewCache(60)
+	engine := alert.NewEngine(0, nil)
+
+	off := New(":0", cache, engine) // webhook disabled by default
+	rec := httptest.NewRecorder()
+	off.handler().ServeHTTP(rec, httptest.NewRequest("POST", "/webhook/tradingview", strings.NewReader(`{"symbol":"X"}`)))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("webhook off: want 404 (unmounted), got %d", rec.Code)
+	}
+
+	on := New(":0", cache, engine).WithWebhook(true)
+	rec2 := httptest.NewRecorder()
+	on.handler().ServeHTTP(rec2, httptest.NewRequest("POST", "/webhook/tradingview", strings.NewReader(`{"symbol":"X","price":1}`)))
+	if rec2.Code == http.StatusNotFound {
+		t.Errorf("webhook on: route should be mounted, got 404")
+	}
+}
+
+func TestAlertsRedactsWebhookURLs(t *testing.T) {
+	cache := market.NewCache(60)
+	engine := alert.NewEngine(0, nil)
+	engine.SetRules([]alert.Rule{{
+		Symbol: "AAPL", Condition: "above", Value: 200, Enabled: true,
+		Webhooks: []string{"https://hooks.slack.com/services/T00/B00/XXXXSECRET"},
+	}})
+	s := New(":0", cache, engine)
+
+	rec := httptest.NewRecorder()
+	s.handleAlerts(rec, httptest.NewRequest("GET", "/alerts", nil))
+	body := rec.Body.String()
+	if strings.Contains(body, "hooks.slack.com") || strings.Contains(body, "XXXXSECRET") {
+		t.Errorf("/alerts leaked a webhook URL:\n%s", body)
+	}
+	if !strings.Contains(body, `"has_webhooks":true`) {
+		t.Errorf("/alerts should report has_webhooks:true:\n%s", body)
+	}
+}
+
 func TestTradingViewBodyTooLarge(t *testing.T) {
 	cache := market.NewCache(60)
 	engine := alert.NewEngine(0, nil)

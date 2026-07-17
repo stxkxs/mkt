@@ -49,8 +49,12 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(versionCmd)
-	rootCmd.PersistentFlags().String("listen", "", "if set (e.g. 127.0.0.1:9999), start a read-only HTTP server with /quotes, /alerts, /metrics, /webhook/tradingview; any non-loopback bind requires --listen-token")
+	rootCmd.PersistentFlags().String("listen", "", "if set (e.g. 127.0.0.1:9999), start a read-only HTTP server with /quotes, /alerts, /metrics; any non-loopback bind requires --listen-token")
 	rootCmd.PersistentFlags().String("listen-token", "", "bearer token required in the Authorization header on every HTTP request; mandatory for any non-loopback (e.g. :9999 / 0.0.0.0) bind")
+	rootCmd.PersistentFlags().Bool("enable-webhook", false, "mount the inbound /webhook/tradingview alert-injection route (requires --listen-token even on loopback)")
+	rootCmd.PersistentFlags().Bool("require-token", false, "require --listen-token even on a loopback bind (loopback is not a trust boundary on multi-user hosts)")
+	rootCmd.PersistentFlags().Bool("no-notify", false, "disable all desktop + third-party notifiers (desktop, webhook, ntfy, Pushover); alert rules and history still run")
+	rootCmd.PersistentFlags().Bool("no-desktop-notify", false, "disable the desktop notification + terminal bell (already off by default under `mkt serve`)")
 }
 
 var versionCmd = &cobra.Command{

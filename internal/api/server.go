@@ -44,6 +44,7 @@ type Server struct {
 	cache          *market.Cache
 	engine         *alert.Engine
 	token          string // optional bearer token; empty disables auth
+	webhookEnabled bool   // mount /webhook/tradingview (the inbound injection sink)
 	started        time.Time
 	srv            *http.Server
 	webhookLimiter *rate.Limiter
@@ -71,19 +72,22 @@ func (s *Server) WithToken(token string) *Server {
 	return s
 }
 
+// WithWebhook controls whether the inbound /webhook/tradingview route is
+// mounted. It's off by default: the route injects alerts into the notifier
+// fan-out, so it stays unmounted unless a caller explicitly opts in (and
+// the caller is expected to require a token alongside it).
+func (s *Server) WithWebhook(enabled bool) *Server {
+	s.webhookEnabled = enabled
+	return s
+}
+
 // Start launches the server in a goroutine. ListenAndServe errors are
 // logged through the caller's logger (best-effort: bind failures are
 // surfaced via stderr).
 func (s *Server) Start() error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/quotes", s.auth(s.handleQuotes))
-	mux.HandleFunc("/quotes/", s.auth(s.handleQuote))
-	mux.HandleFunc("/alerts", s.auth(s.handleAlerts))
-	mux.HandleFunc("/metrics", s.auth(s.handleMetrics))
-	mux.HandleFunc("/webhook/tradingview", s.auth(s.handleTradingView))
 	s.srv = &http.Server{
 		Addr:              s.addr,
-		Handler:           mux,
+		Handler:           s.handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -92,6 +96,21 @@ func (s *Server) Start() error {
 		}
 	}()
 	return nil
+}
+
+// handler builds the route mux. The inbound webhook (alert injection) is
+// mounted only when explicitly enabled — it's the one route that mutates
+// state / drives the notifier fan-out. Exposed for tests.
+func (s *Server) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/quotes", s.auth(s.handleQuotes))
+	mux.HandleFunc("/quotes/", s.auth(s.handleQuote))
+	mux.HandleFunc("/alerts", s.auth(s.handleAlerts))
+	mux.HandleFunc("/metrics", s.auth(s.handleMetrics))
+	if s.webhookEnabled {
+		mux.HandleFunc("/webhook/tradingview", s.auth(s.handleTradingView))
+	}
+	return mux
 }
 
 // auth wraps a handler with token authentication when a token has been
@@ -182,13 +201,40 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, newQuoteEntry(sym, q))
 }
 
-// /alerts — rules + recent triggers (delegates to engine).
+// alertRuleView is the redacted wire shape for /alerts. It deliberately
+// omits Rule.Webhooks: per-rule webhook URLs frequently embed Slack/Discord
+// secret tokens, and /alerts is readable by any local user on a loopback
+// bind. Callers get a has_webhooks boolean instead of the URLs.
+type alertRuleView struct {
+	Symbol      string  `json:"symbol"`
+	Condition   string  `json:"condition,omitempty"`
+	Value       float64 `json:"value,omitempty"`
+	Period      int     `json:"period,omitempty"`
+	Enabled     bool    `json:"enabled"`
+	Match       string  `json:"match,omitempty"`
+	HasWebhooks bool    `json:"has_webhooks"`
+}
+
+// /alerts — configured rules with webhook URLs redacted.
 func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 	if s.engine == nil {
-		writeJSON(w, map[string]any{"rules": []any{}})
+		writeJSON(w, map[string]any{"rules": []alertRuleView{}})
 		return
 	}
-	writeJSON(w, map[string]any{"rules": s.engine.Rules()})
+	rules := s.engine.Rules()
+	views := make([]alertRuleView, 0, len(rules))
+	for _, rl := range rules {
+		views = append(views, alertRuleView{
+			Symbol:      rl.Symbol,
+			Condition:   string(rl.Condition),
+			Value:       rl.Value,
+			Period:      rl.Period,
+			Enabled:     rl.Enabled,
+			Match:       rl.Match,
+			HasWebhooks: len(rl.Webhooks) > 0,
+		})
+	}
+	writeJSON(w, map[string]any{"rules": views})
 }
 
 // /metrics — minimal Prometheus text format.

@@ -189,6 +189,36 @@ func TestExistingConfigNotSeeded(t *testing.T) {
 	}
 }
 
+func TestConfigFileWritten0600(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	fi, err := os.Stat(filepath.Join(dir, ".config", "mkt", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("config.yaml perm = %o, want 0600 (holds secrets)", perm)
+	}
+}
+
+func TestProvidersDefaultOnAndDisable(t *testing.T) {
+	var p Providers // zero value = all nil
+	if !p.BinanceOn() || !p.DeFiLlamaOn() || !p.NewsOn() || !p.MacroOn() {
+		t.Error("nil provider pointers should default on")
+	}
+	no := false
+	p.Binance = &no
+	if p.BinanceOn() {
+		t.Error("providers.binance=false should disable")
+	}
+	if !p.NewsOn() {
+		t.Error("disabling one provider must not affect others")
+	}
+}
+
 // TestSaveRoundTripWatchlistsNotesServe verifies the sections Save now
 // persists (previously dropped) survive a rewrite by `mkt config set`.
 func TestSaveRoundTripWatchlistsNotesServe(t *testing.T) {
