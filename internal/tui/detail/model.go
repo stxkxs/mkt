@@ -48,9 +48,16 @@ func New(cache *market.Cache, cb *coinbase.Provider) Model {
 	return Model{cache: cache, cb: cb}
 }
 
-// SetNotes seeds the per-symbol freeform notes map.
+// SetNotes seeds the per-symbol freeform notes map, keyed by uppercased
+// symbol. Normalizing here makes lookups robust to config casing — viper
+// lowercases map keys, so a `notes: { NVDA: ... }` entry arrives as
+// "nvda" and would otherwise never match the uppercase active symbol.
 func (m *Model) SetNotes(notes map[string]string) {
-	m.notes = notes
+	up := make(map[string]string, len(notes))
+	for k, v := range notes {
+		up[strings.ToUpper(k)] = v
+	}
+	m.notes = up
 }
 
 // orderBookProgram is satisfied by tea.Program — kept narrow so tests
@@ -243,8 +250,8 @@ func (m Model) View() string {
 		sb.WriteString("\n")
 	}
 
-	// Freeform notes for this symbol
-	if note := m.notes[m.symbol]; note != "" {
+	// Freeform notes for this symbol (keys normalized to uppercase).
+	if note := m.notes[strings.ToUpper(m.symbol)]; note != "" {
 		sb.WriteString("\n  ")
 		sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("Notes"))
 		sb.WriteString("\n")

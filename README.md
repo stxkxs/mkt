@@ -6,6 +6,8 @@ Crypto prices stream live via Coinbase WebSocket. Stock quotes poll from Yahoo F
 
 Built with Go, [Bubbletea v2](https://charm.land/bubbletea), and [Lipgloss v2](https://charm.land/lipgloss).
 
+![mkt demo](demo/mkt.gif)
+
 ---
 
 ## Installation
@@ -242,6 +244,114 @@ No API keys required. Crypto streams from Coinbase (US-native, no geo-restrictio
 
 ---
 
+## Integrations
+
+`mkt` is both a TUI *and* a headless data source, so it drops into the terminal ecosystem two ways: **hosts** run its TUI, and **consumers** read its data over MCP, HTTP, or a Prometheus scrape. Almost everything below is config-only — no rebuild.
+
+### Serve over SSH (`mkt serve`)
+
+Run the dashboard as a [Charm Wish](https://github.com/charmbracelet/wish) SSH app: every connection gets its own live, per-session dashboard driven by one shared data plane. Access is gated by a **public-key allowlist** — `mkt serve` refuses to start with an empty allowlist rather than expose your holdings.
+
+```yaml
+# ~/.config/mkt/config.yaml
+serve:
+  addr: "0.0.0.0:2222"                   # 127.0.0.1:2222 for local-only (the default)
+  host_key: ~/.config/mkt/ssh_host_key   # ed25519 key, auto-generated on first run
+  authorized_keys:
+    - ssh-ed25519 AAAA...you@laptop
+    - ssh-ed25519 AAAA...you@phone       # or: authorized_keys_file: ~/.ssh/authorized_keys
+```
+
+```sh
+mkt serve                 # start the SSH server
+ssh -p 2222 your.host     # from any allowed key → a live dashboard
+```
+
+Every tab streams live; the crypto detail order-book falls back to REST snapshots in serve mode (the live level-2 stream is single-program by design).
+
+### AI agents (`mkt mcp`)
+
+`mkt mcp` is a stdio [Model Context Protocol](https://modelcontextprotocol.io) server exposing `quotes`, `query_history` (OHLCV), and `alerts` as structured JSON — any MCP host can query live market data mid-task.
+
+```sh
+# Claude Code
+claude mcp add --transport stdio mkt -- mkt mcp
+```
+
+```json
+// Crush (charm-native), Claude Desktop, Cursor, Zed, Goose, Cline, Continue …
+{ "mcp": { "mkt": { "type": "stdio", "command": "mkt", "args": ["mcp"] } } }
+```
+
+### HTTP data surface (`--listen`)
+
+`--listen` exposes a read-only HTTP API (any non-loopback bind requires `--listen-token`). `/quotes` carries price, change, and a pre-computed direction; `/metrics` emits per-symbol gauges in Prometheus text format.
+
+```sh
+mkt --listen 127.0.0.1:9999
+curl -s 127.0.0.1:9999/quotes/BTC-USD
+# {"symbol":"BTC-USD","price":64210.5,"change":1342.1,"change_pct":2.14,"dir":"up"}
+```
+
+```
+# /metrics
+mkt_price{symbol="BTC-USD"} 64210.5
+mkt_change_pct{symbol="BTC-USD"} 2.14
+mkt_symbols_cached 12
+mkt_uptime_seconds 3841.0
+```
+
+**Prometheus / Grafana / Netdata** — point a scrape at it:
+
+```yaml
+scrape_configs:
+  - job_name: mkt
+    static_configs:
+      - targets: ['127.0.0.1:9999']
+    # non-loopback bind → set --listen-token and uncomment:
+    # authorization: { credentials: "<token>" }
+```
+
+### Terminal multiplexer (tmux)
+
+Host the TUI in a popup, and put a live ticker in the status bar off `/quotes`:
+
+```tmux
+# ~/.tmux.conf — floating dashboard on prefix + g
+bind-key g display-popup -E -w 90% -h 90% 'mkt'
+
+# ticker in status-right (start `mkt --listen 127.0.0.1:9999` first)
+set -g status-interval 5
+set -g status-right '#(curl -s 127.0.0.1:9999/quotes/BTC-USD | jq -r "\(.dir=="up" ? "▲" : "▼") \(.price)")'
+```
+
+For a busy status line, curl in a small cached wrapper script rather than inline — tmux re-runs `#()` on every interval.
+
+### Prompt ticker (Starship)
+
+A single-symbol glance on every prompt (needs `mkt --listen` running):
+
+```toml
+# ~/.config/starship.toml
+command_timeout = 1000
+
+[custom.mkt]
+command = '''curl -s 127.0.0.1:9999/quotes/BTC-USD | jq -r '"\(.symbol) \(.price) (\(.change_pct)%)"' '''
+when = true
+format = '[$output]($style) '
+style = 'bold yellow'
+```
+
+### Demo GIF (VHS)
+
+`demo/mkt.tape` drives the binary through its tabs, theme toggle, and help overlay. Regenerate with:
+
+```sh
+task demo          # builds ./mkt, then renders demo/mkt.gif via vhs
+```
+
+---
+
 ## Architecture
 
 ```
@@ -271,10 +381,13 @@ Background pollers (each its own goroutine):
   Portfolio equity mark  ──► EquitySnapshotMsg
 
 External integrations:
-  --listen 127.0.0.1:9999 → /quotes, /quotes/{sym}, /alerts, /metrics, /webhook/tradingview
+  --listen 127.0.0.1:9999 → /quotes (price+change+dir), /alerts, /metrics (per-symbol gauges), /webhook/tradingview
   mkt mcp (stdio)         → MCP tools/resources/prompts for Claude clients
+  mkt serve               → Wish SSH server; one program per session, shared data plane (broadcaster)
   MKT_RECORD=path         → tee provider quotes to NDJSON (replay-able via mkt backtest)
 ```
+
+The data plane is program-agnostic: a **broadcaster** fans every quote/update out to all attached `tea.Program`s, so `mkt` (one local program) and `mkt serve` (one per SSH session) share the exact same hub, cache, alert engine, and pollers — built once in `cmd/backend.go`.
 
 - **Providers** stream/poll quotes into a shared channel; `Hub` fans out behind a bounded dispatcher with drop-on-back-pressure semantics
 - **Alert engine** evaluates rules inline on each quote; notifiers run outside the lock with per-call timeouts and error isolation
@@ -290,7 +403,9 @@ mkt/
 ├── main.go                        # cmd.Execute()
 ├── cmd/
 │   ├── root.go                    # cobra root, --listen, --listen-token, version
-│   ├── dashboard.go               # default cmd — wires providers + hub + TUI
+│   ├── backend.go                 # shared data plane (setup + buildApp + startDataPlane) for dashboard & serve
+│   ├── dashboard.go               # default cmd — one local program attached to the backend
+│   ├── serve.go                   # mkt serve — Wish SSH; one program per session, key allowlist
 │   ├── daemon.go                  # mkt daemon — headless hub + alerts + notifiers
 │   ├── watch.go                   # mkt watch — non-TUI price streaming
 │   ├── config.go                  # mkt config show/set/add/remove/validate
@@ -312,8 +427,9 @@ mkt/
     │   └── recording/             # NDJSON tee decorator + replay provider
     ├── market/
     │   ├── hub.go                 # aggregates providers, fan-out via callback, drop-on-stall
-    │   ├── cache.go               # ring buffer per symbol for sparklines
+    │   ├── cache.go               # ring buffer per symbol + last full quote (price, change, dir)
     │   └── history.go             # multi-provider history routing
+    ├── broadcast/                 # fan bubbletea messages out to N attached programs (dashboard + serve sessions)
     ├── alert/                     # rule engine, conditions, cooldown, notifier fan-out (desktop/webhook/ntfy/Pushover/history)
     ├── portfolio/                 # stateless math: P&L, tax lots, dividends, equity curve, risk, correlation, sizing
     ├── indicator/                 # SMA, EMA, RSI, MACD, Bollinger, VWAP, OBV, ATR, Stoch, ADX, Pivots, VolProfile, Patterns

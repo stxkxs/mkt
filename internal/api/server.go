@@ -20,6 +20,7 @@ import (
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/observe"
+	"github.com/stxkxs/mkt/internal/provider"
 )
 
 // maxWebhookBytes caps the request body for /webhook/tradingview so an
@@ -117,36 +118,68 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.srv.Shutdown(ctx)
 }
 
-// /quotes — list of {symbol, price} for every cached symbol.
-func (s *Server) handleQuotes(w http.ResponseWriter, r *http.Request) {
-	type entry struct {
-		Symbol string  `json:"symbol"`
-		Price  float64 `json:"price"`
+// quoteEntry is the JSON shape returned by /quotes and /quotes/{symbol}.
+// change_pct is the provider's 24h (crypto) or day (stock) percent change;
+// dir is a pre-computed "up"/"down"/"flat" so status-bar and prompt
+// consumers can pick a color without re-deriving the sign.
+type quoteEntry struct {
+	Symbol    string  `json:"symbol"`
+	Price     float64 `json:"price"`
+	Change    float64 `json:"change"`
+	ChangePct float64 `json:"change_pct"`
+	Dir       string  `json:"dir"`
+}
+
+func newQuoteEntry(sym string, q provider.Quote) quoteEntry {
+	return quoteEntry{
+		Symbol:    sym,
+		Price:     q.Price,
+		Change:    q.Change,
+		ChangePct: q.ChangePct,
+		Dir:       direction(q.ChangePct),
 	}
+}
+
+// direction maps a percent change to a stable label for consumers that
+// colorize by sign (tmux/starship tickers, waybar classes).
+func direction(pct float64) string {
+	switch {
+	case pct > 0:
+		return "up"
+	case pct < 0:
+		return "down"
+	default:
+		return "flat"
+	}
+}
+
+// /quotes — list of {symbol, price, change, change_pct, dir} for every
+// cached symbol.
+func (s *Server) handleQuotes(w http.ResponseWriter, r *http.Request) {
 	syms := s.cache.Symbols()
 	sort.Strings(syms)
-	out := make([]entry, 0, len(syms))
+	out := make([]quoteEntry, 0, len(syms))
 	for _, sym := range syms {
-		if p, ok := s.cache.Latest(sym); ok {
-			out = append(out, entry{Symbol: sym, Price: p})
+		if q, ok := s.cache.LatestQuote(sym); ok {
+			out = append(out, newQuoteEntry(sym, q))
 		}
 	}
 	writeJSON(w, out)
 }
 
-// /quotes/{symbol} — single price.
+// /quotes/{symbol} — single quote.
 func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 	sym := strings.TrimPrefix(r.URL.Path, "/quotes/")
 	if sym == "" {
 		http.NotFound(w, r)
 		return
 	}
-	price, ok := s.cache.Latest(sym)
+	q, ok := s.cache.LatestQuote(sym)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	writeJSON(w, map[string]any{"symbol": sym, "price": price})
+	writeJSON(w, newQuoteEntry(sym, q))
 }
 
 // /alerts — rules + recent triggers (delegates to engine).
@@ -175,6 +208,27 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(&sb, "# TYPE mkt_alert_rules gauge\n")
 		fmt.Fprintf(&sb, "mkt_alert_rules %d\n", len(s.engine.Rules()))
 	}
+	// Per-symbol market gauges so a Prometheus/Grafana/Netdata can chart
+	// live prices and momentum — not just process health. Symbols are
+	// emitted in sorted order for tidy diffs; the label value is escaped
+	// per the Prometheus text format (backslash, quote, newline).
+	sort.Strings(syms)
+	if len(syms) > 0 {
+		fmt.Fprintf(&sb, "# HELP mkt_price Latest price per symbol\n")
+		fmt.Fprintf(&sb, "# TYPE mkt_price gauge\n")
+		for _, sym := range syms {
+			if q, ok := s.cache.LatestQuote(sym); ok {
+				fmt.Fprintf(&sb, "mkt_price{symbol=\"%s\"} %g\n", escapeLabel(sym), q.Price)
+			}
+		}
+		fmt.Fprintf(&sb, "# HELP mkt_change_pct Percent change per symbol (24h crypto / day stock)\n")
+		fmt.Fprintf(&sb, "# TYPE mkt_change_pct gauge\n")
+		for _, sym := range syms {
+			if q, ok := s.cache.LatestQuote(sym); ok {
+				fmt.Fprintf(&sb, "mkt_change_pct{symbol=\"%s\"} %g\n", escapeLabel(sym), q.ChangePct)
+			}
+		}
+	}
 	// Provider health counters self-registered with the observe package
 	// (yahoo batch + session failures, coinbase WS reconnects, etc.).
 	// Names are emitted in stable lex order so Prometheus diffs stay tidy.
@@ -189,6 +243,17 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// escapeLabel escapes a Prometheus label value: backslash, double-quote,
+// and newline, per the text exposition format. Symbols like "BTC-USD" or
+// "FRED:GDP" pass through unchanged; the escaping guards against any
+// exotic symbol a config could carry.
+func escapeLabel(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	return s
 }
 
 // tvPayload is the subset of TradingView's webhook body we use. TV lets

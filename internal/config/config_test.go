@@ -115,6 +115,116 @@ func TestLoadCreatesDefaultsWhenMissing(t *testing.T) {
 	}
 }
 
+// TestLoadWritesConfigFileOnFirstRun guards the first-run write: with
+// SetConfigFile, a missing file surfaces as os.ErrNotExist (not viper's
+// ConfigFileNotFoundError), so Load must handle both and actually create
+// config.yaml — otherwise the seeded defaults never reach disk.
+func TestLoadWritesConfigFileOnFirstRun(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	p := filepath.Join(dir, ".config", "mkt", "config.yaml")
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("first-run Load must write %s: %v", p, err)
+	}
+	for _, key := range []string{"watchlists:", "alerts:", "edgar_tickers:", "notes:", "portfolios:"} {
+		if !contains(raw, key) {
+			t.Errorf("written config.yaml missing seeded section %q", key)
+		}
+	}
+}
+
+// TestExistingConfigNotSeeded verifies the upgrade path: an existing
+// config that predates the rich seed (no watchlists/alerts/edgar/notes)
+// must NOT have those sections injected, and the file must not be
+// rewritten on load. Only fresh installs get seeded.
+func TestExistingConfigNotSeeded(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	cfgDir := filepath.Join(dir, ".config", "mkt")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cfgDir, "config.yaml")
+	// A minimal pre-seed config: the user's own watchlist + theme only.
+	body := "watchlist:\n  - AAPL\n  - BTC-USD\ntheme: nord\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Rich seed must NOT be injected into an existing config.
+	if len(cfg.Watchlists) != 0 {
+		t.Errorf("existing config got watchlist groups injected: %+v", cfg.Watchlists)
+	}
+	if len(cfg.Alerts) != 0 {
+		t.Errorf("existing config got alerts injected: %+v", cfg.Alerts)
+	}
+	if len(cfg.EDGARTickers) != 0 {
+		t.Errorf("existing config got edgar_tickers injected: %v", cfg.EDGARTickers)
+	}
+	if len(cfg.Notes) != 0 {
+		t.Errorf("existing config got notes injected: %v", cfg.Notes)
+	}
+	// The user's own values survive; operational fallbacks still apply.
+	if cfg.Theme != "nord" {
+		t.Errorf("theme: got %q, want nord", cfg.Theme)
+	}
+	if len(cfg.Watchlist) != 2 {
+		t.Errorf("watchlist: got %v, want the user's 2 symbols", cfg.Watchlist)
+	}
+	// Load must never rewrite an existing file.
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Errorf("Load rewrote an existing config file:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestSaveRoundTripWatchlistsNotesServe verifies the sections Save now
+// persists (previously dropped) survive a rewrite by `mkt config set`.
+func TestSaveRoundTripWatchlistsNotesServe(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, ".config", "mkt"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	original := &Config{
+		Watchlist:    []string{"AAPL"},
+		Watchlists:   []Watchlist{{Name: "Tech", Symbols: []string{"AAPL", "MSFT"}}},
+		Notes:        map[string]string{"AAPL": "flagship note"},
+		Serve:        ServeConfig{Addr: "0.0.0.0:2222", AuthorizedKeys: []string{"ssh-ed25519 AAAAC3 you@host"}},
+		PollInterval: "15s",
+		SparklineLen: 60,
+		Theme:        "tokyonight",
+	}
+	if err := Save(original); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load after Save: %v", err)
+	}
+	if len(got.Watchlists) != 1 || got.Watchlists[0].Name != "Tech" || len(got.Watchlists[0].Symbols) != 2 {
+		t.Errorf("watchlists round-trip: got %+v", got.Watchlists)
+	}
+	if got.Notes["AAPL"] != "flagship note" {
+		t.Errorf("notes round-trip: got %+v", got.Notes)
+	}
+	if got.Serve.Addr != "0.0.0.0:2222" || len(got.Serve.AuthorizedKeys) != 1 {
+		t.Errorf("serve round-trip: got %+v", got.Serve)
+	}
+}
+
 // TestSaveRoundTrip writes a config, reloads it, and verifies the
 // fields that Save persists round-trip cleanly.
 func TestSaveRoundTrip(t *testing.T) {

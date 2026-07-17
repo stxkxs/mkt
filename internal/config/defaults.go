@@ -187,6 +187,25 @@ var (
 		"IRDM",
 	}
 
+	// DefaultWatchlists organizes the universe into navigable themes for the
+	// watchlist tab ([ / ] to switch groups). The flat DefaultWatchlist
+	// above stays the "Default" group (everything); these are curated
+	// subsets aligned with the default portfolios so every group is
+	// coherent on a fresh install.
+	DefaultWatchlists = []Watchlist{
+		{Name: "Crypto Majors", Symbols: []string{"BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "ADA-USD", "DOGE-USD", "AVAX-USD", "LINK-USD", "DOT-USD", "NEAR-USD", "SUI-USD", "ARB-USD", "OP-USD", "PEPE-USD"}},
+		{Name: "Megacap Tech", Symbols: []string{"AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AMD", "NFLX", "AVGO"}},
+		{Name: "AI & Data Center", Symbols: []string{"NVDA", "AMD", "AVGO", "ARM", "TSM", "MRVL", "SMCI", "VRT", "ANET", "DELL", "PLTR", "SNOW", "CRM", "CEG", "VST"}},
+		{Name: "Semis & Reshoring", Symbols: []string{"INTC", "AMAT", "LRCX", "ADI", "ON", "TER", "CGNX", "ROK", "MP", "NUE", "STLD", "CAT", "DE", "URI"}},
+		{Name: "Defense & Space", Symbols: []string{"LMT", "RTX", "NOC", "GD", "LHX", "BA", "HII", "KTOS", "LDOS", "AVAV", "RKLB", "ASTS", "GSAT", "IRDM"}},
+		{Name: "Energy & Nuclear", Symbols: []string{"XOM", "CVX", "OXY", "HAL", "DVN", "COP", "SLB", "EOG", "FANG", "PSX", "MPC", "VLO", "CCJ", "UEC", "DNN", "LEU", "NNE", "SMR", "ENPH", "FSLR", "NEE"}},
+		{Name: "Healthcare & GLP-1", Symbols: []string{"LLY", "NVO", "JNJ", "MRK", "PFE", "AMGN", "HIMS", "TDOC", "ISRG", "MDT", "ABT", "SYK", "UNH", "HUM", "WELL", "VRTX", "REGN", "DXCM", "PODD"}},
+		{Name: "Commodities & Miners", Symbols: []string{"GLD", "NEM", "GOLD", "AEM", "WPM", "RGLD", "FCX", "SCCO", "TECK", "SQM", "ALB", "BHP", "RIO", "VALE", "MOS", "NTR", "ADM", "FRO", "STNG", "INSW", "ZIM"}},
+		{Name: "Crypto Equities & Fintech", Symbols: []string{"COIN", "MSTR", "MARA", "CLSK", "RIOT", "WULF", "HOOD", "SQ", "SHOP", "SOFI", "KRE"}},
+		{Name: "Cybersecurity", Symbols: []string{"PANW", "CRWD", "FTNT", "ZS", "NET", "S"}},
+		{Name: "Rate-Sensitive & Income", Symbols: []string{"O", "AMT", "WELL", "DHI", "LEN", "SCHD", "ABBV", "KRE"}},
+	}
+
 	DefaultPortfolios = []Portfolio{
 		{
 			Name: "Geopolitical Tension",
@@ -578,6 +597,40 @@ var (
 				{Symbol: "MRVL", Name: "Marvell Technology", Quantity: 20, CostBasis: 70.00},
 			},
 		},
+	}
+
+	// DefaultAlerts seed the alerts tab with one live example of each
+	// supported condition on liquid symbols, so a fresh install has
+	// something to watch (and to copy). All enabled; tune or delete freely.
+	DefaultAlerts = []AlertRule{
+		{Symbol: "BTC-USD", Condition: "above", Value: 100000, Enabled: true},
+		{Symbol: "ETH-USD", Condition: "below", Value: 3000, Enabled: true},
+		{Symbol: "NVDA", Condition: "above", Value: 200, Enabled: true},
+		{Symbol: "TSLA", Condition: "pct_up", Value: 5, Enabled: true},
+		{Symbol: "AAPL", Condition: "pct_down", Value: 3, Enabled: true},
+		{Symbol: "SOL-USD", Condition: "rsi_above", Value: 70, Period: 14, Enabled: true},
+		{Symbol: "COIN", Condition: "rsi_below", Value: 30, Period: 14, Enabled: true},
+		{Symbol: "AMD", Condition: "sma_cross_above", Period: 50, Enabled: true},
+		{Symbol: "MSTR", Condition: "sma_cross_below", Period: 50, Enabled: true},
+		{Symbol: "NVDA", Condition: "macd_cross", Enabled: true},
+		// Compound: fire only when NVDA is both oversold AND holding a level.
+		{Symbol: "NVDA", Match: "all", Enabled: true, Conditions: []AlertSubCondition{
+			{Condition: "rsi_below", Value: 40, Period: 14},
+			{Condition: "above", Value: 150},
+		}},
+	}
+
+	// DefaultEDGARTickers seed the news tab with per-ticker SEC filings
+	// (8-K / 10-Q / 10-K) merged alongside the RSS headlines.
+	DefaultEDGARTickers = []string{"AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL", "META", "LLY", "XOM", "JPM", "COIN", "PLTR"}
+
+	// DefaultNotes seed a few per-symbol notes (markdown plaintext), shown
+	// on the symbol detail view.
+	DefaultNotes = map[string]string{
+		"BTC-USD": "Digital-gold thesis; watch spot-ETF flows and the post-halving supply cliff.",
+		"NVDA":    "Data-center GPU demand proxy; track hyperscaler capex guidance each quarter.",
+		"LLY":     "GLP-1 (tirzepatide) leader; manufacturing capacity is the gating factor.",
+		"CCJ":     "Uranium spot + long-term contracting; nuclear baseload renaissance.",
 	}
 
 	DefaultPollInterval = "15s"
