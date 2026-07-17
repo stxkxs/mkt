@@ -352,6 +352,37 @@ task demo          # builds ./mkt, then renders demo/mkt.gif via vhs
 
 ---
 
+## Hardening
+
+`mkt`'s sharp surfaces are **off by default** — the HTTP API (`--listen`), the SSH dashboard (`mkt serve`), the MCP server (`mkt mcp`), and the webhook/ntfy/Pushover notifiers all require explicit opt-in. When you do enable them, these knobs scope them down:
+
+| To disable / restrict | Do this |
+|---|---|
+| Desktop popups + bell | `--no-desktop-notify` (already off under `mkt serve`) or `desktop_notify: false` |
+| **All** notifiers (keep rules + history) | `--no-notify` or `notifications: false` |
+| Inbound TradingView webhook | off by default; needs `--enable-webhook` **and** `--listen-token` (even on loopback) |
+| `/alerts` webhook-URL leak | redacted automatically — the API returns `has_webhooks`, never the URLs |
+| Token on a loopback bind | `--require-token` (loopback is not a trust boundary on shared hosts) |
+| MCP config exposure | `mkt://config` is off unless `--expose-config`, and secrets are always redacted |
+| MCP holdings exposure | `get_portfolio` + `mkt://portfolios` are off unless `--expose-portfolio` |
+| Egress to a provider | `providers: { binance: false, defillama: false, news: false, macro: false }` |
+| SEC EDGAR egress | `edgar_tickers: []` |
+| Swap/drop news feeds | `news_feeds: [{name: ..., url: ...}]` (built-ins use https) |
+
+Notifiers are additionally capped at ~20/min each, so a webhook flood can't drain a paid Pushover quota. Secrets at rest (`config.yaml`) are written `0600`.
+
+**Egress allowlist** (hosts `mkt` may contact; notifier/build hosts only apply when configured):
+
+```
+advanced-trade-ws.coinbase.com  api.exchange.coinbase.com
+query1.finance.yahoo.com  query2.finance.yahoo.com  finance.yahoo.com
+fapi.binance.com  api.llama.fi  feeds.marketwatch.com  search.cnbc.com
+www.sec.gov  fred.stlouisfed.org  api.stlouisfed.org
+ntfy.sh  api.pushover.net                       # notifiers, only if configured
+```
+
+---
+
 ## Architecture
 
 ```

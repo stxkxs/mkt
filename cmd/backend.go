@@ -48,6 +48,7 @@ type backend struct {
 	coinbaseProv *coinbase.Provider
 	bc           *broadcast.Broadcaster
 	equityFile   *portfolio.EquityFile
+	opts         backendOpts
 
 	// state loaded once at setup and seeded into every session's model.
 	baseEvents   []calendar.Event
@@ -56,10 +57,32 @@ type backend struct {
 	pastEquity   map[string][]portfolio.EquityMark
 }
 
+// backendOpts carries per-command hardening toggles (from CLI flags) into
+// the shared setup: serve mode changes safe defaults, and the notify /
+// webhook / token switches gate sensitive surfaces.
+type backendOpts struct {
+	serveMode       bool // running under `mkt serve` (SSH) — tightens defaults
+	noNotify        bool // --no-notify: silence desktop + webhook + ntfy + pushover
+	noDesktopNotify bool // --no-desktop-notify
+	enableWebhook   bool // --enable-webhook: mount /webhook/tradingview (requires token)
+	requireToken    bool // --require-token: force --listen-token even on loopback
+}
+
+// optsFromFlags reads the shared hardening flags off the command. serveMode
+// is set by the caller (true only for `mkt serve`).
+func optsFromFlags(cmd *cobra.Command, serveMode bool) backendOpts {
+	o := backendOpts{serveMode: serveMode}
+	o.noNotify, _ = cmd.Flags().GetBool("no-notify")
+	o.noDesktopNotify, _ = cmd.Flags().GetBool("no-desktop-notify")
+	o.enableWebhook, _ = cmd.Flags().GetBool("enable-webhook")
+	o.requireToken, _ = cmd.Flags().GetBool("require-token")
+	return o
+}
+
 // setupBackend wires providers, hub, alert engine, and portfolios and
 // loads persisted history — everything except creating a tea.Program.
 // The returned cleanup closes any recording sink; callers must defer it.
-func setupBackend() (*backend, func(), error) {
+func setupBackend(opts backendOpts) (*backend, func(), error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, nil, fmt.Errorf("load config: %w", err)
@@ -148,7 +171,6 @@ func setupBackend() (*backend, func(), error) {
 	alertEngine := alert.NewEngine(5*time.Minute, func(a alert.TriggeredAlert) {
 		bc.Send(tui.AlertTriggeredMsg{Alert: a})
 	})
-	alertEngine.AddNotifier(alert.NewDesktopNotifier())
 
 	// Load alert rules from config.
 	var rules []alert.Rule
@@ -177,14 +199,33 @@ func setupBackend() (*backend, func(), error) {
 		})
 	}
 	alertEngine.SetRules(rules)
-	if anyWebhook {
-		alertEngine.AddNotifier(alert.NewWebhookNotifier(cfg.WebhookURL))
+
+	// Notifier registration, gated for cautious deployments. --no-notify (or
+	// notifications:false) silences every desktop + third-party notifier while
+	// keeping rule evaluation and the local alert-history file below.
+	notifyOn := !opts.noNotify && (cfg.Notifications == nil || *cfg.Notifications)
+	// Desktop default: on for the local dashboard, OFF in serve mode (a remote
+	// session's alert — or a webhook injection — would otherwise ring the
+	// server operator's desktop), unless desktop_notify is set explicitly.
+	desktopOn := notifyOn && !opts.noDesktopNotify
+	if cfg.DesktopNotify != nil {
+		desktopOn = desktopOn && *cfg.DesktopNotify
+	} else {
+		desktopOn = desktopOn && !opts.serveMode
 	}
-	if cfg.NtfyTopic != "" {
-		alertEngine.AddNotifier(alert.NewNtfyNotifier(cfg.NtfyServer, cfg.NtfyTopic))
+	if desktopOn {
+		alertEngine.AddNotifier(alert.NewDesktopNotifier())
 	}
-	if cfg.PushoverUser != "" && cfg.PushoverToken != "" {
-		alertEngine.AddNotifier(alert.NewPushoverNotifier(cfg.PushoverUser, cfg.PushoverToken))
+	if notifyOn {
+		if anyWebhook {
+			alertEngine.AddNotifier(alert.NewWebhookNotifier(cfg.WebhookURL))
+		}
+		if cfg.NtfyTopic != "" {
+			alertEngine.AddNotifier(alert.NewNtfyNotifier(cfg.NtfyServer, cfg.NtfyTopic))
+		}
+		if cfg.PushoverUser != "" && cfg.PushoverToken != "" {
+			alertEngine.AddNotifier(alert.NewPushoverNotifier(cfg.PushoverUser, cfg.PushoverToken))
+		}
 	}
 
 	// Persisted alert history: load past triggers and register the
@@ -226,6 +267,7 @@ func setupBackend() (*backend, func(), error) {
 		yahooProv:    yahooProv,
 		coinbaseProv: coinbaseProv,
 		bc:           bc,
+		opts:         opts,
 		equityFile:   equityFile,
 		baseEvents:   events,
 		calEvents:    calEvents,
@@ -290,30 +332,40 @@ func (b *backend) startDataPlane(ctx context.Context) {
 		b.alertEngine.Check(q)
 	})
 
-	// Macro dashboard polling.
-	go poll(ctx, b.cfg.PollDuration(), func() {
-		quotes := b.yahooProv.FetchMacroQuotes(ctx)
-		if len(quotes) > 0 {
-			b.bc.Send(tui.MacroUpdateMsg{Quotes: quotes})
-		}
-	})
+	// Optional feeds are each gated by config.Providers so a locked-down or
+	// geo-restricted deployment can cut the egress it doesn't want.
+	prov := b.cfg.Providers
+
+	// Macro dashboard polling (Yahoo macro indices).
+	if prov.MacroOn() {
+		go poll(ctx, b.cfg.PollDuration(), func() {
+			quotes := b.yahooProv.FetchMacroQuotes(ctx)
+			if len(quotes) > 0 {
+				b.bc.Send(tui.MacroUpdateMsg{Quotes: quotes})
+			}
+		})
+	}
 
 	// Crypto futures — Binance funding + OI for major perps.
-	go poll(ctx, 2*time.Minute, func() {
-		snaps := binance.FetchFuturesSnapshot(ctx, []string{"BTCUSDT", "ETHUSDT", "SOLUSDT"})
-		if len(snaps) > 0 {
-			b.bc.Send(tui.FuturesUpdateMsg{Snapshots: snaps})
-		}
-	})
+	if prov.BinanceOn() {
+		go poll(ctx, 2*time.Minute, func() {
+			snaps := binance.FetchFuturesSnapshot(ctx, []string{"BTCUSDT", "ETHUSDT", "SOLUSDT"})
+			if len(snaps) > 0 {
+				b.bc.Send(tui.FuturesUpdateMsg{Snapshots: snaps})
+			}
+		})
+	}
 
 	// DeFi TVL — DeFiLlama public API.
-	go poll(ctx, 5*time.Minute, func() {
-		chains, err := defillama.FetchChains(ctx)
-		if err != nil || len(chains) == 0 {
-			return
-		}
-		b.bc.Send(tui.DeFiUpdateMsg{Chains: chains})
-	})
+	if prov.DeFiLlamaOn() {
+		go poll(ctx, 5*time.Minute, func() {
+			chains, err := defillama.FetchChains(ctx)
+			if err != nil || len(chains) == 0 {
+				return
+			}
+			b.bc.Send(tui.DeFiUpdateMsg{Chains: chains})
+		})
+	}
 
 	// Portfolio equity-curve marking every 5 minutes.
 	go poll(ctx, 5*time.Minute, func() {
@@ -338,33 +390,54 @@ func (b *backend) startDataPlane(ctx context.Context) {
 		}
 	})
 
-	// News feed — RSS + per-ticker SEC EDGAR filings merged.
-	feeds := news.DefaultFeeds()
-	go poll(ctx, 3*time.Minute, func() {
-		headlines := news.FetchAll(ctx, feeds)
-		if len(b.cfg.EDGARTickers) > 0 {
-			headlines = append(headlines, news.FetchEDGAR(ctx, b.cfg.EDGARTickers, 50)...)
+	// News feed — RSS + per-ticker SEC EDGAR filings merged. Feeds default
+	// to the built-in set but can be overridden (or trimmed) via news_feeds.
+	if prov.NewsOn() {
+		feeds := news.DefaultFeeds()
+		if len(b.cfg.NewsFeeds) > 0 {
+			feeds = feeds[:0]
+			for _, f := range b.cfg.NewsFeeds {
+				feeds = append(feeds, news.Feed{Name: f.Name, URL: f.URL})
+			}
 		}
-		if len(headlines) > 0 {
-			b.bc.Send(tui.NewsUpdateMsg{Headlines: headlines})
-		}
-	})
+		go poll(ctx, 3*time.Minute, func() {
+			headlines := news.FetchAll(ctx, feeds)
+			if len(b.cfg.EDGARTickers) > 0 {
+				headlines = append(headlines, news.FetchEDGAR(ctx, b.cfg.EDGARTickers, 50)...)
+			}
+			if len(headlines) > 0 {
+				b.bc.Send(tui.NewsUpdateMsg{Headlines: headlines})
+			}
+		})
+	}
 }
 
 // startAPIIfRequested starts the read-only HTTP surface when --listen is
 // set, returning a shutdown function (a no-op when the flag is empty).
-// Shared by `mkt` and `mkt serve`.
+// Shared by `mkt` and `mkt serve`. The inbound TradingView webhook is
+// mounted only with --enable-webhook and always requires a token; a
+// --require-token opt-in forces a token even on loopback for the read
+// routes (loopback is not a trust boundary on multi-user hosts).
 func (b *backend) startAPIIfRequested(cmd *cobra.Command) (func(), error) {
 	addr, _ := cmd.Flags().GetString("listen")
 	if addr == "" {
 		return func() {}, nil
 	}
 	token, _ := cmd.Flags().GetString("listen-token")
-	if err := checkListenSafety(addr, token); err != nil {
-		return nil, err
+	if b.opts.requireToken && token == "" {
+		return nil, fmt.Errorf("--require-token set but --listen-token is empty")
 	}
-	srv := api.New(addr, b.cache, b.alertEngine).WithToken(token)
+	if b.opts.enableWebhook && token == "" {
+		return nil, fmt.Errorf("--enable-webhook requires --listen-token: the inbound webhook injects alerts into the notifier fan-out and must never be unauthenticated, even on loopback")
+	}
+	if !b.opts.requireToken {
+		if err := checkListenSafety(addr, token); err != nil {
+			return nil, err
+		}
+	}
+	srv := api.New(addr, b.cache, b.alertEngine).WithToken(token).WithWebhook(b.opts.enableWebhook)
 	_ = srv.Start()
-	fmt.Fprintf(os.Stderr, "api: listening on %s\n", addr)
+	msg := fmt.Sprintf("api: listening on %s (webhook=%v)", addr, b.opts.enableWebhook)
+	fmt.Fprintln(os.Stderr, msg)
 	return func() { _ = srv.Shutdown(context.Background()) }, nil
 }

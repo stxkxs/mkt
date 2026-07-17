@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/stxkxs/mkt/internal/indicator"
 	"github.com/stxkxs/mkt/internal/provider"
 )
@@ -15,6 +17,13 @@ import (
 const (
 	defaultCooldown = 5 * time.Minute
 	notifyTimeout   = 5 * time.Second
+
+	// Per-notifier send cap: a safety net independent of per-rule cooldown so
+	// the cooldown-bypassing Inject path (TradingView webhook) or an
+	// oscillating rule can't drain a paid Pushover quota or spam a phone.
+	// ~20/min sustained with a burst of 10.
+	notifierMinInterval = 3 * time.Second
+	notifierBurst       = 10
 )
 
 // PriceSource provides historical prices for indicator evaluation.
@@ -31,6 +40,9 @@ type Engine struct {
 	onAlert   func(TriggeredAlert)
 	prices    PriceSource
 	notifiers []Notifier
+
+	// Per-notifier rate limiters (keyed by Notifier.Name), lazily created.
+	notifierLimiters map[string]*rate.Limiter
 
 	// Track reference prices for pct conditions
 	refPrices map[string]float64 // symbol -> first seen price
@@ -80,12 +92,32 @@ func (e *Engine) Inject(a TriggeredAlert) {
 		onAlert(a)
 	}
 	for _, n := range notifiers {
+		if !e.notifierLimiter(n.Name()).Allow() {
+			log.Printf("alert notifier %s: rate-limited, dropping alert for %s", n.Name(), a.Rule.Symbol)
+			continue
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
 		if err := n.Notify(ctx, a); err != nil {
 			log.Printf("alert notifier %s: %v", n.Name(), err)
 		}
 		cancel()
 	}
+}
+
+// notifierLimiter returns the per-notifier rate limiter, creating it on
+// first use. Safe for concurrent callers.
+func (e *Engine) notifierLimiter(name string) *rate.Limiter {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.notifierLimiters == nil {
+		e.notifierLimiters = make(map[string]*rate.Limiter)
+	}
+	lim, ok := e.notifierLimiters[name]
+	if !ok {
+		lim = rate.NewLimiter(rate.Every(notifierMinInterval), notifierBurst)
+		e.notifierLimiters[name] = lim
+	}
+	return lim
 }
 
 // AddNotifier registers a destination that receives every triggered alert.

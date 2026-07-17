@@ -99,6 +99,33 @@ type ServeConfig struct {
 	AuthorizedKeysFile string   `mapstructure:"authorized_keys_file,omitempty" yaml:"authorized_keys_file,omitempty"` // optional path to an authorized_keys file
 }
 
+// Providers gates the optional background data feeds so a locked-down or
+// geo-restricted deployment can cut egress it doesn't want. A nil pointer
+// means "default on" — the core Coinbase/Yahoo price feeds are always on
+// and are not gated here. Set to false in config to disable.
+type Providers struct {
+	Binance   *bool `mapstructure:"binance,omitempty" yaml:"binance,omitempty"`     // Binance futures funding/OI poll
+	DeFiLlama *bool `mapstructure:"defillama,omitempty" yaml:"defillama,omitempty"` // DeFiLlama TVL poll
+	News      *bool `mapstructure:"news,omitempty" yaml:"news,omitempty"`           // RSS feeds + SEC EDGAR
+	Macro     *bool `mapstructure:"macro,omitempty" yaml:"macro,omitempty"`         // Yahoo macro-index poll
+}
+
+func on(p *bool) bool { return p == nil || *p }
+
+// BinanceOn / DeFiLlamaOn / NewsOn / MacroOn report whether each optional
+// provider is enabled (default on when unset).
+func (p Providers) BinanceOn() bool   { return on(p.Binance) }
+func (p Providers) DeFiLlamaOn() bool { return on(p.DeFiLlama) }
+func (p Providers) NewsOn() bool      { return on(p.News) }
+func (p Providers) MacroOn() bool     { return on(p.Macro) }
+
+// NewsFeed is a named RSS source. When Config.NewsFeeds is non-empty it
+// replaces the built-in DefaultFeeds, letting a team drop or swap feeds.
+type NewsFeed struct {
+	Name string `mapstructure:"name" yaml:"name"`
+	URL  string `mapstructure:"url" yaml:"url"`
+}
+
 // Config is the application configuration.
 type Config struct {
 	Watchlist     []string          `mapstructure:"watchlist" yaml:"watchlist"`
@@ -116,6 +143,10 @@ type Config struct {
 	EDGARTickers  []string          `mapstructure:"edgar_tickers,omitempty" yaml:"edgar_tickers,omitempty"`
 	Notes         map[string]string `mapstructure:"notes,omitempty" yaml:"notes,omitempty"` // per-symbol freeform notes (markdown plaintext)
 	Serve         ServeConfig       `mapstructure:"serve,omitempty" yaml:"serve,omitempty"`
+	DesktopNotify *bool             `mapstructure:"desktop_notify,omitempty" yaml:"desktop_notify,omitempty"` // nil = on (dashboard) / off (serve)
+	Notifications *bool             `mapstructure:"notifications,omitempty" yaml:"notifications,omitempty"`   // master switch, nil = on
+	Providers     Providers         `mapstructure:"providers,omitempty" yaml:"providers,omitempty"`
+	NewsFeeds     []NewsFeed        `mapstructure:"news_feeds,omitempty" yaml:"news_feeds,omitempty"`
 }
 
 // ConfigDir returns the application's config / data directory path.
@@ -137,9 +168,15 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("create config dir: %w", err)
 	}
 
+	// The config dir may pre-exist at loose perms (another tool, a restored
+	// tar/rsync); MkdirAll won't tighten it, so chmod explicitly. config.yaml
+	// holds holdings + bearer/pushover/webhook secrets — keep it private.
+	_ = os.Chmod(dir, 0o700)
+
 	v := viper.New()
 	v.SetConfigFile(configPath())
 	v.SetConfigType("yaml")
+	v.SetConfigPermissions(0o600) // secrets at rest — not world-readable
 
 	// Operational fallbacks — always active so any run has sane values even
 	// when a hand-edited config omits them. These mirror the long-standing
@@ -170,6 +207,9 @@ func Load() (*Config, error) {
 		}
 		// Any other read error is non-fatal — fall through with defaults.
 	}
+	// Correct perms on an existing file that may have been written loose by
+	// an older version (viper historically wrote 0644).
+	tightenPerms()
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
@@ -189,11 +229,21 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
+// tightenPerms best-effort restricts the config dir to 0700 and config.yaml
+// to 0600 (holdings + secret tokens live there). Called after every write
+// and on load so a pre-existing loose dir/file is corrected — mirrors how
+// the SSH host key is handled.
+func tightenPerms() {
+	_ = os.Chmod(ConfigDir(), 0o700)
+	_ = os.Chmod(configPath(), 0o600)
+}
+
 // Save writes the config to disk.
 func Save(cfg *Config) error {
 	v := viper.New()
 	v.SetConfigFile(configPath())
 	v.SetConfigType("yaml")
+	v.SetConfigPermissions(0o600)
 
 	v.Set("watchlist", cfg.Watchlist)
 	if len(cfg.Watchlists) > 0 {
@@ -230,8 +280,26 @@ func Save(cfg *Config) error {
 	if cfg.Serve.Addr != "" || cfg.Serve.HostKey != "" || len(cfg.Serve.AuthorizedKeys) > 0 || cfg.Serve.AuthorizedKeysFile != "" {
 		v.Set("serve", cfg.Serve)
 	}
+	// Hardening toggles — persist only when explicitly set so an untouched
+	// config stays minimal.
+	if cfg.DesktopNotify != nil {
+		v.Set("desktop_notify", *cfg.DesktopNotify)
+	}
+	if cfg.Notifications != nil {
+		v.Set("notifications", *cfg.Notifications)
+	}
+	if cfg.Providers != (Providers{}) {
+		v.Set("providers", cfg.Providers)
+	}
+	if len(cfg.NewsFeeds) > 0 {
+		v.Set("news_feeds", cfg.NewsFeeds)
+	}
 
-	return v.WriteConfig()
+	if err := v.WriteConfig(); err != nil {
+		return err
+	}
+	tightenPerms()
+	return nil
 }
 
 // PollDuration parses the poll interval as a duration.

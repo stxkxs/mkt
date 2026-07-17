@@ -22,7 +22,10 @@ type Sink struct {
 
 // NewSink opens path for writing, truncating any existing content.
 func NewSink(path string) (*Sink, error) {
-	f, err := os.Create(path)
+	// 0o600: the recording captures which symbols are watched (a portfolio
+	// fingerprint), matching the alert/equity history writers rather than
+	// os.Create's world-readable 0o666&~umask.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("recording: create %s: %w", path, err)
 	}

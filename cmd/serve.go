@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/ssh"
 	"github.com/spf13/cobra"
 	"github.com/stxkxs/mkt/internal/config"
+	"github.com/stxkxs/mkt/internal/news"
 )
 
 // defaultServeAddr binds loopback by default: even though every session is
@@ -56,7 +57,11 @@ func init() {
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
-	b, cleanup, err := setupBackend()
+	// Serve mode: no host-side browser opening (a remote key must not spawn a
+	// browser on the server) and desktop notifications default off.
+	news.SetOpenDisabled(true)
+
+	b, cleanup, err := setupBackend(optsFromFlags(cmd, true))
 	if err != nil {
 		return err
 	}

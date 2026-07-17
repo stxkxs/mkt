@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+
 	"github.com/stxkxs/mkt/internal/config"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/mcp"
@@ -219,10 +220,26 @@ Tools:
 				{
 					URI:         "mkt://config",
 					Name:        "Configuration",
-					Description: "Current mkt YAML config (watchlist, portfolios, alerts, etc.)",
+					Description: "mkt config with secrets redacted (watchlist, portfolios, alerts, etc.)",
 					MimeType:    "text/yaml",
 					Handler: func(ctx context.Context) (string, error) {
-						b, err := os.ReadFile(filepath.Join(config.ConfigDir(), "config.yaml"))
+						// Never hand raw config.yaml to an agent — it holds the
+						// Pushover token, webhook/ntfy destinations, and per-rule
+						// webhook URLs (often embedding Slack/Discord tokens). Marshal
+						// a redacted copy instead. This resource is also gated behind
+						// --expose-config (default off); see below.
+						red := *cfg
+						red.WebhookURL = ""
+						red.NtfyTopic = ""
+						red.NtfyServer = ""
+						red.PushoverUser = ""
+						red.PushoverToken = ""
+						red.Alerts = make([]config.AlertRule, len(cfg.Alerts))
+						copy(red.Alerts, cfg.Alerts)
+						for i := range red.Alerts {
+							red.Alerts[i].Webhooks = nil
+						}
+						b, err := yaml.Marshal(&red)
 						if err != nil {
 							return "", err
 						}
@@ -307,9 +324,36 @@ Tools:
 				},
 			}
 
-			srv := mcp.New("mkt", version).WithTools(tools...).WithResources(resources...).WithPrompts(prompts...)
+			// Default-deny the sensitive surfaces. The config resource (even
+			// redacted) and the portfolio tool/resource (holdings, cost basis,
+			// P&L) are exposed only when the operator explicitly opts in, so a
+			// prompt-injected agent can't enumerate them by default.
+			exposeConfig, _ := cmd.Flags().GetBool("expose-config")
+			exposePortfolio, _ := cmd.Flags().GetBool("expose-portfolio")
+
+			filteredRes := resources[:0]
+			for _, r := range resources {
+				if r.URI == "mkt://config" && !exposeConfig {
+					continue
+				}
+				if r.URI == "mkt://portfolios" && !exposePortfolio {
+					continue
+				}
+				filteredRes = append(filteredRes, r)
+			}
+			filteredTools := tools[:0]
+			for _, t := range tools {
+				if t.Name == "get_portfolio" && !exposePortfolio {
+					continue
+				}
+				filteredTools = append(filteredTools, t)
+			}
+
+			srv := mcp.New("mkt", version).WithTools(filteredTools...).WithResources(filteredRes...).WithPrompts(prompts...)
 			return srv.Serve(context.Background(), os.Stdin, os.Stdout)
 		},
 	}
+	mcpCmd.Flags().Bool("expose-config", false, "expose the mkt://config resource (secrets redacted); off by default")
+	mcpCmd.Flags().Bool("expose-portfolio", false, "expose the get_portfolio tool + mkt://portfolios resource (holdings, cost basis, P&L); off by default")
 	rootCmd.AddCommand(mcpCmd)
 }

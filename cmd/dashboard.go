@@ -47,7 +47,7 @@ func dedupeUnion(groups []watchlistview.Group) []string {
 // single local program to its broadcaster, start the data plane, and run
 // the TUI. `mkt serve` reuses the same backend to attach many programs.
 func runDashboard(cmd *cobra.Command, args []string) error {
-	b, cleanup, err := setupBackend()
+	b, cleanup, err := setupBackend(optsFromFlags(cmd, false))
 	if err != nil {
 		return err
 	}
