@@ -1,0 +1,74 @@
+# GoReleaser config — cross-platform release archives + checksums.
+# Cut a release by pushing a semver tag (e.g. `git tag v0.1.0 && git push --tags`);
+# the .github/workflows/release.yml workflow runs `goreleaser release`.
+# Local dry run: `task release-snapshot` (or `goreleaser release --snapshot --clean`).
+version: 2
+
+project_name: mkt
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: mkt
+    main: .
+    binary: mkt
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # Match the Taskfile ldflags so `mkt version` reports the tag/commit/date.
+    ldflags:
+      - -s -w
+      - -X github.com/stxkxs/mkt/cmd.version={{ .Version }}
+      - -X github.com/stxkxs/mkt/cmd.commit={{ .ShortCommit }}
+      - -X github.com/stxkxs/mkt/cmd.date={{ .CommitDate }}
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - id: mkt
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  use: github
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Others
+      order: 999
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - Merge pull request
+      - Merge branch
+
+release:
+  draft: false
+  prerelease: auto
+  footer: |
+    ---
+    Full changelog and checksums attached. Verify with `sha256sum -c checksums.txt`.
