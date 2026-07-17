@@ -17,8 +17,8 @@ import (
 func newTestServer(t *testing.T) (*market.Cache, *Server) {
 	t.Helper()
 	cache := market.NewCache(60)
-	cache.Push(provider.Quote{Symbol: "AAPL", Price: 200})
-	cache.Push(provider.Quote{Symbol: "BTC-USD", Price: 60000})
+	cache.Push(provider.Quote{Symbol: "AAPL", Price: 200, Change: -1.5, ChangePct: -0.75})
+	cache.Push(provider.Quote{Symbol: "BTC-USD", Price: 60000, Change: 1200, ChangePct: 2.0})
 	s := New(":0", cache, nil)
 	return cache, s
 }
@@ -34,6 +34,35 @@ func TestQuotes(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &got)
 	if len(got) != 2 {
 		t.Fatalf("got %d entries, want 2", len(got))
+	}
+}
+
+func TestQuotesIncludeChangeAndDir(t *testing.T) {
+	_, s := newTestServer(t)
+	rec := httptest.NewRecorder()
+	s.handleQuotes(rec, httptest.NewRequest("GET", "/quotes", nil))
+	var got []quoteEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byID := map[string]quoteEntry{}
+	for _, e := range got {
+		byID[e.Symbol] = e
+	}
+	if e := byID["AAPL"]; e.ChangePct != -0.75 || e.Dir != "down" {
+		t.Errorf("AAPL: got change_pct=%v dir=%q, want -0.75/down", e.ChangePct, e.Dir)
+	}
+	if e := byID["BTC-USD"]; e.ChangePct != 2.0 || e.Dir != "up" {
+		t.Errorf("BTC-USD: got change_pct=%v dir=%q, want 2.0/up", e.ChangePct, e.Dir)
+	}
+}
+
+func TestDirection(t *testing.T) {
+	cases := map[float64]string{2.5: "up", -0.1: "down", 0: "flat"}
+	for pct, want := range cases {
+		if got := direction(pct); got != want {
+			t.Errorf("direction(%v) = %q, want %q", pct, got, want)
+		}
 	}
 }
 
@@ -70,6 +99,38 @@ func TestMetrics(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "mkt_symbols_cached 2") {
 		t.Errorf("missing/wrong symbols metric: %s", body)
+	}
+}
+
+func TestMetricsIncludesPriceGauges(t *testing.T) {
+	_, s := newTestServer(t)
+	rec := httptest.NewRecorder()
+	s.handleMetrics(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		"# TYPE mkt_price gauge",
+		`mkt_price{symbol="BTC-USD"} 60000`,
+		`mkt_price{symbol="AAPL"} 200`,
+		"# TYPE mkt_change_pct gauge",
+		`mkt_change_pct{symbol="AAPL"} -0.75`,
+		`mkt_change_pct{symbol="BTC-USD"} 2`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q in:\n%s", want, body)
+		}
+	}
+}
+
+func TestEscapeLabel(t *testing.T) {
+	cases := map[string]string{
+		"BTC-USD":  "BTC-USD",
+		"FRED:GDP": "FRED:GDP",
+		`a"b\c`:    `a\"b\\c`,
+	}
+	for in, want := range cases {
+		if got := escapeLabel(in); got != want {
+			t.Errorf("escapeLabel(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

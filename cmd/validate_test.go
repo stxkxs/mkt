@@ -31,6 +31,33 @@ func validCfg() *config.Config {
 	}
 }
 
+// TestDefaultSeedDataPassesValidate loads a fresh config (all seeded
+// defaults) and asserts it validates clean — so the seeded alerts,
+// watchlist groups, portfolios, and EDGAR tickers can never ship a value
+// that `mkt config validate` would flag.
+func TestDefaultSeedDataPassesValidate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if issues := validateConfig(cfg); len(issues) > 0 {
+		t.Errorf("default seeded config should validate clean, got:\n%s", strings.Join(issues, "\n"))
+	}
+	if len(cfg.Alerts) == 0 {
+		t.Error("expected seeded alerts")
+	}
+	if len(cfg.Watchlists) == 0 {
+		t.Error("expected seeded watchlist groups")
+	}
+	if len(cfg.EDGARTickers) == 0 {
+		t.Error("expected seeded EDGAR tickers")
+	}
+	if len(cfg.Notes) == 0 {
+		t.Error("expected seeded notes")
+	}
+}
+
 func TestValidateConfigClean(t *testing.T) {
 	if issues := validateConfig(validCfg()); len(issues) != 0 {
 		t.Errorf("valid config reported issues: %v", issues)

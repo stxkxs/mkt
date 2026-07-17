@@ -8,10 +8,14 @@ import (
 
 const defaultRingSize = 60
 
-// Cache stores recent quotes per symbol for sparkline rendering.
+// Cache stores recent quotes per symbol for sparkline rendering. It also
+// retains the most recent full Quote per symbol so consumers that need
+// more than the price (change %, direction, bid/ask) can read it back —
+// the ring buffer intentionally keeps only prices for the sparkline.
 type Cache struct {
 	mu       sync.RWMutex
 	data     map[string]*ring
+	last     map[string]provider.Quote
 	ringSize int
 }
 
@@ -22,11 +26,13 @@ func NewCache(ringSize int) *Cache {
 	}
 	return &Cache{
 		data:     make(map[string]*ring),
+		last:     make(map[string]provider.Quote),
 		ringSize: ringSize,
 	}
 }
 
-// Push adds a quote to the symbol's ring buffer.
+// Push adds a quote to the symbol's ring buffer and records it as the
+// symbol's latest full quote.
 func (c *Cache) Push(q provider.Quote) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -37,6 +43,7 @@ func (c *Cache) Push(q provider.Quote) {
 		c.data[q.Symbol] = r
 	}
 	r.push(q.Price)
+	c.last[q.Symbol] = q
 }
 
 // Prices returns the recent prices for a symbol.
@@ -77,6 +84,16 @@ func (c *Cache) Latest(symbol string) (float64, bool) {
 		return 0, false
 	}
 	return vals[len(vals)-1], true
+}
+
+// LatestQuote returns the most recent full Quote for a symbol, including
+// change %, direction, and bid/ask. Returns false when the symbol has
+// never been seen.
+func (c *Cache) LatestQuote(symbol string) (provider.Quote, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	q, ok := c.last[symbol]
+	return q, ok
 }
 
 // ring is a simple circular buffer for float64 prices.

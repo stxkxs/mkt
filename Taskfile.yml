@@ -36,6 +36,12 @@ tasks:
     cmds:
       - golangci-lint run ./...
 
+  demo:
+    desc: Render the demo GIF from demo/mkt.tape (requires vhs; uses your ~/.config/mkt watchlist)
+    deps: [build]
+    cmds:
+      - vhs demo/mkt.tape
+
   clean:
     desc: Remove build artifacts
     cmds:

@@ -1,9 +1,11 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -86,6 +88,17 @@ type Watchlist struct {
 	Symbols []string `mapstructure:"symbols" yaml:"symbols"`
 }
 
+// ServeConfig configures `mkt serve`, the Wish SSH dashboard. Access is
+// gated by a public-key allowlist: connections are refused unless the
+// client key appears in AuthorizedKeys or AuthorizedKeysFile. The command
+// refuses to start with an empty allowlist rather than serve openly.
+type ServeConfig struct {
+	Addr               string   `mapstructure:"addr,omitempty" yaml:"addr,omitempty"`                                 // SSH bind, e.g. 127.0.0.1:2222 or 0.0.0.0:2222
+	HostKey            string   `mapstructure:"host_key,omitempty" yaml:"host_key,omitempty"`                         // path to the SSH host key (auto-generated if missing)
+	AuthorizedKeys     []string `mapstructure:"authorized_keys,omitempty" yaml:"authorized_keys,omitempty"`           // inline allowlist of public keys
+	AuthorizedKeysFile string   `mapstructure:"authorized_keys_file,omitempty" yaml:"authorized_keys_file,omitempty"` // optional path to an authorized_keys file
+}
+
 // Config is the application configuration.
 type Config struct {
 	Watchlist     []string          `mapstructure:"watchlist" yaml:"watchlist"`
@@ -102,6 +115,7 @@ type Config struct {
 	PushoverToken string            `mapstructure:"pushover_token,omitempty" yaml:"pushover_token,omitempty"`
 	EDGARTickers  []string          `mapstructure:"edgar_tickers,omitempty" yaml:"edgar_tickers,omitempty"`
 	Notes         map[string]string `mapstructure:"notes,omitempty" yaml:"notes,omitempty"` // per-symbol freeform notes (markdown plaintext)
+	Serve         ServeConfig       `mapstructure:"serve,omitempty" yaml:"serve,omitempty"`
 }
 
 // ConfigDir returns the application's config / data directory path.
@@ -127,25 +141,49 @@ func Load() (*Config, error) {
 	v.SetConfigFile(configPath())
 	v.SetConfigType("yaml")
 
-	// Defaults
+	// Operational fallbacks — always active so any run has sane values even
+	// when a hand-edited config omits them. These mirror the long-standing
+	// pre-seed defaults and are safe to inject into an existing config.
 	v.SetDefault("watchlist", DefaultWatchlist)
 	v.SetDefault("poll_interval", DefaultPollInterval)
 	v.SetDefault("sparkline_len", DefaultSparklineLen)
 	v.SetDefault("theme", DefaultTheme)
 	v.SetDefault("portfolios", DefaultPortfolios)
-	v.SetDefault("alerts", []AlertRule{})
 
 	if err := v.ReadInConfig(); err != nil {
-		// Write defaults if file doesn't exist. A concurrent create is fine; defaults still apply in-memory.
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			_ = v.SafeWriteConfig()
+		// With SetConfigFile, a missing file surfaces as os.ErrNotExist (a
+		// *fs.PathError), NOT viper's ConfigFileNotFoundError — handle both.
+		var notFound viper.ConfigFileNotFoundError
+		if errors.As(err, &notFound) || errors.Is(err, os.ErrNotExist) {
+			// Fresh install ONLY: seed the rich content (grouped watchlists,
+			// example alerts, EDGAR tickers, notes) and persist a full
+			// config.yaml the user can see and edit. We deliberately do NOT
+			// inject these sections into a config that already exists — an
+			// upgrader keeps their file exactly as-is.
+			v.SetDefault("watchlists", DefaultWatchlists)
+			v.SetDefault("alerts", DefaultAlerts)
+			v.SetDefault("edgar_tickers", DefaultEDGARTickers)
+			v.SetDefault("notes", DefaultNotes)
+			if werr := v.WriteConfig(); werr != nil {
+				fmt.Fprintf(os.Stderr, "config: could not write default config to %s: %v\n", configPath(), werr)
+			}
 		}
-		// Not fatal — use defaults
+		// Any other read error is non-fatal — fall through with defaults.
 	}
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	// viper lowercases all map keys; notes are keyed by symbol, which is
+	// uppercase everywhere else, so normalize back so lookups match.
+	if len(cfg.Notes) > 0 {
+		notes := make(map[string]string, len(cfg.Notes))
+		for k, v := range cfg.Notes {
+			notes[strings.ToUpper(k)] = v
+		}
+		cfg.Notes = notes
 	}
 
 	return &cfg, nil
@@ -158,6 +196,9 @@ func Save(cfg *Config) error {
 	v.SetConfigType("yaml")
 
 	v.Set("watchlist", cfg.Watchlist)
+	if len(cfg.Watchlists) > 0 {
+		v.Set("watchlists", cfg.Watchlists)
+	}
 	v.Set("portfolios", cfg.Portfolios)
 	v.Set("alerts", cfg.Alerts)
 	v.Set("poll_interval", cfg.PollInterval)
@@ -180,6 +221,14 @@ func Save(cfg *Config) error {
 	}
 	if len(cfg.EDGARTickers) > 0 {
 		v.Set("edgar_tickers", cfg.EDGARTickers)
+	}
+	if len(cfg.Notes) > 0 {
+		v.Set("notes", cfg.Notes)
+	}
+	// Persist the SSH serve block so a `mkt config set` doesn't drop a
+	// hand-edited serve config (Save rebuilds the file from scratch).
+	if cfg.Serve.Addr != "" || cfg.Serve.HostKey != "" || len(cfg.Serve.AuthorizedKeys) > 0 || cfg.Serve.AuthorizedKeysFile != "" {
+		v.Set("serve", cfg.Serve)
 	}
 
 	return v.WriteConfig()
