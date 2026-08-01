@@ -3,11 +3,21 @@ package indicator
 import "math"
 
 // ADX computes the Average Directional Index along with +DI and -DI.
-// All three series use Wilder smoothing. Warm-up bars are NaN. Values
-// lie in [0, 100]. Period defaults to 14 in typical use.
 //
-// Inputs must be the same length; mismatched or insufficient inputs
-// return all NaN.
+// Reference definition (Wilder): +DM/-DM are the dominant directional move
+// per bar, TR is the true range, all three are Wilder-smoothed over `period`,
+// +DI = 100*smoothed(+DM)/smoothed(TR), -DI likewise,
+// DX = 100*|+DI - -DI|/(+DI + -DI), and ADX is DX Wilder-smoothed from a
+// simple mean of the first `period` DX values. Checked against that
+// definition — a clean up trend pushes +DI above -DI and lifts ADX.
+//
+// Warm-up bars are NaN: +DI/-DI start at index `period` and ADX at index
+// 2*period-1. Values lie in [0, 100]. Period defaults to 14 in typical use.
+//
+// Inputs must be the same length; mismatched or insufficient inputs return
+// all NaN. A bar with a non-finite high, low, or previous close contributes
+// no range and no directional movement, so missing data cannot poison the
+// Wilder accumulators for every bar that follows.
 func ADX(highs, lows, closes []float64, period int) (adx, plusDI, minusDI []float64) {
 	n := len(closes)
 	adx = make([]float64, n)
@@ -16,12 +26,7 @@ func ADX(highs, lows, closes []float64, period int) (adx, plusDI, minusDI []floa
 	if period <= 0 || n == 0 ||
 		len(highs) != n || len(lows) != n ||
 		n < 2*period+1 {
-		for i := range adx {
-			adx[i] = math.NaN()
-			plusDI[i] = math.NaN()
-			minusDI[i] = math.NaN()
-		}
-		return adx, plusDI, minusDI
+		return fillNaN(adx), fillNaN(plusDI), fillNaN(minusDI)
 	}
 
 	// Per-bar TR, +DM, -DM (i=0 is undefined; treat as 0)
@@ -29,6 +34,10 @@ func ADX(highs, lows, closes []float64, period int) (adx, plusDI, minusDI []floa
 	pdm := make([]float64, n)
 	mdm := make([]float64, n)
 	for i := 1; i < n; i++ {
+		if !finite(highs[i]) || !finite(lows[i]) || !finite(closes[i-1]) ||
+			!finite(highs[i-1]) || !finite(lows[i-1]) {
+			continue
+		}
 		hl := highs[i] - lows[i]
 		hc := math.Abs(highs[i] - closes[i-1])
 		lc := math.Abs(lows[i] - closes[i-1])
@@ -78,19 +87,22 @@ func ADX(highs, lows, closes []float64, period int) (adx, plusDI, minusDI []floa
 			dx[i] = math.NaN()
 			continue
 		}
-		if smTR[i] == 0 {
+		// Negated so a non-positive or NaN smoothed range is rejected.
+		if !(smTR[i] > 0) {
 			plusDI[i] = 0
 			minusDI[i] = 0
 			dx[i] = 0
 			continue
 		}
-		plusDI[i] = 100 * smPDM[i] / smTR[i]
-		minusDI[i] = 100 * smMDM[i] / smTR[i]
+		// The smoothed DM can round a hair above the smoothed TR, so clamp
+		// rather than let a 100.00000000000001 reach the renderer.
+		plusDI[i] = min(100, max(0, 100*smPDM[i]/smTR[i]))
+		minusDI[i] = min(100, max(0, 100*smMDM[i]/smTR[i]))
 		sum := plusDI[i] + minusDI[i]
 		if sum == 0 {
 			dx[i] = 0
 		} else {
-			dx[i] = 100 * math.Abs(plusDI[i]-minusDI[i]) / sum
+			dx[i] = min(100, max(0, 100*math.Abs(plusDI[i]-minusDI[i])/sum))
 		}
 	}
 

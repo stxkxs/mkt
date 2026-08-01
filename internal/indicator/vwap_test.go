@@ -77,4 +77,41 @@ func TestVWAP(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("all-zero volume stays NaN, never divides by zero", func(t *testing.T) {
+		got := VWAP(
+			[]float64{10, 20, 30},
+			[]float64{10, 20, 30},
+			[]float64{10, 20, 30},
+			[]float64{0, 0, 0},
+		)
+		for i, v := range got {
+			if !math.IsNaN(v) {
+				t.Fatalf("i=%d want NaN with no traded volume, got %v", i, v)
+			}
+		}
+	})
+
+	t.Run("negative volume is rejected as bad data", func(t *testing.T) {
+		got := VWAP(
+			[]float64{10, 20, 30},
+			[]float64{10, 20, 30},
+			[]float64{10, 20, 30},
+			[]float64{1, -5, 1},
+		)
+		// Bar 1 is dropped, so the average is over bars 0 and 2 only.
+		want := []float64{10, 10, 20}
+		assertFloatSliceEqual(t, got, want, 1e-9)
+	})
+
+	t.Run("a non-finite candle does not poison the rest of the series", func(t *testing.T) {
+		got := VWAP(
+			[]float64{10, math.NaN(), 30, 40},
+			[]float64{10, 20, 30, 40},
+			[]float64{10, 20, 30, 40},
+			[]float64{1, 1, 1, 1},
+		)
+		want := []float64{10, 10, 20, 26 + 2.0/3.0}
+		assertFloatSliceEqual(t, got, want, 1e-9)
+	})
 }

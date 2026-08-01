@@ -86,4 +86,53 @@ func TestBollinger(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("period longer than input returns all NaN", func(t *testing.T) {
+		r := Bollinger([]float64{1, 2, 3}, 10, 2.0)
+		for i := range r.Middle {
+			if !math.IsNaN(r.Middle[i]) || !math.IsNaN(r.Upper[i]) || !math.IsNaN(r.Lower[i]) {
+				t.Fatalf("expected NaN at i=%d", i)
+			}
+		}
+	})
+
+	t.Run("non-finite mult returns all NaN instead of infinite bands", func(t *testing.T) {
+		in := []float64{1, 2, 3, 4, 5, 6, 7, 8}
+		for _, mult := range []float64{math.Inf(1), math.NaN()} {
+			r := Bollinger(in, 3, mult)
+			for i := range in {
+				if !math.IsNaN(r.Upper[i]) || !math.IsNaN(r.Lower[i]) || !math.IsNaN(r.Middle[i]) {
+					t.Fatalf("mult=%v i=%d leaked %v/%v/%v",
+						mult, i, r.Upper[i], r.Middle[i], r.Lower[i])
+				}
+			}
+		}
+	})
+
+	t.Run("a non-finite close blanks only the windows it touches", func(t *testing.T) {
+		in := []float64{1, 2, math.NaN(), 4, 5, 6, 7, 8}
+		r := Bollinger(in, 3, 2.0)
+		for i := 0; i < 5; i++ {
+			if !math.IsNaN(r.Middle[i]) {
+				t.Fatalf("i=%d expected NaN, got %v", i, r.Middle[i])
+			}
+		}
+		for i := 5; i < len(in); i++ {
+			if math.IsNaN(r.Middle[i]) || math.IsNaN(r.Upper[i]) || math.IsNaN(r.Lower[i]) {
+				t.Fatalf("i=%d should have recovered, got %v/%v/%v",
+					i, r.Upper[i], r.Middle[i], r.Lower[i])
+			}
+		}
+	})
+
+	t.Run("band width uses the population standard deviation", func(t *testing.T) {
+		// Window [2,4,4,4,5,5,7,9]: population sigma = 2 exactly, while the
+		// sample estimator Stddev returns is 2.1380899....
+		in := []float64{2, 4, 4, 4, 5, 5, 7, 9}
+		r := Bollinger(in, 8, 1.0)
+		if math.Abs(r.Upper[7]-r.Middle[7]-2) > 1e-9 {
+			t.Fatalf("band offset = %v, want the population sigma 2",
+				r.Upper[7]-r.Middle[7])
+		}
+	})
 }

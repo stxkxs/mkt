@@ -106,6 +106,91 @@ func TestStochastic(t *testing.T) {
 		}
 	})
 
+	// %D used to be NaN for every bar of every input: %K's warm-up NaNs were
+	// folded into SMA's running sum and poisoned every later value.
+	t.Run("D is a real SMA of K, not all NaN", func(t *testing.T) {
+		n := 40
+		highs := make([]float64, n)
+		lows := make([]float64, n)
+		closes := make([]float64, n)
+		for i := range highs {
+			base := 100 + 5*math.Sin(float64(i)/4)
+			highs[i] = base + 1
+			lows[i] = base - 1
+			closes[i] = base
+		}
+		k, d := Stochastic(highs, lows, closes, 14, 3)
+
+		// %K is valid from index 13, so %D is valid from index 15.
+		for i := 0; i < 15; i++ {
+			if !math.IsNaN(d[i]) {
+				t.Fatalf("d[%d] expected NaN during warm-up, got %v", i, d[i])
+			}
+		}
+		var valid int
+		for i := 15; i < n; i++ {
+			if math.IsNaN(d[i]) {
+				t.Fatalf("d[%d] expected a value, got NaN", i)
+			}
+			want := (k[i] + k[i-1] + k[i-2]) / 3
+			if math.Abs(d[i]-want) > 1e-9 {
+				t.Fatalf("d[%d] = %v, want the 3-period mean of K %v", i, d[i], want)
+			}
+			valid++
+		}
+		if valid != n-15 {
+			t.Fatalf("got %d valid D values, want %d", valid, n-15)
+		}
+	})
+
+	t.Run("a flat window blanks D only while it is in range", func(t *testing.T) {
+		n := 24
+		highs := make([]float64, n)
+		lows := make([]float64, n)
+		closes := make([]float64, n)
+		for i := range highs {
+			highs[i] = 100 + float64(i)
+			lows[i] = 98 + float64(i)
+			closes[i] = 99 + float64(i)
+		}
+		// Freeze bars 14..18 flat so the %K window at 18 has zero range.
+		for i := 14; i < 19; i++ {
+			highs[i], lows[i], closes[i] = 113, 113, 113
+		}
+		k, d := Stochastic(highs, lows, closes, 5, 3)
+		var blanked int
+		for i := 7; i < n; i++ {
+			if math.IsNaN(d[i]) {
+				blanked++
+			}
+		}
+		if blanked == 0 {
+			t.Fatalf("expected the flat window to blank some D values")
+		}
+		if math.IsNaN(d[n-1]) {
+			t.Fatalf("d[%d] should have recovered once the flat window passed", n-1)
+		}
+		if math.IsNaN(k[n-1]) {
+			t.Fatalf("k[%d] should have recovered once the flat window passed", n-1)
+		}
+	})
+
+	t.Run("high below low is rejected, not clamped", func(t *testing.T) {
+		// Bad provider data: an inverted bar gives a negative range, which
+		// would otherwise produce a clamped but meaningless reading.
+		k, _ := Stochastic(
+			[]float64{1, 1, 1, 1},
+			[]float64{5, 5, 5, 5},
+			[]float64{3, 3, 3, 3},
+			3, 2,
+		)
+		for i := 2; i < len(k); i++ {
+			if !math.IsNaN(k[i]) {
+				t.Fatalf("k[%d] expected NaN for an inverted range, got %v", i, k[i])
+			}
+		}
+	})
+
 	t.Run("mismatched lengths return all NaN", func(t *testing.T) {
 		k, d := Stochastic([]float64{1, 2}, []float64{1}, []float64{1, 2}, 14, 3)
 		for i, v := range k {

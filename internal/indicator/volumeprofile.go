@@ -1,6 +1,10 @@
 package indicator
 
-import "github.com/stxkxs/mkt/internal/provider"
+import (
+	"math"
+
+	"github.com/stxkxs/mkt/internal/provider"
+)
 
 // VolumeBin is one bucket of the volume profile.
 type VolumeBin struct {
@@ -12,15 +16,27 @@ type VolumeBin struct {
 // VolumeProfile partitions the price range across candles into numBins
 // equal-width buckets and accumulates each candle's volume into the
 // bucket containing its typical price (H+L+C)/3. Returned bins are
-// ordered low-to-high. Returns an empty slice for empty input, numBins
-// <= 0, or a degenerate flat-price range.
+// ordered low-to-high.
+//
+// Reference definition: the profile spans [min(Low), max(High)] in numBins
+// equal-width buckets, and every candle's volume lands in exactly one bucket,
+// so the bin volumes sum to the total traded volume. Checked against that
+// definition.
+//
+// Returns an empty slice for empty input, numBins <= 0, or a degenerate
+// flat-price range. Candles with a non-finite price or volume are ignored
+// entirely — both when measuring the range and when binning — so bad data
+// cannot produce NaN bin bounds or an out-of-range bucket index.
 func VolumeProfile(candles []provider.OHLCV, numBins int) []VolumeBin {
 	if numBins <= 0 || len(candles) == 0 {
 		return nil
 	}
 
-	minP, maxP := candles[0].Low, candles[0].High
+	minP, maxP := math.Inf(1), math.Inf(-1)
 	for _, c := range candles {
+		if !finite(c.Low) || !finite(c.High) {
+			continue
+		}
 		if c.Low < minP {
 			minP = c.Low
 		}
@@ -28,7 +44,7 @@ func VolumeProfile(candles []provider.OHLCV, numBins int) []VolumeBin {
 			maxP = c.High
 		}
 	}
-	if maxP <= minP {
+	if !finite(minP) || !finite(maxP) || maxP <= minP || !finite(maxP-minP) {
 		return nil
 	}
 
@@ -41,6 +57,9 @@ func VolumeProfile(candles []provider.OHLCV, numBins int) []VolumeBin {
 
 	for _, c := range candles {
 		tp := (c.High + c.Low + c.Close) / 3
+		if !finite(tp) || !finite(c.Volume) {
+			continue
+		}
 		idx := int((tp - minP) / binWidth)
 		if idx >= numBins {
 			idx = numBins - 1
@@ -48,13 +67,17 @@ func VolumeProfile(candles []provider.OHLCV, numBins int) []VolumeBin {
 		if idx < 0 {
 			idx = 0
 		}
-		bins[idx].Volume += c.Volume
+		// Drop the candle rather than overflow the bucket total.
+		if total := bins[idx].Volume + c.Volume; finite(total) {
+			bins[idx].Volume = total
+		}
 	}
 	return bins
 }
 
 // POC returns the index of the Point of Control — the bin with the
-// highest volume — and its volume. Returns (-1, 0) for empty input.
+// highest volume — and its volume. Returns (-1, 0) when no bin carries
+// positive volume, which covers empty input.
 func POC(bins []VolumeBin) (idx int, volume float64) {
 	idx = -1
 	for i, b := range bins {
