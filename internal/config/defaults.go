@@ -73,7 +73,7 @@ var (
 		// Gold / safe haven
 		"GLD",
 		"NEM",
-		"GOLD",
+		"B",
 		"AEM",
 		"WPM",
 		"RGLD",
@@ -100,7 +100,7 @@ var (
 		"DHI",
 		"LEN",
 		"SCHD",
-		"SQ",
+		"XYZ",
 		"SHOP",
 		"SOFI",
 		"ABBV",
@@ -117,7 +117,7 @@ var (
 		"INTC",
 		"AMAT",
 		"LRCX",
-		"EATON",
+		"ETN",
 		"FAST",
 		"XYL",
 		"UNP",
@@ -200,8 +200,8 @@ var (
 		{Name: "Defense & Space", Symbols: []string{"LMT", "RTX", "NOC", "GD", "LHX", "BA", "HII", "KTOS", "LDOS", "AVAV", "RKLB", "ASTS", "GSAT", "IRDM"}},
 		{Name: "Energy & Nuclear", Symbols: []string{"XOM", "CVX", "OXY", "HAL", "DVN", "COP", "SLB", "EOG", "FANG", "PSX", "MPC", "VLO", "CCJ", "UEC", "DNN", "LEU", "NNE", "SMR", "ENPH", "FSLR", "NEE"}},
 		{Name: "Healthcare & GLP-1", Symbols: []string{"LLY", "NVO", "JNJ", "MRK", "PFE", "AMGN", "HIMS", "TDOC", "ISRG", "MDT", "ABT", "SYK", "UNH", "HUM", "WELL", "VRTX", "REGN", "DXCM", "PODD"}},
-		{Name: "Commodities & Miners", Symbols: []string{"GLD", "NEM", "GOLD", "AEM", "WPM", "RGLD", "FCX", "SCCO", "TECK", "SQM", "ALB", "BHP", "RIO", "VALE", "MOS", "NTR", "ADM", "FRO", "STNG", "INSW", "ZIM"}},
-		{Name: "Crypto Equities & Fintech", Symbols: []string{"COIN", "MSTR", "MARA", "CLSK", "RIOT", "WULF", "HOOD", "SQ", "SHOP", "SOFI", "KRE"}},
+		{Name: "Commodities & Miners", Symbols: []string{"GLD", "NEM", "B", "AEM", "WPM", "RGLD", "FCX", "SCCO", "TECK", "SQM", "ALB", "BHP", "RIO", "VALE", "MOS", "NTR", "ADM", "FRO", "STNG", "INSW", "ZIM"}},
+		{Name: "Crypto Equities & Fintech", Symbols: []string{"COIN", "MSTR", "MARA", "CLSK", "RIOT", "WULF", "HOOD", "XYZ", "SHOP", "SOFI", "KRE"}},
 		{Name: "Cybersecurity", Symbols: []string{"PANW", "CRWD", "FTNT", "ZS", "NET", "S"}},
 		{Name: "Rate-Sensitive & Income", Symbols: []string{"O", "AMT", "WELL", "DHI", "LEN", "SCHD", "ABBV", "KRE"}},
 	}
@@ -254,7 +254,7 @@ var (
 				// Gold & safe haven — flight to quality
 				{Symbol: "GLD", Name: "SPDR Gold Trust", Quantity: 25, CostBasis: 195.00},
 				{Symbol: "NEM", Name: "Newmont", Quantity: 40, CostBasis: 42.00},
-				{Symbol: "GOLD", Name: "Barrick Gold", Quantity: 50, CostBasis: 18.00},
+				{Symbol: "B", Name: "Barrick Mining", Quantity: 50, CostBasis: 18.00},
 				{Symbol: "WPM", Name: "Wheaton Precious Metals", Quantity: 25, CostBasis: 48.00},
 
 				// Critical minerals — supply chain concentration risk
@@ -311,7 +311,7 @@ var (
 				// Growth tech — long-duration assets benefit from lower discount rates
 				{Symbol: "TSLA", Name: "Tesla", Quantity: 8, CostBasis: 250.00},
 				{Symbol: "COIN", Name: "Coinbase Global", Quantity: 15, CostBasis: 220.00},
-				{Symbol: "SQ", Name: "Block (Square)", Quantity: 20, CostBasis: 65.00},
+				{Symbol: "XYZ", Name: "Block", Quantity: 20, CostBasis: 65.00},
 				{Symbol: "SHOP", Name: "Shopify", Quantity: 18, CostBasis: 70.00},
 				{Symbol: "SOFI", Name: "SoFi Technologies", Quantity: 80, CostBasis: 8.00},
 
@@ -360,7 +360,7 @@ var (
 				{Symbol: "ALB", Name: "Albemarle", Quantity: 15, CostBasis: 100.00},
 
 				// Grid & electrical infrastructure
-				{Symbol: "EATON", Name: "Eaton Corporation", Quantity: 10, CostBasis: 280.00},
+				{Symbol: "ETN", Name: "Eaton Corporation", Quantity: 10, CostBasis: 280.00},
 			},
 		},
 		{
@@ -410,7 +410,7 @@ var (
 
 				// Electrical & grid — power lines, substations, broadband
 				{Symbol: "PWR", Name: "Quanta Services", Quantity: 12, CostBasis: 230.00},
-				{Symbol: "EATON", Name: "Eaton Corporation", Quantity: 10, CostBasis: 280.00},
+				{Symbol: "ETN", Name: "Eaton Corporation", Quantity: 10, CostBasis: 280.00},
 
 				// Engineering & construction
 				{Symbol: "AAON", Name: "AAON", Quantity: 15, CostBasis: 85.00},
@@ -529,7 +529,7 @@ var (
 
 				// Gold & silver — monetary metals
 				{Symbol: "NEM", Name: "Newmont", Quantity: 30, CostBasis: 42.00},
-				{Symbol: "GOLD", Name: "Barrick Gold", Quantity: 40, CostBasis: 18.00},
+				{Symbol: "B", Name: "Barrick Mining", Quantity: 40, CostBasis: 18.00},
 				{Symbol: "WPM", Name: "Wheaton Precious Metals", Quantity: 20, CostBasis: 48.00},
 
 				// Oil — structural underinvestment
@@ -554,16 +554,16 @@ var (
 				{Symbol: "COIN", Name: "Coinbase Global", Quantity: 15, CostBasis: 220.00},
 
 				// Bitcoin miners — leveraged BTC exposure
-				{Symbol: "MARA", Name: "Marathon Digital", Quantity: 40, CostBasis: 20.00},
+				{Symbol: "MARA", Name: "MARA Holdings", Quantity: 40, CostBasis: 20.00},
 				{Symbol: "CLSK", Name: "CleanSpark", Quantity: 30, CostBasis: 15.00},
 				{Symbol: "RIOT", Name: "Riot Platforms", Quantity: 40, CostBasis: 12.00},
 				{Symbol: "WULF", Name: "TeraWulf", Quantity: 60, CostBasis: 5.00},
 
 				// Corporate BTC holders
-				{Symbol: "MSTR", Name: "MicroStrategy", Quantity: 5, CostBasis: 1500.00},
+				{Symbol: "MSTR", Name: "Strategy (MicroStrategy)", Quantity: 5, CostBasis: 1500.00},
 
 				// Crypto-adjacent fintech
-				{Symbol: "SQ", Name: "Block (Square)", Quantity: 15, CostBasis: 65.00},
+				{Symbol: "XYZ", Name: "Block", Quantity: 15, CostBasis: 65.00},
 				{Symbol: "HOOD", Name: "Robinhood Markets", Quantity: 40, CostBasis: 18.00},
 				{Symbol: "SOFI", Name: "SoFi Technologies", Quantity: 60, CostBasis: 8.00},
 
@@ -576,7 +576,7 @@ var (
 			Name: "Space Economy",
 			Holdings: []Holding{
 				// Launch & rockets
-				{Symbol: "RKLB", Name: "Rocket Lab USA", Quantity: 60, CostBasis: 18.00},
+				{Symbol: "RKLB", Name: "Rocket Lab", Quantity: 60, CostBasis: 18.00},
 				{Symbol: "BA", Name: "Boeing", Quantity: 8, CostBasis: 195.00},
 				{Symbol: "LMT", Name: "Lockheed Martin", Quantity: 5, CostBasis: 450.00},
 
