@@ -2,7 +2,6 @@ package chart
 
 import (
 	"image/color"
-	"math"
 
 	"github.com/stxkxs/mkt/internal/indicator"
 	"github.com/stxkxs/mkt/internal/provider"
@@ -11,71 +10,51 @@ import (
 
 // drawOverlays paints the on-chart indicator series (moving averages,
 // Bollinger bands, VWAP, pivot lines) directly onto the candlestick or
-// line chart grid. Each overlay respects the chart area width and skips
-// cells already occupied by candles or higher-priority glyphs.
-func (m Model) drawOverlays(grid [][]rune, gridColor [][]color.Color, candles []provider.OHLCV, closes []float64, width, height int, minP, scale float64, step int) {
-	plotLine := func(values []float64, clr color.Color) {
-		for i, v := range values {
-			if math.IsNaN(v) {
-				continue
-			}
-			col := i * step
-			if step == 1 && len(values) > width {
-				col = i * width / len(values)
-			} else if step > 1 {
-				col = i * step
-			}
-			if col >= width {
-				break
-			}
-			row := height - 1 - int((v-minP)*scale)
-			row = clampRow(row, height)
-			if grid[row][col] == ' ' {
-				grid[row][col] = '─'
-				gridColor[row][col] = clr
-			}
-		}
+// line grid.
+//
+// Every series comes from the viewport, which holds values computed over
+// the full fetched history and narrowed to the visible window — the
+// overlay never recomputes anything from what happens to be on screen.
+// Overlays are confined to chartW so they do not run into the
+// volume-profile gutter, and they only paint blank cells so candles and
+// pattern markers keep priority.
+func (m Model) drawOverlays(p *panel, v viewport, scale vscale, chartW int) {
+	limit := min(chartW, p.w)
+	if limit <= 0 {
+		return
+	}
+	plot := func(values []float64, clr color.Color) {
+		plotSeries(p, values, v.step, scale, '─', clr, paintIfEmpty)
 	}
 
 	if m.indicators[IndSMA] {
-		sma := indicator.SMA(closes, 20)
-		plotLine(sma, theme.ColorCyan)
+		plot(v.ind.sma, theme.ColorCyan)
 	}
 	if m.indicators[IndEMA] {
-		ema := indicator.EMA(closes, 20)
-		plotLine(ema, theme.ColorYellow)
+		plot(v.ind.ema, theme.ColorYellow)
 	}
 	if m.indicators[IndBollinger] {
-		bb := indicator.Bollinger(closes, 20, 2.0)
-		plotLine(bb.Upper, theme.ColorDim)
-		plotLine(bb.Middle, theme.ColorAccent)
-		plotLine(bb.Lower, theme.ColorDim)
+		plot(v.ind.bb.Upper, theme.ColorDim)
+		plot(v.ind.bb.Middle, theme.ColorAccent)
+		plot(v.ind.bb.Lower, theme.ColorDim)
 	}
 	if m.indicators[IndVWAP] {
-		highs := make([]float64, len(candles))
-		lows := make([]float64, len(candles))
-		vols := make([]float64, len(candles))
-		for i, c := range candles {
-			highs[i] = c.High
-			lows[i] = c.Low
-			vols[i] = c.Volume
-		}
-		vwap := indicator.VWAP(highs, lows, closes, vols)
-		plotLine(vwap, theme.ColorMagenta)
+		plot(v.ind.vwap, theme.ColorMagenta)
 	}
-	if m.indicators[IndPivots] && len(candles) >= 2 {
-		prev := candles[len(candles)-2]
-		piv := indicator.PivotsClassic(prev.High, prev.Low, prev.Close)
-		plotHLine := func(v float64, clr color.Color) {
-			row := height - 1 - int((v-minP)*scale)
-			if row < 0 || row >= height {
+	if m.indicators[IndPivots] && v.ind.hasPivots {
+		piv := v.ind.pivots
+		// A pivot outside the visible price range is not drawn at all,
+		// rather than smeared across the top or bottom row.
+		plotHLine := func(val float64, clr color.Color) {
+			if val < scale.minV || val > scale.maxV {
 				return
 			}
-			for c := range width {
-				if grid[row][c] == ' ' {
-					grid[row][c] = '┄'
-					gridColor[row][c] = clr
-				}
+			row, ok := scale.row(val)
+			if !ok {
+				return
+			}
+			for c := range limit {
+				p.paint(row, c, refLine, clr, paintIfEmpty)
 			}
 		}
 		plotHLine(piv.R3, theme.ColorGreen)
@@ -91,48 +70,58 @@ func (m Model) drawOverlays(grid [][]rune, gridColor [][]color.Color, candles []
 // drawPatternMarkers paints a glyph above or below each candle whose
 // pattern was detected. Bullish patterns mark below the low (▲ green),
 // bearish above the high (▼ red), and doji above the high (◇ accent).
-func drawPatternMarkers(grid [][]rune, gridColor [][]color.Color, candles []provider.OHLCV, chartW, height int, minP, scale float64, candleWidth int) {
-	pats := indicator.Patterns(candles)
-	for i, p := range pats {
-		if p == indicator.PatternNone {
+func drawPatternMarkers(p *panel, v viewport, scale vscale, chartW int) {
+	for i, pat := range v.ind.patterns {
+		if pat == indicator.PatternNone || i >= v.len() {
 			continue
 		}
-		col := i * candleWidth
+		col := i * v.step
 		if col >= chartW {
 			break
 		}
 		var glyph rune
 		var clr color.Color
 		var row int
+		var ok bool
 		switch {
-		case p.IsBullish():
-			glyph = '▲'
-			clr = theme.ColorGreen
-			lowRow := height - 1 - int((candles[i].Low-minP)*scale)
-			row = clampRow(lowRow+1, height)
-		case p.IsBearish():
-			glyph = '▼'
-			clr = theme.ColorRed
-			highRow := height - 1 - int((candles[i].High-minP)*scale)
-			row = clampRow(highRow-1, height)
+		case pat.IsBullish():
+			glyph, clr = '▲', theme.ColorGreen
+			row, ok = scale.row(v.candles[i].Low)
+			row++
+		case pat.IsBearish():
+			glyph, clr = '▼', theme.ColorRed
+			row, ok = scale.row(v.candles[i].High)
+			row--
 		default: // Doji
-			glyph = '◇'
-			clr = theme.ColorAccent
-			highRow := height - 1 - int((candles[i].High-minP)*scale)
-			row = clampRow(highRow-1, height)
+			glyph, clr = '◇', theme.ColorAccent
+			row, ok = scale.row(v.candles[i].High)
+			row--
 		}
-		if grid[row][col] == ' ' {
-			grid[row][col] = glyph
-			gridColor[row][col] = clr
+		if !ok {
+			continue
 		}
+		p.paint(clampRow(row, p.h), col, glyph, clr, paintIfEmpty)
 	}
+}
+
+// volumeBins computes the volume profile for the visible candles.
+//
+// Both the gutter histogram and the header's POC readout call this with
+// the same arguments. They used to bin differently — the header used one
+// bin per candle, which degenerates into "the typical price of the
+// single highest-volume candle" — and so pointed at different prices.
+func volumeBins(candles []provider.OHLCV, height int) []indicator.VolumeBin {
+	if height < 1 {
+		return nil
+	}
+	return indicator.VolumeProfile(candles, height)
 }
 
 // drawVolumeProfileGutter paints a horizontal volume histogram into the
 // rightmost columns of the grid. Bins are computed at chart height
 // resolution so each row maps to one bin (lowest price at the bottom row).
-func drawVolumeProfileGutter(grid [][]rune, gridColor [][]color.Color, candles []provider.OHLCV, chartW, totalW, height int) {
-	bins := indicator.VolumeProfile(candles, height)
+func drawVolumeProfileGutter(p *panel, candles []provider.OHLCV, chartW, totalW, height int) {
+	bins := volumeBins(candles, height)
 	if len(bins) == 0 {
 		return
 	}
@@ -142,11 +131,14 @@ func drawVolumeProfileGutter(grid [][]rune, gridColor [][]color.Color, candles [
 			maxVol = b.Volume
 		}
 	}
-	if maxVol == 0 {
+	if maxVol <= 0 {
 		return
 	}
 	pocIdx, _ := indicator.POC(bins)
 	gutterW := totalW - chartW
+	if gutterW <= 0 {
+		return
+	}
 	for i, b := range bins {
 		row := height - 1 - i
 		if row < 0 || row >= height {
@@ -161,19 +153,7 @@ func drawVolumeProfileGutter(grid [][]rune, gridColor [][]color.Color, candles [
 			clr = theme.ColorAccent
 		}
 		for c := chartW; c < chartW+barLen && c < totalW; c++ {
-			grid[row][c] = '▆'
-			gridColor[row][c] = clr
+			p.paint(row, c, '▆', clr, paintOver)
 		}
 	}
-}
-
-// extractHL pulls high and low slices out of a candle series.
-func extractHL(candles []provider.OHLCV) (highs, lows []float64) {
-	highs = make([]float64, len(candles))
-	lows = make([]float64, len(candles))
-	for i, c := range candles {
-		highs[i] = c.High
-		lows[i] = c.Low
-	}
-	return highs, lows
 }

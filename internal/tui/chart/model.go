@@ -3,7 +3,6 @@ package chart
 import (
 	"context"
 	"fmt"
-	"image/color"
 	"math"
 	"strings"
 
@@ -58,6 +57,17 @@ var indicatorKeys = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "
 // edge of the main chart for the volume-profile histogram when toggled.
 const volumeProfileGutterW = 15
 
+// candleWidth is the number of grid columns one candle occupies in
+// candlestick mode: one for the body, one for the gap.
+const candleWidth = 2
+
+// Zoom bounds. zoomStep is how many candles one +/- press adds or
+// removes; minZoom is the tightest window the chart allows.
+const (
+	zoomStep = 10
+	minZoom  = 10
+)
+
 // ChartMode determines the chart type.
 type ChartMode int
 
@@ -76,6 +86,9 @@ var intervals = []provider.Interval{
 	provider.Interval1w,
 }
 
+// defaultIntervalIdx is the index of the 1d interval in intervals.
+const defaultIntervalIdx = 5
+
 // HistoryProvider is the interface for fetching history.
 type HistoryProvider interface {
 	History(ctx context.Context, params provider.HistoryParams) ([]provider.OHLCV, error)
@@ -87,18 +100,41 @@ type Model struct {
 	data        []provider.OHLCV
 	mode        ChartMode
 	intervalIdx int
-	zoom        int // number of candles to display
 	width       int
 	height      int
+
+	// zoom is the number of candles the user asked to see. autoZoom
+	// means "as many as the terminal can show": the chart fits itself to
+	// the window and re-fits on resize, instead of pinning a fixed 50
+	// candles and leaving half of a wide terminal blank. Pressing +/-
+	// takes manual control and clamps to the data actually fetched.
+	zoom     int
+	autoZoom bool
+
+	// dataInterval is the interval m.data was requested at and served
+	// is the interval the provider actually delivered; they differ when
+	// a provider maps an interval it cannot serve (Yahoo answers a 4h
+	// request with 1h bars). The header is labelled from served.
+	dataInterval provider.Interval
+	served       provider.Interval
 
 	// Hover crosshair: hoverCol/hoverRow are terminal coordinates of
 	// the last MouseMotionMsg seen; -1 means no hover. The renderer
 	// translates them into grid coordinates and draws dashed crosshair
 	// lines plus a readout for the candle under the cursor.
-	hoverCol      int
-	hoverRow      int
-	active        bool
-	histProvider  HistoryProvider
+	hoverCol int
+	hoverRow int
+	active   bool
+
+	histProvider HistoryProvider
+	cache        *historyCache
+
+	// reqSeq tags every history request so a response that lands after
+	// a newer request was issued can be discarded, and cancel aborts
+	// the request currently in flight.
+	reqSeq uint64
+	cancel context.CancelFunc
+
 	loading       bool
 	errMsg        string
 	indicators    [indCount]bool // which indicators are active
@@ -109,9 +145,10 @@ type Model struct {
 func New(histProvider HistoryProvider) Model {
 	return Model{
 		mode:         ModeCandlestick,
-		intervalIdx:  5, // 1d default
-		zoom:         50,
+		intervalIdx:  defaultIntervalIdx,
+		autoZoom:     true,
 		histProvider: histProvider,
+		cache:        newHistoryCache(),
 		hoverCol:     -1,
 		hoverRow:     -1,
 	}
@@ -126,10 +163,17 @@ func (m *Model) SetSymbol(sym string) tea.Cmd {
 	return m.fetchHistory()
 }
 
-// SetSize updates dimensions.
+// SetSize updates dimensions. While the zoom is auto-fitted the visible
+// window follows the new width on the next render; a manual zoom is only
+// clamped down when it no longer fits.
 func (m *Model) SetSize(w, h int) {
 	m.width = w
 	m.height = h
+	if !m.autoZoom {
+		if lim := m.zoomLimit(); m.zoom > lim {
+			m.zoom = lim
+		}
+	}
 }
 
 // Active returns whether the chart is showing.
@@ -137,35 +181,186 @@ func (m Model) Active() bool {
 	return m.active
 }
 
-// historyLoadedMsg is sent when history data arrives.
+// interval is the currently selected interval.
+func (m Model) interval() provider.Interval {
+	if m.intervalIdx < 0 || m.intervalIdx >= len(intervals) {
+		return intervals[defaultIntervalIdx]
+	}
+	return intervals[m.intervalIdx]
+}
+
+// plotWidth is the number of grid columns available to the plot,
+// leaving room for the axis gutter.
+func (m Model) plotWidth() int {
+	return m.width - (gridLabelWidth + 2)
+}
+
+// chartWidth is the plot width available to the price series, excluding
+// the volume-profile gutter when it is shown.
+func (m Model) chartWidth() int {
+	w := m.plotWidth()
+	if m.indicators[IndVolProfile] && w > volumeProfileGutterW+10 {
+		w -= volumeProfileGutterW
+	}
+	return w
+}
+
+// candleStep is the number of grid columns each candle occupies.
+func (m Model) candleStep() int {
+	if m.mode == ModeLine {
+		return 1
+	}
+	return candleWidth
+}
+
+// capacity is the number of candles that fit across the plot area.
+func (m Model) capacity() int {
+	w := m.chartWidth()
+	if w < 1 {
+		return 0
+	}
+	return w / m.candleStep()
+}
+
+// visibleCount is how many of the fetched candles are on screen: the
+// zoom level clamped to what fits across the plot and to the history
+// actually fetched.
+func (m Model) visibleCount() int {
+	n := len(m.data)
+	if n == 0 {
+		return 0
+	}
+	fit := m.capacity()
+	if fit < 1 {
+		return 0
+	}
+	want := m.zoom
+	if m.autoZoom || want < 1 {
+		want = fit
+	}
+	return min(want, fit, n)
+}
+
+// zoomLimit is the widest useful window: no more candles than fit across
+// the plot, and no more than were fetched.
+func (m Model) zoomLimit() int {
+	lim := m.capacity()
+	if n := len(m.data); n > 0 && n < lim {
+		lim = n
+	}
+	if lim < minZoom {
+		lim = minZoom
+	}
+	return lim
+}
+
+// zoomBy narrows (negative delta) or widens the visible window, taking
+// manual control of the zoom. The result is clamped to minZoom and to
+// the data actually available.
+func (m *Model) zoomBy(delta int) {
+	cur := m.visibleCount()
+	if cur < 1 {
+		cur = m.zoom
+	}
+	if cur < 1 {
+		cur = m.zoomLimit()
+	}
+	m.autoZoom = false
+	n := cur + delta
+	if lim := m.zoomLimit(); n > lim {
+		n = lim
+	}
+	if n < minZoom {
+		n = minZoom
+	}
+	m.zoom = n
+}
+
+// historyLoadedMsg is sent when history data arrives. seq identifies the
+// request it answers so a superseded response can be dropped.
 type historyLoadedMsg struct {
-	symbol string
-	data   []provider.OHLCV
+	seq      uint64
+	symbol   string
+	interval provider.Interval
+	served   provider.Interval
+	data     []provider.OHLCV
 }
 
-// historyErrorMsg is sent on history fetch failure.
+// historyErrorMsg is sent on history fetch failure, tagged like
+// historyLoadedMsg so a stale failure cannot clear a fresh chart.
 type historyErrorMsg struct {
-	err error
+	seq    uint64
+	symbol string
+	err    error
 }
 
+// servedIntervalFor asks the provider which interval it will actually
+// serve. Providers that serve every interval natively do not implement
+// ServedIntervalProvider, in which case the request stands.
+func (m Model) servedIntervalFor(sym string, req provider.Interval) provider.Interval {
+	if p, ok := m.histProvider.(ServedIntervalProvider); ok {
+		if got := p.ServedInterval(sym, req); got != "" {
+			return got
+		}
+	}
+	return req
+}
+
+// fetchHistory starts a history request for the current symbol and
+// interval.
+//
+// Any request already in flight is cancelled and its answer discarded:
+// pressing ] three times quickly used to leave whichever response landed
+// last on screen, which could put 1h data under a "4h" label. Every
+// request carries a sequence number and Update accepts only the newest.
+// A fresh series is served straight from the cache so a burst of
+// interval switches costs at most one request per interval.
 func (m *Model) fetchHistory() tea.Cmd {
-	sym := m.symbol
-	interval := intervals[m.intervalIdx]
 	hp := m.histProvider
-	if hp == nil {
+	if hp == nil || m.symbol == "" {
 		return nil
 	}
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+
+	m.reqSeq++
+	seq := m.reqSeq
+	sym := m.symbol
+	req := m.interval()
+	served := m.servedIntervalFor(sym, req)
+
+	if data, ok := m.cache.get(sym, req); ok {
+		m.loading = false
+		return func() tea.Msg {
+			return historyLoadedMsg{seq: seq, symbol: sym, interval: req, served: served, data: data}
+		}
+	}
+
+	m.loading = true
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	cache := m.cache
 	return func() tea.Msg {
-		data, err := hp.History(context.Background(), provider.HistoryParams{
+		defer cancel()
+		data, err := hp.History(ctx, provider.HistoryParams{
 			Symbol:   sym,
-			Interval: interval,
-			Limit:    200,
+			Interval: req,
+			Limit:    historyLimit,
 		})
 		if err != nil {
-			return historyErrorMsg{err: err}
+			return historyErrorMsg{seq: seq, symbol: sym, err: err}
 		}
-		return historyLoadedMsg{symbol: sym, data: data}
+		cache.put(sym, req, data)
+		return historyLoadedMsg{seq: seq, symbol: sym, interval: req, served: served, data: data}
 	}
+}
+
+// accepts reports whether a tagged history response is still the one the
+// chart is waiting for.
+func (m Model) accepts(seq uint64, sym string) bool {
+	return seq == m.reqSeq && sym == m.symbol
 }
 
 // Update handles messages.
@@ -174,15 +369,31 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case theme.ChangedMsg:
 		RebuildStyles()
 		return m, nil
+
+	case tea.WindowSizeMsg:
+		m.SetSize(msg.Width, msg.Height)
+		return m, nil
+
 	case historyLoadedMsg:
-		if msg.symbol == m.symbol {
-			m.data = msg.data
-			m.loading = false
-			m.errMsg = ""
+		if !m.accepts(msg.seq, msg.symbol) {
+			return m, nil
+		}
+		m.data = msg.data
+		m.dataInterval = msg.interval
+		m.served = msg.served
+		m.loading = false
+		m.errMsg = ""
+		if !m.autoZoom {
+			if lim := m.zoomLimit(); m.zoom > lim {
+				m.zoom = lim
+			}
 		}
 		return m, nil
 
 	case historyErrorMsg:
+		if !m.accepts(msg.seq, msg.symbol) {
+			return m, nil
+		}
 		m.loading = false
 		m.errMsg = msg.err.Error()
 		return m, nil
@@ -234,22 +445,23 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.mode = ModeCandlestick
 			}
 		case "+", "=":
-			if m.zoom > 10 {
-				m.zoom -= 10
-			}
+			m.zoomBy(-zoomStep)
 		case "-":
-			if m.zoom < 200 {
-				m.zoom += 10
-			}
+			m.zoomBy(zoomStep)
+		case "f":
+			// Refit the window to the terminal width.
+			m.autoZoom = true
 		case "[":
 			if m.intervalIdx > 0 {
 				m.intervalIdx--
-				return m, m.fetchHistory()
+				cmd := m.fetchHistory()
+				return m, cmd
 			}
 		case "]":
 			if m.intervalIdx < len(intervals)-1 {
 				m.intervalIdx++
-				return m, m.fetchHistory()
+				cmd := m.fetchHistory()
+				return m, cmd
 			}
 		case "i":
 			m.indicatorMenu = true
@@ -259,13 +471,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		// Wheel up = zoom in (fewer candles); wheel down = zoom out (more).
 		switch msg.Button {
 		case tea.MouseWheelUp:
-			if m.zoom > 10 {
-				m.zoom -= 10
-			}
+			m.zoomBy(-zoomStep)
 		case tea.MouseWheelDown:
-			if m.zoom < 200 {
-				m.zoom += 10
-			}
+			m.zoomBy(zoomStep)
 		}
 
 	case tea.MouseMotionMsg:
@@ -286,22 +494,32 @@ func (m *Model) ClearHover() {
 	m.hoverRow = -1
 }
 
+// intervalLabel is the header's interval text. When the provider serves
+// a coarser or finer resolution than the one requested, both are shown
+// so the header never claims a resolution the chart is not drawing.
+func (m Model) intervalLabel() string {
+	req := m.interval()
+	if m.dataInterval == req && m.served != "" && m.served != req {
+		return fmt.Sprintf("%s (%s bars)", req, m.served)
+	}
+	return string(req)
+}
+
 // View renders the full chart.
 func (m Model) View() string {
-	if m.width == 0 || m.height == 0 {
+	if m.width < 1 || m.height < 1 {
 		return ""
 	}
 
 	var sb strings.Builder
 
 	// Title bar
-	interval := intervals[m.intervalIdx]
 	modeStr := "Candlestick"
 	if m.mode == ModeLine {
 		modeStr = "Line"
 	}
-	title := styleTitle.Render(fmt.Sprintf("  %s  %s  %s", m.symbol, interval, modeStr))
-	help := styleAxis.Render("  [/]: interval  +/-: zoom  m: mode  i: indicators  esc: back")
+	title := styleTitle.Render(fmt.Sprintf("  %s  %s  %s", m.symbol, m.intervalLabel(), modeStr))
+	help := styleAxis.Render("  [/]: interval  +/-: zoom  f: fit  m: mode  i: indicators  esc: back")
 	sb.WriteString(title + "  " + help + "\n")
 
 	// Indicator menu overlay
@@ -333,25 +551,19 @@ func (m Model) View() string {
 		return sb.String()
 	}
 
-	// Get visible candles
-	candles := m.data
-	if len(candles) > m.zoom {
-		candles = candles[len(candles)-m.zoom:]
-	}
-
-	// Extract closes for indicators
-	closes := make([]float64, len(candles))
-	for i, c := range candles {
-		closes[i] = c.Close
+	// One viewport per frame. Indicators are computed over the full
+	// fetched history and only then narrowed to the visible window, so
+	// their values do not move when the user zooms.
+	set := computeIndicators(m.data, m.indicators)
+	v := newViewport(m.data, set, m.visibleCount(), m.candleStep())
+	if v.len() == 0 {
+		sb.WriteString(styleAxis.Render("  Terminal too small for chart"))
+		return sb.String()
 	}
 
 	// Determine chart heights
 	hasSubPanel := m.indicators[IndRSI] || m.indicators[IndMACD] || m.indicators[IndOBV] || m.indicators[IndATR] || m.indicators[IndStoch] || m.indicators[IndADX]
-	headerLines := 4
-	if m.indicatorMenu {
-		headerLines = 5
-	}
-	totalChartH := m.height - headerLines
+	totalChartH := m.height - m.headerBudget()
 	if totalChartH < 5 {
 		totalChartH = 5
 	}
@@ -370,219 +582,197 @@ func (m Model) View() string {
 	}
 
 	if m.mode == ModeCandlestick {
-		sb.WriteString(m.renderCandlestickWithIndicators(candles, closes, m.width-12, mainH))
+		sb.WriteString(m.renderCandlestick(v, m.plotWidth(), mainH))
 	} else {
-		sb.WriteString(m.renderLineWithIndicators(candles, closes, m.width-12, mainH))
+		sb.WriteString(m.renderLine(v, m.plotWidth(), mainH))
 	}
 
-	// Sub-panels (RSI / MACD)
+	// Sub-panels (RSI / MACD / OBV / ATR / Stoch / ADX). The sub-panel
+	// shares the main chart's width and candle step so its x-axis lines
+	// up with the candles above it.
 	if hasSubPanel {
-		sb.WriteString(strings.Repeat("─", m.width-2))
+		sb.WriteString(repeat("─", m.width-2))
 		sb.WriteString("\n")
 
-		if m.indicators[IndRSI] {
-			sb.WriteString(m.renderRSI(closes, m.width-12, subH))
-		} else if m.indicators[IndMACD] {
-			sb.WriteString(m.renderMACD(closes, m.width-12, subH))
-		} else if m.indicators[IndOBV] {
-			volumes := make([]float64, len(candles))
-			for i, c := range candles {
-				volumes[i] = c.Volume
-			}
-			sb.WriteString(m.renderOBV(closes, volumes, m.width-12, subH))
-		} else if m.indicators[IndATR] {
-			highs, lows := extractHL(candles)
-			sb.WriteString(m.renderATR(highs, lows, closes, m.width-12, subH))
-		} else if m.indicators[IndStoch] {
-			highs, lows := extractHL(candles)
-			sb.WriteString(m.renderStoch(highs, lows, closes, m.width-12, subH))
-		} else if m.indicators[IndADX] {
-			highs, lows := extractHL(candles)
-			sb.WriteString(m.renderADX(highs, lows, closes, m.width-12, subH))
+		subW := m.chartWidth()
+		switch {
+		case m.indicators[IndRSI]:
+			sb.WriteString(renderRSI(v, subW, subH))
+		case m.indicators[IndMACD]:
+			sb.WriteString(renderMACD(v, subW, subH))
+		case m.indicators[IndOBV]:
+			sb.WriteString(renderOBV(v, subW, subH))
+		case m.indicators[IndATR]:
+			sb.WriteString(renderATR(v, subW, subH))
+		case m.indicators[IndStoch]:
+			sb.WriteString(renderStoch(v, subW, subH))
+		case m.indicators[IndADX]:
+			sb.WriteString(renderADX(v, subW, subH))
 		}
 	}
 
-	// Summary — shows the hovered candle when the cursor is inside the
-	// chart, otherwise the most recent one.
-	if len(candles) > 0 {
-		shown := candles[len(candles)-1]
-		if idx := m.hoverCandleIdx(len(candles)); idx >= 0 {
-			shown = candles[idx]
-		}
-		summary := fmt.Sprintf("\n  %s O:%.2f H:%.2f L:%.2f C:%.2f V:%.0f",
-			styleInfo.Render(shown.Time.Format("2006-01-02 15:04")),
-			shown.Open, shown.High, shown.Low, shown.Close, shown.Volume)
-
-		// Append indicator values
-		var indVals []string
-		if m.indicators[IndSMA] {
-			sma := indicator.SMA(closes, 20)
-			if v := sma[len(sma)-1]; !math.IsNaN(v) {
-				indVals = append(indVals, fmt.Sprintf("SMA:%.2f", v))
-			}
-		}
-		if m.indicators[IndEMA] {
-			ema := indicator.EMA(closes, 20)
-			if v := ema[len(ema)-1]; !math.IsNaN(v) {
-				indVals = append(indVals, fmt.Sprintf("EMA:%.2f", v))
-			}
-		}
-		if m.indicators[IndRSI] {
-			rsi := indicator.RSI(closes, 14)
-			if v := rsi[len(rsi)-1]; !math.IsNaN(v) {
-				indVals = append(indVals, fmt.Sprintf("RSI:%.1f", v))
-			}
-		}
-		if m.indicators[IndVWAP] {
-			highs := make([]float64, len(candles))
-			lows := make([]float64, len(candles))
-			vols := make([]float64, len(candles))
-			for i, c := range candles {
-				highs[i] = c.High
-				lows[i] = c.Low
-				vols[i] = c.Volume
-			}
-			vwap := indicator.VWAP(highs, lows, closes, vols)
-			if v := vwap[len(vwap)-1]; !math.IsNaN(v) {
-				indVals = append(indVals, fmt.Sprintf("VWAP:%.2f", v))
-			}
-		}
-		if m.indicators[IndOBV] {
-			vols := make([]float64, len(candles))
-			for i, c := range candles {
-				vols[i] = c.Volume
-			}
-			obv := indicator.OBV(closes, vols)
-			last := obv[len(obv)-1]
-			sign := ""
-			if last < 0 {
-				sign = "-"
-				last = -last
-			}
-			indVals = append(indVals, fmt.Sprintf("OBV:%s%s", sign, format.FormatVolume(last)))
-		}
-		if m.indicators[IndATR] {
-			highs, lows := extractHL(candles)
-			atr := indicator.ATR(highs, lows, closes, 14)
-			if v := atr[len(atr)-1]; !math.IsNaN(v) {
-				indVals = append(indVals, fmt.Sprintf("ATR:%.4f", v))
-			}
-		}
-		if m.indicators[IndStoch] {
-			highs, lows := extractHL(candles)
-			k, d := indicator.Stochastic(highs, lows, closes, 14, 3)
-			var parts []string
-			if v := k[len(k)-1]; !math.IsNaN(v) {
-				parts = append(parts, fmt.Sprintf("K:%.1f", v))
-			}
-			if v := d[len(d)-1]; !math.IsNaN(v) {
-				parts = append(parts, fmt.Sprintf("D:%.1f", v))
-			}
-			if len(parts) > 0 {
-				indVals = append(indVals, "Stoch:"+strings.Join(parts, "/"))
-			}
-		}
-		if m.indicators[IndADX] {
-			highs, lows := extractHL(candles)
-			adx, _, _ := indicator.ADX(highs, lows, closes, 14)
-			if v := adx[len(adx)-1]; !math.IsNaN(v) {
-				indVals = append(indVals, fmt.Sprintf("ADX:%.1f", v))
-			}
-		}
-		if m.indicators[IndPivots] && len(candles) >= 2 {
-			prev := candles[len(candles)-2]
-			piv := indicator.PivotsClassic(prev.High, prev.Low, prev.Close)
-			indVals = append(indVals, fmt.Sprintf("P:%.2f", piv.P))
-		}
-		if m.indicators[IndVolProfile] {
-			bins := indicator.VolumeProfile(candles, len(candles))
-			if pocIdx, _ := indicator.POC(bins); pocIdx >= 0 {
-				pocPrice := (bins[pocIdx].PriceMin + bins[pocIdx].PriceMax) / 2
-				indVals = append(indVals, fmt.Sprintf("POC:%.2f", pocPrice))
-			}
-		}
-		if m.indicators[IndPatterns] {
-			pats := indicator.Patterns(candles)
-			// Walk backwards for the most recent detected pattern
-			for i := len(pats) - 1; i >= 0; i-- {
-				if pats[i] != indicator.PatternNone {
-					indVals = append(indVals, "Pattern:"+pats[i].Name())
-					break
-				}
-			}
-		}
-		if len(indVals) > 0 {
-			summary += "  " + lipgloss.NewStyle().Foreground(theme.ColorMagenta).Render(strings.Join(indVals, " "))
-		}
-		sb.WriteString(summary)
-	}
-
+	sb.WriteString(m.renderReadout(v, mainH))
 	return sb.String()
 }
 
-// renderCandlestickWithIndicators draws candlestick chart with optional indicator overlays.
-func (m Model) renderCandlestickWithIndicators(candles []provider.OHLCV, closes []float64, width, height int) string {
-	if len(candles) == 0 || width <= 0 || height <= 0 {
+// headerBudget is the number of terminal rows View reserves outside the
+// grid: the header lines plus the trailing readout.
+func (m Model) headerBudget() int {
+	if m.indicatorMenu {
+		return 5
+	}
+	return 4
+}
+
+// renderReadout is the summary line under the chart. It describes the
+// hovered candle when the cursor is inside the chart, otherwise the most
+// recent one, and reports every active indicator at that same bar — the
+// same viewport the grid above was drawn from.
+func (m Model) renderReadout(v viewport, mainH int) string {
+	idx := m.hoverCandleIdx(v.len(), v.step)
+	if idx < 0 {
+		idx = v.len() - 1
+	}
+	if idx < 0 {
 		return ""
 	}
+	shown := v.candles[idx]
 
-	// Find price range (include bollinger bands if active)
-	minP, maxP := candles[0].Low, candles[0].High
-	for _, c := range candles {
-		if c.Low < minP {
-			minP = c.Low
-		}
-		if c.High > maxP {
-			maxP = c.High
+	summary := fmt.Sprintf("\n  %s O:%.2f H:%.2f L:%.2f C:%.2f V:%.0f",
+		styleInfo.Render(shown.Time.Format("2006-01-02 15:04")),
+		shown.Open, shown.High, shown.Low, shown.Close, shown.Volume)
+
+	var indVals []string
+	if m.indicators[IndSMA] {
+		if val, ok := valueAt(v.ind.sma, idx); ok {
+			indVals = append(indVals, fmt.Sprintf("SMA:%.2f", val))
 		}
 	}
+	if m.indicators[IndEMA] {
+		if val, ok := valueAt(v.ind.ema, idx); ok {
+			indVals = append(indVals, fmt.Sprintf("EMA:%.2f", val))
+		}
+	}
+	if m.indicators[IndRSI] {
+		if val, ok := valueAt(v.ind.rsi, idx); ok {
+			indVals = append(indVals, fmt.Sprintf("RSI:%.1f", val))
+		}
+	}
+	if m.indicators[IndVWAP] {
+		if val, ok := valueAt(v.ind.vwap, idx); ok {
+			indVals = append(indVals, fmt.Sprintf("VWAP:%.2f", val))
+		}
+	}
+	if m.indicators[IndOBV] {
+		if val, ok := valueAt(v.ind.obv, idx); ok {
+			sign := ""
+			if val < 0 {
+				sign = "-"
+				val = -val
+			}
+			indVals = append(indVals, fmt.Sprintf("OBV:%s%s", sign, format.FormatVolume(val)))
+		}
+	}
+	if m.indicators[IndATR] {
+		if val, ok := valueAt(v.ind.atr, idx); ok {
+			indVals = append(indVals, fmt.Sprintf("ATR:%.4f", val))
+		}
+	}
+	if m.indicators[IndStoch] {
+		var parts []string
+		if val, ok := valueAt(v.ind.stochK, idx); ok {
+			parts = append(parts, fmt.Sprintf("K:%.1f", val))
+		}
+		if val, ok := valueAt(v.ind.stochD, idx); ok {
+			parts = append(parts, fmt.Sprintf("D:%.1f", val))
+		}
+		if len(parts) > 0 {
+			indVals = append(indVals, "Stoch:"+strings.Join(parts, "/"))
+		}
+	}
+	if m.indicators[IndADX] {
+		if val, ok := valueAt(v.ind.adx, idx); ok {
+			indVals = append(indVals, fmt.Sprintf("ADX:%.1f", val))
+		}
+	}
+	if m.indicators[IndPivots] && v.ind.hasPivots {
+		indVals = append(indVals, fmt.Sprintf("P:%.2f", v.ind.pivots.P))
+	}
+	if m.indicators[IndVolProfile] {
+		// Same bins as the gutter histogram, so the two agree on where
+		// the point of control sits.
+		bins := volumeBins(v.candles, mainH)
+		if pocIdx, _ := indicator.POC(bins); pocIdx >= 0 {
+			pocPrice := (bins[pocIdx].PriceMin + bins[pocIdx].PriceMax) / 2
+			indVals = append(indVals, fmt.Sprintf("POC:%.2f", pocPrice))
+		}
+	}
+	if m.indicators[IndPatterns] {
+		// Most recent pattern at or before the bar being described.
+		for i := min(idx, len(v.ind.patterns)-1); i >= 0; i-- {
+			if v.ind.patterns[i] != indicator.PatternNone {
+				indVals = append(indVals, "Pattern:"+v.ind.patterns[i].Name())
+				break
+			}
+		}
+	}
+	if len(indVals) > 0 {
+		summary += "  " + lipgloss.NewStyle().Foreground(theme.ColorMagenta).Render(strings.Join(indVals, " "))
+	}
+	return summary
+}
 
+// priceScale measures the visible price range, widening it to contain
+// the Bollinger bands when they are drawn. It is derived from exactly
+// the candles the grid will draw, so the axis, the candles and the
+// readout agree.
+func (m Model) priceScale(v viewport, height int, lows, highs []float64) vscale {
+	if len(lows) == 0 || len(highs) == 0 {
+		return newPriceScale(0, 1, height)
+	}
+	minP, maxP := lows[0], highs[0]
+	for _, p := range lows {
+		if p < minP {
+			minP = p
+		}
+	}
+	for _, p := range highs {
+		if p > maxP {
+			maxP = p
+		}
+	}
 	if m.indicators[IndBollinger] {
-		bb := indicator.Bollinger(closes, 20, 2.0)
-		for _, v := range bb.Upper {
-			if !math.IsNaN(v) && v > maxP {
-				maxP = v
+		for _, val := range v.ind.bb.Upper {
+			if !math.IsNaN(val) && val > maxP {
+				maxP = val
 			}
 		}
-		for _, v := range bb.Lower {
-			if !math.IsNaN(v) && v < minP {
-				minP = v
+		for _, val := range v.ind.bb.Lower {
+			if !math.IsNaN(val) && val < minP {
+				minP = val
 			}
 		}
 	}
+	return newPriceScale(minP, maxP, height)
+}
 
-	priceRange := maxP - minP
-	if priceRange == 0 {
-		priceRange = 1
+// renderCandlestick draws the candlestick chart with its indicator
+// overlays. width is the full plot width including the volume-profile
+// gutter; the candles themselves are confined to chartWidth.
+func (m Model) renderCandlestick(v viewport, width, height int) string {
+	if v.len() == 0 || width <= 0 || height <= 0 {
+		return ""
 	}
-	scale := float64(height) / priceRange
-
-	chartW := width
-	if m.indicators[IndVolProfile] && width > volumeProfileGutterW+10 {
-		chartW = width - volumeProfileGutterW
-	}
-
-	candleWidth := 2
-	maxCandles := chartW / candleWidth
-	if len(candles) > maxCandles {
-		candles = candles[len(candles)-maxCandles:]
-		closes = closes[len(closes)-maxCandles:]
+	scale := m.priceScale(v, height, v.lows, v.highs)
+	chartW := m.chartWidth()
+	if chartW > width {
+		chartW = width
 	}
 
-	// Build grid
-	grid := make([][]rune, height)
-	gridColor := make([][]color.Color, height)
-	for i := range grid {
-		grid[i] = make([]rune, width)
-		gridColor[i] = make([]color.Color, width)
-		for j := range grid[i] {
-			grid[i][j] = ' '
-		}
-	}
+	p := newPanel(width, height)
 
-	// Draw candlesticks
-	for i, c := range candles {
-		col := i * candleWidth
+	for i, c := range v.candles {
+		col := i * v.step
 		if col >= chartW {
 			break
 		}
@@ -591,87 +781,149 @@ func (m Model) renderCandlestickWithIndicators(candles []provider.OHLCV, closes 
 		bodyTop := max(c.Open, c.Close)
 		bodyBot := min(c.Open, c.Close)
 
-		highRow := height - 1 - int((c.High-minP)*scale)
-		lowRow := height - 1 - int((c.Low-minP)*scale)
-		topRow := height - 1 - int((bodyTop-minP)*scale)
-		botRow := height - 1 - int((bodyBot-minP)*scale)
+		highRow, okH := scale.row(c.High)
+		lowRow, okL := scale.row(c.Low)
+		topRow, okT := scale.row(bodyTop)
+		botRow, okB := scale.row(bodyBot)
+		if !okH || !okL || !okT || !okB {
+			continue
+		}
 
-		highRow = clampRow(highRow, height)
-		lowRow = clampRow(lowRow, height)
-		topRow = clampRow(topRow, height)
-		botRow = clampRow(botRow, height)
-
-		color := theme.ColorGreen
+		clr := theme.ColorGreen
 		if !isUp {
-			color = theme.ColorRed
+			clr = theme.ColorRed
 		}
 
 		for r := highRow; r < topRow; r++ {
-			grid[r][col] = '│'
-			gridColor[r][col] = color
+			p.paint(r, col, '│', clr, paintOver)
 		}
 		for r := topRow; r <= botRow; r++ {
 			if isUp {
-				grid[r][col] = '┃'
+				p.paint(r, col, '┃', clr, paintOver)
 			} else {
-				grid[r][col] = '█'
+				p.paint(r, col, '█', clr, paintOver)
 			}
-			gridColor[r][col] = color
 		}
 		for r := botRow + 1; r <= lowRow; r++ {
-			grid[r][col] = '│'
-			gridColor[r][col] = color
+			p.paint(r, col, '│', clr, paintOver)
 		}
 	}
 
 	// Overlay indicators (constrained to chart area, not gutter)
-	m.drawOverlays(grid, gridColor, candles, closes, chartW, height, minP, scale, candleWidth)
+	m.drawOverlays(p, v, scale, chartW)
 
 	// Pattern markers (candlestick mode only — line mode has no candle cues)
 	if m.indicators[IndPatterns] {
-		drawPatternMarkers(grid, gridColor, candles, chartW, height, minP, scale, candleWidth)
+		drawPatternMarkers(p, v, scale, chartW)
 	}
 
 	// Volume profile gutter
 	if m.indicators[IndVolProfile] && chartW < width {
-		drawVolumeProfileGutter(grid, gridColor, candles, chartW, width, height)
+		drawVolumeProfileGutter(p, v.candles, chartW, width, height)
 	}
 
 	// Hover crosshair (only when the cursor is inside the candle area).
-	m.drawCrosshair(grid, gridColor, chartW, height)
+	m.drawCrosshair(p, chartW)
 
-	// Render
-	return renderGrid(grid, gridColor, width, height, maxP, scale)
+	return p.render(priceAxis(scale, height))
 }
 
-// gridLabelWidth is the column count of the price-axis label prefix
-// printed by renderGrid; used to translate hover terminal coordinates
-// to grid coordinates.
-const gridLabelWidth = 10
+// renderLine draws the line chart with its indicator overlays.
+func (m Model) renderLine(v viewport, width, height int) string {
+	if v.len() == 0 || width <= 0 || height <= 0 {
+		return ""
+	}
+	scale := m.priceScale(v, height, v.closes, v.closes)
+	chartW := m.chartWidth()
+	if chartW > width {
+		chartW = width
+	}
 
-// hoverHeaderRows is the number of header lines printed by View before
-// the grid begins. Two rows by default (title + blank); three when the
-// indicator menu is open.
+	p := newPanel(width, height)
+
+	blocks := []rune("▁▂▃▄▅▆▇█")
+	isUp := v.len() > 1 && v.closes[v.len()-1] >= v.closes[0]
+	lineColor := theme.ColorGreen
+	if !isUp {
+		lineColor = theme.ColorRed
+	}
+
+	span := scale.maxV - scale.minV
+	if !(span > 0) {
+		span = 1
+	}
+	for i, price := range v.closes {
+		col := i * v.step
+		if col >= chartW {
+			break
+		}
+		row, ok := scale.row(price)
+		if !ok {
+			continue
+		}
+		normalized := (price - scale.minV) / span
+		blockIdx := int(math.Mod(normalized*float64(len(blocks)), float64(len(blocks))))
+		if blockIdx >= len(blocks) {
+			blockIdx = len(blocks) - 1
+		}
+		if blockIdx < 0 {
+			blockIdx = 0
+		}
+		p.paint(row, col, blocks[blockIdx], lineColor, paintOver)
+	}
+
+	m.drawOverlays(p, v, scale, chartW)
+
+	if m.indicators[IndVolProfile] && chartW < width {
+		drawVolumeProfileGutter(p, v.candles, chartW, width, height)
+	}
+
+	m.drawCrosshair(p, chartW)
+
+	return p.render(priceAxis(scale, height))
+}
+
+// priceAxis builds the row-label function for the price grid: a price
+// every few rows, blank in between.
+func priceAxis(scale vscale, height int) func(int) string {
+	every := height/5 + 1
+	if every < 1 {
+		every = 1
+	}
+	return func(r int) string {
+		if r%every != 0 {
+			return ""
+		}
+		return format.FormatAxisPrice(scale.value(r))
+	}
+}
+
+// hoverHeaderRows is the number of terminal rows View prints before the
+// first grid row: the title line plus a blank line, and the indicator
+// menu line when it is open.
 func (m Model) hoverHeaderRows() int {
 	if m.indicatorMenu {
-		return 5
+		return 3
 	}
-	return 4
+	return 2
 }
 
-// hoverCandleIdx returns the index into the visible candles slice that
-// sits under the cursor, or -1 when out of bounds. Assumes candleWidth=2
-// (the value used by renderCandlestickWithIndicators).
-func (m Model) hoverCandleIdx(visible int) int {
-	if m.hoverCol < 0 {
+// hoverCandleIdx returns the index into the visible candles that sits
+// under the cursor, or -1 when out of bounds. step is the candle width
+// in columns, which differs between candlestick and line mode.
+func (m Model) hoverCandleIdx(visible, step int) int {
+	if m.hoverCol < 0 || visible <= 0 {
 		return -1
+	}
+	if step < 1 {
+		step = 1
 	}
 	gx := m.hoverCol - (gridLabelWidth + 1)
 	if gx < 0 {
 		return -1
 	}
-	idx := gx / 2
-	if idx < 0 || idx >= visible {
+	idx := gx / step
+	if idx >= visible {
 		return -1
 	}
 	return idx
@@ -679,157 +931,17 @@ func (m Model) hoverCandleIdx(visible int) int {
 
 // drawCrosshair overlays dashed vertical + horizontal lines on the grid
 // at the hover position. No-op when hover is unset or out of bounds.
-func (m Model) drawCrosshair(grid [][]rune, gridColor [][]color.Color, chartW, height int) {
+func (m Model) drawCrosshair(p *panel, chartW int) {
 	if m.hoverCol < 0 || m.hoverRow < 0 {
 		return
 	}
 	gx := m.hoverCol - (gridLabelWidth + 1)
 	gy := m.hoverRow - m.hoverHeaderRows()
-	if gx < 0 || gx >= chartW || gy < 0 || gy >= height {
+	if gx < 0 || gx >= chartW || gy < 0 || gy >= p.h {
 		return
 	}
-	for r := range height {
-		if grid[r][gx] == ' ' {
-			grid[r][gx] = '│'
-			gridColor[r][gx] = theme.ColorDim
-		}
+	p.vline(gx, '│', theme.ColorDim, paintIfEmpty)
+	for c := range min(chartW, p.w) {
+		p.paint(gy, c, '─', theme.ColorDim, paintIfEmpty)
 	}
-	for c := range chartW {
-		if grid[gy][c] == ' ' {
-			grid[gy][c] = '─'
-			gridColor[gy][c] = theme.ColorDim
-		}
-	}
-}
-
-// renderLineWithIndicators draws line chart with optional indicator overlays.
-func (m Model) renderLineWithIndicators(candles []provider.OHLCV, closes []float64, width, height int) string {
-	if len(candles) == 0 || width <= 0 || height <= 0 {
-		return ""
-	}
-
-	prices := make([]float64, len(closes))
-	copy(prices, closes)
-
-	minP, maxP := prices[0], prices[0]
-	for _, p := range prices {
-		if p < minP {
-			minP = p
-		}
-		if p > maxP {
-			maxP = p
-		}
-	}
-
-	if m.indicators[IndBollinger] {
-		bb := indicator.Bollinger(prices, 20, 2.0)
-		for _, v := range bb.Upper {
-			if !math.IsNaN(v) && v > maxP {
-				maxP = v
-			}
-		}
-		for _, v := range bb.Lower {
-			if !math.IsNaN(v) && v < minP {
-				minP = v
-			}
-		}
-	}
-
-	priceRange := maxP - minP
-	if priceRange == 0 {
-		priceRange = 1
-	}
-	scale := float64(height) / priceRange
-
-	chartW := width
-	if m.indicators[IndVolProfile] && width > volumeProfileGutterW+10 {
-		chartW = width - volumeProfileGutterW
-	}
-
-	if len(prices) > chartW {
-		resampled := make([]float64, chartW)
-		for i := range chartW {
-			idx := i * len(prices) / chartW
-			resampled[i] = prices[idx]
-		}
-		prices = resampled
-	}
-
-	grid := make([][]rune, height)
-	gridColor := make([][]color.Color, height)
-	for i := range grid {
-		grid[i] = make([]rune, width)
-		gridColor[i] = make([]color.Color, width)
-		for j := range grid[i] {
-			grid[i][j] = ' '
-		}
-	}
-
-	blocks := []rune("▁▂▃▄▅▆▇█")
-	isUp := len(prices) > 1 && prices[len(prices)-1] >= prices[0]
-	lineColor := theme.ColorGreen
-	if !isUp {
-		lineColor = theme.ColorRed
-	}
-
-	for i, p := range prices {
-		if i >= chartW {
-			break
-		}
-		normalized := (p - minP) / priceRange
-		row := height - 1 - int(normalized*float64(height-1))
-		row = clampRow(row, height)
-		blockIdx := int(math.Mod(normalized*float64(len(blocks)), float64(len(blocks))))
-		if blockIdx >= len(blocks) {
-			blockIdx = len(blocks) - 1
-		}
-		grid[row][i] = blocks[blockIdx]
-		gridColor[row][i] = lineColor
-	}
-
-	// Overlay indicators (use original closes, not resampled; constrained to chartW)
-	m.drawOverlays(grid, gridColor, candles, closes, chartW, height, minP, scale, 1)
-
-	// Volume profile gutter
-	if m.indicators[IndVolProfile] && chartW < width {
-		drawVolumeProfileGutter(grid, gridColor, candles, chartW, width, height)
-	}
-
-	return renderGrid(grid, gridColor, width, height, maxP, scale)
-}
-
-func renderGrid(grid [][]rune, gridColor [][]color.Color, width, height int, maxP, scale float64) string {
-	var sb strings.Builder
-	labelWidth := 10
-	for r := range height {
-		if r%(height/5+1) == 0 {
-			price := maxP - float64(r)/scale
-			sb.WriteString(styleAxis.Render(fmt.Sprintf("%*s ", labelWidth, format.FormatAxisPrice(price))))
-		} else {
-			sb.WriteString(strings.Repeat(" ", labelWidth+1))
-		}
-		for col := range grid[r] {
-			ch := grid[r][col]
-			clr := gridColor[r][col]
-			if ch == ' ' {
-				sb.WriteRune(' ')
-			} else if clr != nil {
-				sb.WriteString(lipgloss.NewStyle().Foreground(clr).Render(string(ch)))
-			} else {
-				sb.WriteRune(ch)
-			}
-		}
-		sb.WriteString("\n")
-	}
-	return sb.String()
-}
-
-func clampRow(r, height int) int {
-	if r < 0 {
-		return 0
-	}
-	if r >= height {
-		return height - 1
-	}
-	return r
 }
