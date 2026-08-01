@@ -230,6 +230,7 @@ func TestCanonicalSymbols(t *testing.T) {
 // real ~/.config/mkt/config.yaml is not touched. The first Load on a
 // fresh dir writes defaults; the second Load reads what was written.
 func TestLoadCreatesDefaultsWhenMissing(t *testing.T) {
+	requireUnixPerms(t)
 	dir := t.TempDir()
 	isolateAt(t, dir)
 
@@ -330,6 +331,7 @@ func TestExistingConfigNotSeeded(t *testing.T) {
 }
 
 func TestConfigFileWritten0600(t *testing.T) {
+	requireUnixPerms(t)
 	dir := t.TempDir()
 	isolateAt(t, dir)
 	if _, err := Load(); err != nil {

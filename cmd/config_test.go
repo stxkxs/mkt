@@ -495,10 +495,17 @@ func TestTildePath(t *testing.T) {
 	home := t.TempDir()
 	isolateHome(t, home)
 
-	if got, want := tildePath(filepath.Join(home, ".config", "mkt", "config.yaml")), "~/.config/mkt/config.yaml"; got != want {
+	// tildePath abbreviates with the host's own separator — "~/.config/..."
+	// on Unix, "~\.config\..." on Windows — because the result is printed
+	// back to a user who will paste it into their own shell. Build the
+	// expectation the same way rather than hardcoding a slash.
+	want := "~" + string(os.PathSeparator) + filepath.Join(".config", "mkt", "config.yaml")
+	if got := tildePath(filepath.Join(home, ".config", "mkt", "config.yaml")); got != want {
 		t.Errorf("tildePath = %q, want %q", got, want)
 	}
-	if got := tildePath("/etc/mkt.yaml"); got != "/etc/mkt.yaml" {
+
+	outside := filepath.Join(string(os.PathSeparator), "etc", "mkt.yaml")
+	if got := tildePath(outside); got != outside {
 		t.Errorf("tildePath rewrote a path outside home: %q", got)
 	}
 }
