@@ -66,28 +66,32 @@ func (w *WebhookNotifier) Notify(ctx context.Context, a TriggeredAlert) error {
 	}
 
 	var firstErr error
-	for _, url := range urls {
-		if err := w.post(ctx, url, body); err != nil && firstErr == nil {
+	for _, dest := range urls {
+		if err := w.post(ctx, dest, body); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
 }
 
-func (w *WebhookNotifier) post(ctx context.Context, url string, body []byte) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+// post delivers one payload. Errors name the destination only as
+// scheme://host/… — a Slack or Discord webhook path is the credential,
+// and these errors are logged.
+func (w *WebhookNotifier) post(ctx context.Context, dest string, body []byte) error {
+	safe := redactURL(dest)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dest, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("webhook %s: build request: %w", url, err)
+		return fmt.Errorf("webhook %s: build request: %w", safe, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := w.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("webhook %s: %w", url, err)
+		return fmt.Errorf("webhook %s: %w", safe, redactErr(err))
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook %s: status %d", url, resp.StatusCode)
+		return fmt.Errorf("webhook %s: status %d", safe, resp.StatusCode)
 	}
 	return nil
 }

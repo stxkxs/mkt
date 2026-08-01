@@ -18,6 +18,7 @@ func newCaptureEngine(cooldown time.Duration) (*Engine, *[]TriggeredAlert) {
 func TestLegacyRuleStillFires(t *testing.T) {
 	e, fired := newCaptureEngine(time.Hour)
 	e.AddRule(Rule{Symbol: "BTC", Condition: CondAbove, Value: 50000, Enabled: true})
+	e.Check(provider.Quote{Symbol: "BTC", Price: 49000}) // baseline
 	e.Check(provider.Quote{Symbol: "BTC", Price: 51000})
 	if len(*fired) != 1 {
 		t.Fatalf("legacy rule should fire, got %d", len(*fired))
@@ -88,6 +89,13 @@ func TestCompoundAnyFiresOnFirstMatch(t *testing.T) {
 			{Type: CondBelow, Value: 40000},
 		},
 	})
+
+	// "any" is a plain OR of level tests, so it is edge-gated like a simple
+	// rule: the first quote establishes the baseline.
+	e.Check(provider.Quote{Symbol: "BTC", Price: 45000})
+	if len(*fired) != 0 {
+		t.Fatalf("baseline quote should not fire, got %d", len(*fired))
+	}
 
 	e.Check(provider.Quote{Symbol: "BTC", Price: 55000})
 	if len(*fired) != 1 {

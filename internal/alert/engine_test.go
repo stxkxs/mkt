@@ -61,15 +61,19 @@ func TestCooldown(t *testing.T) {
 
 	e.AddRule(Rule{Symbol: "BTCUSDT", Condition: CondAbove, Value: 50000, Enabled: true})
 
+	// Establish the edge baseline below the threshold.
+	e.Check(provider.Quote{Symbol: "BTCUSDT", Price: 49000})
 	e.Check(provider.Quote{Symbol: "BTCUSDT", Price: 51000})
 	if len(fired) != 1 {
-		t.Fatal("first check should fire")
+		t.Fatal("first crossing should fire")
 	}
 
-	// Second check within cooldown — should NOT fire
+	// Drop back below and cross again within the cooldown window — the
+	// transition is real but must stay suppressed.
+	e.Check(provider.Quote{Symbol: "BTCUSDT", Price: 49000})
 	e.Check(provider.Quote{Symbol: "BTCUSDT", Price: 52000})
 	if len(fired) != 1 {
-		t.Fatal("should not fire during cooldown")
+		t.Fatalf("should not fire during cooldown, got %d", len(fired))
 	}
 }
 
@@ -86,10 +90,33 @@ func TestDisabledRule(t *testing.T) {
 	}
 }
 
-// pricesStub satisfies PriceSource for indicator-condition tests.
-type pricesStub struct{ vals []float64 }
+// pricesStub satisfies PriceSource for indicator-condition tests. vals may
+// be swapped between Checks to move an indicator across a threshold.
+type pricesStub struct {
+	mu   sync.Mutex
+	vals []float64
+}
 
-func (p pricesStub) Prices(string) []float64 { return p.vals }
+func (p *pricesStub) Prices(string) []float64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.vals
+}
+
+func (p *pricesStub) set(v []float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.vals = v
+}
+
+// flat returns n copies of v — a series with zero stddev and neutral RSI.
+func flat(n int, v float64) []float64 {
+	out := make([]float64, n)
+	for i := range out {
+		out[i] = v
+	}
+	return out
+}
 
 func TestVolumeAboveFires(t *testing.T) {
 	var fired []TriggeredAlert
@@ -114,9 +141,8 @@ func TestStddevAboveFires(t *testing.T) {
 	e := NewEngine(1*time.Second, func(a TriggeredAlert) {
 		fired = append(fired, a)
 	})
-	// Highly variable price series (stddev/mean ratio > 5%)
-	prices := []float64{100, 110, 90, 120, 80, 130, 70, 140, 60, 150, 50, 160, 40, 170, 30, 180, 20, 190, 10, 200}
-	e.SetPriceSource(pricesStub{vals: prices})
+	ps := &pricesStub{vals: flat(20, 100)}
+	e.SetPriceSource(ps)
 	e.AddRule(Rule{
 		Symbol:    "BTC",
 		Condition: CondStddevAbove,
@@ -125,6 +151,14 @@ func TestStddevAboveFires(t *testing.T) {
 		Enabled:   true,
 	})
 
+	// Calm series establishes the baseline.
+	e.Check(provider.Quote{Symbol: "BTC", Price: 100})
+	if len(fired) != 0 {
+		t.Fatalf("calm series should not fire, got %d", len(fired))
+	}
+
+	// Highly variable price series (stddev/mean ratio > 5%)
+	ps.set([]float64{100, 110, 90, 120, 80, 130, 70, 140, 60, 150, 50, 160, 40, 170, 30, 180, 20, 190, 10, 200})
 	e.Check(provider.Quote{Symbol: "BTC", Price: 200})
 	if len(fired) != 1 {
 		t.Fatalf("high stddev should fire, got %d", len(fired))
@@ -137,11 +171,7 @@ func TestStddevAboveDoesNotFireOnFlat(t *testing.T) {
 		fired = append(fired, a)
 	})
 	// Flat price series — zero stddev
-	prices := make([]float64, 25)
-	for i := range prices {
-		prices[i] = 100
-	}
-	e.SetPriceSource(pricesStub{vals: prices})
+	e.SetPriceSource(&pricesStub{vals: flat(25, 100)})
 	e.AddRule(Rule{
 		Symbol:    "BTC",
 		Condition: CondStddevAbove,
@@ -188,7 +218,11 @@ func TestNotifierFanOut(t *testing.T) {
 	e.AddNotifier(n2)
 
 	e.AddRule(Rule{Symbol: "BTCUSDT", Condition: CondAbove, Value: 50000, Enabled: true})
+	e.Check(provider.Quote{Symbol: "BTCUSDT", Price: 49000})
 	e.Check(provider.Quote{Symbol: "BTCUSDT", Price: 51000})
+	if !e.Flush(2 * time.Second) {
+		t.Fatal("notifier queues did not drain")
+	}
 
 	if got := n1.count(); got != 1 {
 		t.Fatalf("n1: expected 1 alert, got %d", got)
@@ -206,7 +240,11 @@ func TestNotifierErrorIsolation(t *testing.T) {
 	e.AddNotifier(ok)
 
 	e.AddRule(Rule{Symbol: "BTCUSDT", Condition: CondAbove, Value: 50000, Enabled: true})
+	e.Check(provider.Quote{Symbol: "BTCUSDT", Price: 49000})
 	e.Check(provider.Quote{Symbol: "BTCUSDT", Price: 51000})
+	if !e.Flush(2 * time.Second) {
+		t.Fatal("notifier queues did not drain")
+	}
 
 	if got := failing.count(); got != 1 {
 		t.Fatalf("failing: expected 1 alert (call still attempted), got %d", got)
