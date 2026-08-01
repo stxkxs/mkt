@@ -11,6 +11,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
+	"github.com/stxkxs/mkt/internal/tui/format"
 	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
@@ -62,17 +63,15 @@ func (m *Model) LoadSymbol(sym string) tea.Cmd {
 	}
 }
 
-// RebuildStyles is a no-op placeholder for theme broadcast compatibility.
-func RebuildStyles() {}
-
 type loadedMsg struct{ chain yahoo.OptionsChain }
 type errorMsg struct{ err error }
 
-// Update handles messages.
+// Update handles messages. The chain is rendered from the theme's
+// exported colors at render time, so a theme change needs no
+// cached-style rebuild.
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case theme.ChangedMsg:
-		RebuildStyles()
 		return m, nil
 	case loadedMsg:
 		m.chain = msg.chain
@@ -112,7 +111,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 // View renders the options chain.
 func (m Model) View() string {
-	if m.width == 0 {
+	if m.width <= 0 {
 		return ""
 	}
 	var sb strings.Builder
@@ -157,23 +156,13 @@ func (m Model) View() string {
 		"CALL Bid", "Last", "IV%", "Strike", "Bid", "Last", "PUT IV%")
 	sb.WriteString(theme.StyleHeader.Render(colHdr))
 	sb.WriteString("\n")
-	sb.WriteString(theme.StyleBorderChar.Render(strings.Repeat("─", m.width)))
+	sb.WriteString(theme.StyleBorderChar.Render(format.Repeat("─", m.width)))
 	sb.WriteString("\n")
 
-	maxRows := m.height - 6
-	if maxRows < 1 {
-		maxRows = 1
-	}
-	if maxRows >= len(strikes) {
-		maxRows = len(strikes)
-	}
-	start := m.cursor - maxRows + 1
-	if start < 0 {
-		start = 0
-	}
-	if start+maxRows > len(strikes) {
-		start = len(strikes) - maxRows
-	}
+	// Section header, blank, column header, separator above; the tab's
+	// own chrome below.
+	maxRows := format.VisibleRows(m.height, 6, len(strikes))
+	start := format.ViewportStart(m.cursor, len(strikes), maxRows)
 	end := start + maxRows
 	if end > len(strikes) {
 		end = len(strikes)

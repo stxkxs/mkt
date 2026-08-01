@@ -382,15 +382,24 @@ func (m Model) showHintLine() bool {
 	return len(m.groups) > 1 || m.sortMode != sortConfig
 }
 
+// visibleRows is how many symbol rows fit below the fixed header rows.
+// Clamped to at least one: a content area shorter than the header rows
+// yields a negative row budget, and treating that as "unlimited" made
+// the watchlist paint its entire symbol list straight through the
+// bottom of the frame.
+func (m Model) visibleRows() int {
+	return format.VisibleRows(m.height, m.headerLines(), len(m.symbols))
+}
+
 func (m Model) viewportStart() int {
-	return format.ViewportStart(m.cursor, len(m.symbols), m.height-m.headerLines())
+	return format.ViewportStart(m.cursor, len(m.symbols), m.visibleRows())
 }
 
 const rangeWidth = 8
 
 // View renders the watchlist.
 func (m Model) View() string {
-	if m.width == 0 {
+	if m.width <= 0 {
 		return ""
 	}
 
@@ -422,14 +431,11 @@ func (m Model) View() string {
 		"SYMBOL", "PRICE", "CHANGE", "VOL", rangeWidth, "RANGE", sparkWidth, "TREND")
 	sb.WriteString(theme.StyleHeader.Render(header))
 	sb.WriteString("\n")
-	sb.WriteString(theme.StyleBorderChar.Render(strings.Repeat("─", m.width)))
+	sb.WriteString(theme.StyleBorderChar.Render(format.Repeat("─", m.width)))
 	sb.WriteString("\n")
 
 	// Compute visible window below the fixed header rows.
-	maxRows := m.height - m.headerLines()
-	if maxRows < 1 || maxRows >= len(m.symbols) {
-		maxRows = len(m.symbols)
-	}
+	maxRows := m.visibleRows()
 	startIdx := m.viewportStart()
 	endIdx := startIdx + maxRows
 	if endIdx > len(m.symbols) {
@@ -458,7 +464,7 @@ func (m Model) viewSearch(sparkWidth int) string {
 		"SYMBOL", "PRICE", "CHANGE", "VOL", rangeWidth, "RANGE", sparkWidth, "TREND")
 	sb.WriteString(theme.StyleHeader.Render(header))
 	sb.WriteString("\n")
-	sb.WriteString(theme.StyleBorderChar.Render(strings.Repeat("─", m.width)))
+	sb.WriteString(theme.StyleBorderChar.Render(format.Repeat("─", m.width)))
 	sb.WriteString("\n")
 
 	if len(m.filtered) == 0 {
@@ -467,11 +473,8 @@ func (m Model) viewSearch(sparkWidth int) string {
 		return sb.String()
 	}
 
-	// Show filtered results (max visible rows minus 3 for prompt + header + separator)
-	maxRows := m.height - 3
-	if maxRows < 1 {
-		maxRows = 1
-	}
+	// Show filtered results below the prompt + header + separator rows.
+	maxRows := format.VisibleRows(m.height, 3, len(m.filtered))
 	startIdx := format.ViewportStart(m.filterCur, len(m.filtered), maxRows)
 	endIdx := startIdx + maxRows
 	if endIdx > len(m.filtered) {

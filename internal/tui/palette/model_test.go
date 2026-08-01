@@ -1,6 +1,10 @@
 package palette
 
-import "testing"
+import (
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+)
 
 func TestParseTabName(t *testing.T) {
 	m := New([]string{"Watch", "Portfolio", "Alerts"})
@@ -50,5 +54,17 @@ func TestParseEmptyCancels(t *testing.T) {
 	res := m.parse()
 	if res.Action != ActionCancel {
 		t.Errorf("got %+v want Cancel", res)
+	}
+}
+
+func TestViewSurvivesEveryWidth(t *testing.T) {
+	for _, w := range []int{-4, 0, 1, 2, 3, 4, 8, 12, 20, 40, 80, 120, 200} {
+		m := New([]string{"Watch", "Chart", "Macro"})
+		m.Open()
+		m, _ = m.Update(tea.KeyPressMsg{Code: 't', Text: "t"})
+		out := m.View(w)
+		if w <= 0 && out != "" {
+			t.Errorf("width %d rendered %q, want empty", w, out)
+		}
 	}
 }

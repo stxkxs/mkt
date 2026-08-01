@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/provider"
 	"github.com/stxkxs/mkt/internal/provider/binance"
@@ -63,6 +64,7 @@ type Model struct {
 	upcoming []calendar.Event
 	width    int
 	height   int
+	scroll   int // first visible content row
 }
 
 // New creates a macro model.
@@ -105,21 +107,114 @@ func RebuildStyles() {
 	styleMacroVal = lipgloss.NewStyle().Foreground(theme.ColorFg)
 }
 
-// View renders the macro dashboard.
+// Update handles messages. The macro dashboard is read-only, but it
+// stacks six sections that routinely run longer than the frame, so it
+// scrolls: without an Update the rows past the fold were unreachable.
+func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case theme.ChangedMsg:
+		RebuildStyles()
+		return m, nil
+	case tea.KeyPressMsg:
+		// Rendering the body is the expensive part, so measure it once
+		// per key rather than once per clamp.
+		total := len(m.contentLines())
+		switch msg.String() {
+		case "j", "down":
+			m.scroll++
+		case "k", "up":
+			m.scroll--
+		case "g", "home":
+			m.scroll = 0
+		case "G", "end":
+			m.scroll = total
+		case "pgdown":
+			m.scroll += m.visibleRows()
+		case "pgup":
+			m.scroll -= m.visibleRows()
+		}
+		m.scroll = clamp(m.scroll, total-m.visibleRows())
+	case tea.MouseWheelMsg:
+		total := len(m.contentLines())
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			m.scroll = clamp(m.scroll-3, total-m.visibleRows())
+		case tea.MouseWheelDown:
+			m.scroll = clamp(m.scroll+3, total-m.visibleRows())
+		}
+	}
+	return m, nil
+}
+
+// visibleRows is the content height, minus the tab's own section header
+// and the blank row under it.
+func (m Model) visibleRows() int {
+	n := m.height - macroHeaderLines
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// clampScroll keeps the offset inside [0, len(lines)-visible] so the last
+// screenful always stays full.
+func (m Model) clampScroll(v int) int {
+	return clamp(v, len(m.contentLines())-m.visibleRows())
+}
+
+// clamp bounds v to [0, maxScroll], treating a negative maximum as zero.
+func clamp(v, maxScroll int) int {
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if v > maxScroll {
+		v = maxScroll
+	}
+	if v < 0 {
+		v = 0
+	}
+	return v
+}
+
+// macroHeaderLines is the "Macro Dashboard" header row plus the blank
+// row beneath it, both of which stay pinned while the body scrolls.
+const macroHeaderLines = 2
+
+// View renders the macro dashboard: a pinned header over a scrolling
+// body.
 func (m Model) View() string {
-	if m.width == 0 {
+	if m.width <= 0 {
 		return ""
 	}
 
-	var sb strings.Builder
-	sb.WriteString(theme.SectionHeader("Macro Dashboard", m.width))
-	sb.WriteString("\n\n")
-
-	if len(m.quotes) == 0 {
-		sb.WriteString(theme.StyleDim.Render("  Loading macro data..."))
-		return sb.String()
+	lines := m.contentLines()
+	visible := m.visibleRows()
+	start := m.clampScroll(m.scroll)
+	end := start + visible
+	if end > len(lines) {
+		end = len(lines)
 	}
 
+	hint := ""
+	if len(lines) > visible {
+		hint = fmt.Sprintf("j/k:scroll  %d-%d of %d", start+1, end, len(lines))
+	}
+
+	var sb strings.Builder
+	sb.WriteString(theme.SectionHeaderHint("Macro Dashboard", hint, m.width))
+	sb.WriteString("\n\n")
+	sb.WriteString(strings.Join(lines[start:end], "\n"))
+	return sb.String()
+}
+
+// contentLines renders the scrollable body as individual rows so View
+// can window it. Every row is one terminal line.
+func (m Model) contentLines() []string {
+	if len(m.quotes) == 0 {
+		return []string{theme.StyleDim.Render("  Loading macro data...")}
+	}
+
+	var sb strings.Builder
 	for _, cat := range categories {
 		sb.WriteString(theme.SectionHeader(cat.name, m.width))
 		sb.WriteString("\n")
@@ -155,7 +250,9 @@ func (m Model) View() string {
 		sb.WriteString("\n")
 	}
 
-	// 2s10s spread
+	// Yield-curve spread. ^IRX is the 13-week bill, not the 2-year note,
+	// so ^TNX - ^IRX is the 10Y-3M spread — a different indicator from
+	// the 2s10s, and the one this actually computes.
 	tnx, hasTNX := m.quotes["^TNX"]
 	irx, hasIRX := m.quotes["^IRX"]
 	if hasTNX && hasIRX {
@@ -167,7 +264,7 @@ func (m Model) View() string {
 		sb.WriteString(theme.SectionHeader("Computed", m.width))
 		sb.WriteString("\n")
 		sb.WriteString(fmt.Sprintf("    %-18s %12s\n",
-			theme.StyleDim.Render("2s10s Spread"),
+			theme.StyleDim.Render("10Y-3M Spread"),
 			spreadStyle.Render(fmt.Sprintf("%.3f%%", spread)),
 		))
 	}
@@ -178,16 +275,41 @@ func (m Model) View() string {
 		sb.WriteString(theme.SectionHeader("Crypto Futures", m.width))
 		sb.WriteString("\n")
 		for _, s := range m.futures {
-			fundingStyle := theme.StyleUp
-			if s.FundingRate < 0 {
-				fundingStyle = theme.StyleDown
+			// A snapshot with nothing in it means Binance refused or was
+			// unreachable. Rendering it as "0.00 funding +0.0000% OI 0" would
+			// be a fabricated flat market — say unavailable instead. Binance
+			// answers 451 to US hosts, so this is the common case there.
+			if s.Unavailable() {
+				reason := "unavailable"
+				if s.Restricted() {
+					reason = "unavailable in this region"
+				}
+				sb.WriteString(fmt.Sprintf("    %-10s %s\n",
+					theme.StyleDim.Render(s.Symbol),
+					theme.StyleDim.Render("— "+reason),
+				))
+				continue
 			}
-			pct := s.FundingRate * 100
+			markStr, fundingStr, oiStr := "—", "funding —", "OI —"
+			if s.HavePremium {
+				markStr = format.FormatPrice(s.MarkPrice)
+				fundingStr = fmt.Sprintf("funding %+.4f%%", s.FundingRate*100)
+			}
+			if s.HaveOI {
+				oiStr = "OI " + format.FormatVolume(s.OpenInterest)
+			}
+			fundingStyle := theme.StyleDim
+			if s.HavePremium {
+				fundingStyle = theme.StyleUp
+				if s.FundingRate < 0 {
+					fundingStyle = theme.StyleDown
+				}
+			}
 			sb.WriteString(fmt.Sprintf("    %-10s %12s   %s   %s\n",
 				theme.StyleDim.Render(s.Symbol),
-				styleMacroVal.Render(format.FormatPrice(s.MarkPrice)),
-				fundingStyle.Render(fmt.Sprintf("funding %+.4f%%", pct)),
-				theme.StyleDim.Render("OI "+format.FormatVolume(s.OpenInterest)),
+				styleMacroVal.Render(markStr),
+				fundingStyle.Render(fundingStr),
+				theme.StyleDim.Render(oiStr),
 			))
 		}
 	}
@@ -243,5 +365,5 @@ func (m Model) View() string {
 		}
 	}
 
-	return sb.String()
+	return strings.Split(strings.TrimRight(sb.String(), "\n"), "\n")
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/stxkxs/mkt/internal/tui/format"
 	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
@@ -108,8 +109,12 @@ func (m *Model) SetSearchQuery(q string) {
 	m.searchQuery = q
 }
 
-// View renders the status bar.
+// View renders the status bar. A non-positive width means the frame has
+// not been sized yet; rendering into it would only produce padding.
 func (m Model) View() string {
+	if m.width <= 0 {
+		return ""
+	}
 	sep := styleSep.Render(" │ ")
 
 	// Left segments
@@ -154,10 +159,7 @@ func (m Model) View() string {
 	rightSegs = append(rightSegs, styleBar.Render("?:help"))
 	right := strings.Join(rightSegs, sep)
 
-	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if pad < 0 {
-		pad = 0
-	}
+	pad := format.Spaces(m.width - lipgloss.Width(left) - lipgloss.Width(right))
 
-	return styleBar.Width(m.width).Render(left + strings.Repeat(" ", pad) + right)
+	return styleBar.Width(m.width).Render(left + pad + right)
 }

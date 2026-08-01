@@ -81,7 +81,7 @@ func DayRange(price, low, high float64, width int) (track string, markerIdx int)
 // Sparkline renders a mini sparkline from price data using Unicode block characters.
 // The caller is responsible for padding the result if needed.
 func Sparkline(prices []float64, width int) string {
-	if len(prices) == 0 {
+	if len(prices) == 0 || width <= 0 {
 		return ""
 	}
 
@@ -230,6 +230,42 @@ func Truncate(s string, max int) string {
 	return string(runes[:max-1]) + "…"
 }
 
+// Repeat returns s repeated n times, clamping a negative count to zero.
+// Terminal layout arithmetic routinely goes negative on a very narrow
+// frame (width - 4 at width 3), and strings.Repeat panics on that, so
+// every view that draws a rule or pads a cell goes through here instead.
+func Repeat(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.Repeat(s, n)
+}
+
+// Spaces returns n space characters, clamping a negative count to zero.
+func Spaces(n int) string {
+	return Repeat(" ", n)
+}
+
+// VisibleRows returns how many list rows fit in a content area of
+// `height` cells once `fixed` header/footer rows are accounted for. The
+// result is clamped to [1, total]: never zero, so a cramped frame still
+// shows the cursor row, and never more than total, so a view can not
+// paint its whole list past the bottom of its own frame. Returns 0 when
+// there is nothing to list.
+func VisibleRows(height, fixed, total int) int {
+	if total <= 0 {
+		return 0
+	}
+	n := height - fixed
+	if n < 1 {
+		n = 1
+	}
+	if n > total {
+		n = total
+	}
+	return n
+}
+
 // ViewportStart returns the first visible item index for a scrolling list
 // so the cursor stays inside a window of `visible` rows. Every scrolling
 // tab uses this same calculation so click handling and rendering agree.
@@ -250,7 +286,12 @@ func ViewportStart(cursor, total, visible int) int {
 // BrailleSpinner frames for animated loading indicators.
 var BrailleSpinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// SpinnerFrame returns the spinner character for a given tick.
+// SpinnerFrame returns the spinner character for a given tick. Negative
+// ticks wrap forward rather than indexing off the front of the slice.
 func SpinnerFrame(tick int) string {
-	return BrailleSpinner[tick%len(BrailleSpinner)]
+	i := tick % len(BrailleSpinner)
+	if i < 0 {
+		i += len(BrailleSpinner)
+	}
+	return BrailleSpinner[i]
 }

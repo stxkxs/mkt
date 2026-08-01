@@ -1,9 +1,8 @@
 package theme
 
 import (
-	"strings"
-
 	"charm.land/lipgloss/v2"
+	"github.com/stxkxs/mkt/internal/tui/format"
 )
 
 // Shared colors used across all TUI sub-packages.
@@ -74,7 +73,13 @@ var (
 			PaddingRight(1)
 )
 
-// ChangedMsg is broadcast when the active theme changes so each view can rebuild its cached styles.
+// ChangedMsg is broadcast when the active theme changes.
+//
+// There is exactly one restyle mechanism: a view that caches lipgloss
+// styles in package-level vars handles ChangedMsg in its Update and
+// calls its own RebuildStyles. Views that read the theme's exported
+// colors at render time need neither, and deliberately do not define an
+// empty RebuildStyles stub.
 type ChangedMsg struct {
 	Name string
 }
@@ -84,16 +89,43 @@ func StyleAccentText(s string) string {
 	return lipgloss.NewStyle().Foreground(ColorAccent).Render(s)
 }
 
+// Section header geometry: "  ── " lead-in, one space after the title,
+// two spaces between the rule and a trailing hint.
+const (
+	headerLead    = 5
+	headerGap     = 1
+	headerHintGap = 2
+	headerMinRule = 2 // keep the divider visible or drop the hint entirely
+)
+
 // SectionHeader renders a styled section divider: "  ── Title ─────────"
 func SectionHeader(title string, width int) string {
-	prefix := StyleBorderChar.Render("  ── ")
-	titleStr := StylePanelTitle.Render(title)
-	suffix := " "
-	used := 5 + lipgloss.Width(titleStr) + 1 // "  ── " + title + " "
-	remaining := width - used
-	if remaining < 0 {
-		remaining = 0
+	return SectionHeaderHint(title, "", width)
+}
+
+// SectionHeaderHint renders a section divider that carries a trailing
+// hint on the same row: "  ── Title ─────────  j/k:nav".
+//
+// The rule absorbs whatever width is left after the title and the hint,
+// so the header occupies exactly one row of `width` cells. Callers that
+// appended their own hint after SectionHeader used to overrun the frame
+// — the rule had already padded to full width — and orphan the hint onto
+// the next line; pass it here instead. Too narrow for both drops the
+// hint, then truncates the title.
+func SectionHeaderHint(title, hint string, width int) string {
+	if width <= headerLead+headerGap {
+		return StyleBorderChar.Render(format.Repeat("─", width))
 	}
-	line := StyleBorderChar.Render(strings.Repeat("─", remaining))
-	return prefix + titleStr + suffix + line
+
+	titleStr := StylePanelTitle.Render(format.Truncate(title, width-headerLead-headerGap))
+	prefix := StyleBorderChar.Render("  ── ") + titleStr + " "
+	rule := width - headerLead - headerGap - lipgloss.Width(titleStr)
+
+	if hint != "" {
+		if r := rule - headerHintGap - lipgloss.Width(hint); r >= headerMinRule {
+			return prefix + StyleBorderChar.Render(format.Repeat("─", r)) +
+				StyleDim.Render(format.Spaces(headerHintGap)+hint)
+		}
+	}
+	return prefix + StyleBorderChar.Render(format.Repeat("─", rule))
 }

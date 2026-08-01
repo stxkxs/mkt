@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -23,13 +24,49 @@ type Model struct {
 	height    int
 }
 
-// New creates a heatmap model.
+// New creates a heatmap model seeded with DefaultSectors. Callers that
+// know the user's watchlist groups should follow up with SetSectors.
 func New() Model {
 	return Model{
 		sectors:   DefaultSectors,
 		quotes:    make(map[string]provider.Quote),
 		sectorIdx: -1,
 	}
+}
+
+// SetSectors replaces the tile layout and resets navigation to the
+// overview, since the old cursor and drill-down index no longer refer to
+// anything meaningful.
+//
+// This is how the heatmap stays in step with what the hub actually
+// subscribes to: the tab only ever receives quotes for watchlist
+// symbols, so a hardcoded sector list goes blank the moment a user
+// prunes their watchlist. Wiring should map each config watchlist group
+// to one Sector — `cfg.Watchlists` is already a name + symbols list,
+// which is exactly a sector list:
+//
+//	sectors := make([]heatmap.Sector, 0, len(cfg.Watchlists))
+//	for _, w := range cfg.Watchlists {
+//	    sectors = append(sectors, heatmap.Sector{Name: w.Name, Symbols: w.Symbols})
+//	}
+//	hm.SetSectors(sectors)
+//
+// Empty groups are dropped; an empty or all-empty slice falls back to
+// DefaultSectors so the tab is never blank.
+func (m *Model) SetSectors(sectors []Sector) {
+	m.sectors = NormalizeSectors(sectors)
+	m.cursor = 0
+	m.sectorIdx = -1
+}
+
+// sector returns the sector at i, and whether i was in range. Sectors
+// can be replaced at any time by SetSectors, so every index that
+// survived from a previous layout is re-checked before use.
+func (m Model) sector(i int) (Sector, bool) {
+	if i < 0 || i >= len(m.sectors) {
+		return Sector{}, false
+	}
+	return m.sectors[i], true
 }
 
 // SetSize updates dimensions.
@@ -43,14 +80,11 @@ func (m *Model) UpdateQuote(q provider.Quote) {
 	m.quotes[q.Symbol] = q
 }
 
-// RebuildStyles is a no-op since heatmap uses dynamic gradient colors.
-func RebuildStyles() {}
-
-// Update handles messages.
+// Update handles messages. The heatmap reads theme colors at render
+// time, so a theme change needs no cached-style rebuild.
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case theme.ChangedMsg:
-		RebuildStyles()
 		return m, nil
 	case tea.KeyPressMsg:
 		if m.sectorIdx >= 0 {
@@ -59,7 +93,11 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return m.updateOverview(msg)
 	case tea.MouseWheelMsg:
 		if m.sectorIdx >= 0 {
-			sect := m.sectors[m.sectorIdx]
+			sect, ok := m.sector(m.sectorIdx)
+			if !ok {
+				m.sectorIdx = -1
+				return m, nil
+			}
 			cols := m.tileCols()
 			switch msg.Button {
 			case tea.MouseWheelUp:
@@ -89,10 +127,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.MouseClickMsg:
 		// Click coordinates already have the tab-bar Y-1 adjustment from
 		// the app router. The heatmap view prepends a section header
-		// (1 line), a hint (1), and a blank (1) before painting the
+		// (1 line, hint included) and a blank (1) before painting the
 		// treemap, plus a leading space column. Translate to grid
 		// coordinates.
-		const headerLines = 3
+		const headerLines = 2
 		const leadCol = 1
 		gridX := msg.X - leadCol
 		gridY := msg.Y - headerLines
@@ -123,20 +161,24 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		// Drilldown: a click on a tile selects that stock. Tiles are
 		// laid out at tileW = 22 cols wide and tileH = 4 lines tall.
-		// The drilldown view inserts a 2-line title header + a 2-line
-		// separator/blank before the first tile.
+		// The drilldown view inserts a title row, a separator row and a
+		// blank row before the first tile.
 		const tileW = 22
 		const tileH = 4
-		const drillHeader = 4
+		const drillHeader = 3
 		dx := msg.X - 2 // leading "  " padding
 		dy := msg.Y - drillHeader
 		if dx < 0 || dy < 0 {
 			return m, nil
 		}
+		sect, ok := m.sector(m.sectorIdx)
+		if !ok {
+			m.sectorIdx = -1
+			return m, nil
+		}
 		cols := m.tileCols()
 		col := dx / (tileW + 1) // +1 for inter-tile space
 		row := dy / tileH
-		sect := m.sectors[m.sectorIdx]
 		idx := row*cols + col
 		if idx < 0 || idx >= len(sect.Symbols) {
 			return m, nil
@@ -176,7 +218,11 @@ func (m Model) updateOverview(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) updateDrilldown(msg tea.KeyPressMsg) (Model, tea.Cmd) {
-	sect := m.sectors[m.sectorIdx]
+	sect, ok := m.sector(m.sectorIdx)
+	if !ok {
+		m.sectorIdx = -1
+		return m, nil
+	}
 	cols := m.tileCols()
 	switch msg.String() {
 	case "esc":
@@ -213,8 +259,12 @@ func (m Model) tileCols() int {
 	return cols
 }
 
-// sectorChange computes the average change% for a sector.
-func (m Model) sectorChange(s Sector) float64 {
+// sectorChange computes the average change% across a sector's quoted
+// symbols and reports how many of them actually had a quote. A sector
+// with no quotes returns (0, 0) — callers must render that as "no data"
+// rather than as a flat 0.00%, which is indistinguishable from a sector
+// that genuinely did not move.
+func (m Model) sectorChange(s Sector) (float64, int) {
 	var sum float64
 	var count int
 	for _, sym := range s.Symbols {
@@ -224,15 +274,19 @@ func (m Model) sectorChange(s Sector) float64 {
 		}
 	}
 	if count == 0 {
-		return 0
+		return 0, 0
 	}
-	return sum / float64(count)
+	return sum / float64(count), count
 }
 
 // View renders the heatmap.
 func (m Model) View() string {
-	if m.width == 0 || m.height == 0 {
+	if m.width <= 0 || m.height <= 0 {
 		return ""
+	}
+	if m.sectorIdx >= len(m.sectors) {
+		// Sectors were replaced while drilled in.
+		return m.viewOverview()
 	}
 	if m.sectorIdx >= 0 {
 		return m.viewDrilldown()
@@ -244,8 +298,7 @@ func (m Model) View() string {
 
 func (m Model) viewOverview() string {
 	var sb strings.Builder
-	sb.WriteString(theme.SectionHeader("Sector Heatmap", m.width))
-	sb.WriteString(theme.StyleDim.Render("  j/k/h/l:nav  enter:drill down"))
+	sb.WriteString(theme.SectionHeaderHint("Sector Heatmap", "j/k/h/l:nav  enter:drill down", m.width))
 	sb.WriteString("\n\n")
 
 	if len(m.quotes) == 0 {
@@ -279,8 +332,11 @@ func (m Model) viewOverview() string {
 			break
 		}
 		rect := rects[i]
-		chg := m.sectorChange(s)
+		chg, quoted := m.sectorChange(s)
 		clr := theme.HeatmapColor(chg)
+		if quoted == 0 {
+			clr = theme.ColorDim
+		}
 		isSelected := i == m.cursor
 
 		// Fill
@@ -323,14 +379,14 @@ func (m Model) viewOverview() string {
 		}
 		if nameRow < chartH && rect.W >= 3 {
 			label := fmt.Sprintf("%s %.1f%%", s.Name, chg)
-			if len(label) > rect.W-2 {
-				label = s.Name
-				if len(label) > rect.W-2 {
-					label = label[:rect.W-2]
-				}
+			if quoted == 0 {
+				label = s.Name + " n/a"
 			}
-			startC := rect.X + (rect.W-len(label))/2
-			for ci, ch := range label {
+			if utf8.RuneCountInString(label) > rect.W-2 {
+				label = format.Truncate(s.Name, rect.W-2)
+			}
+			startC := rect.X + (rect.W-utf8.RuneCountInString(label))/2
+			for ci, ch := range []rune(label) {
 				c := startC + ci
 				if c >= rect.X && c < rect.X+rect.W && c < chartW {
 					grid[nameRow][c] = ch
@@ -350,11 +406,11 @@ func (m Model) viewOverview() string {
 				}
 			}
 			tickerLine := strings.Join(tickers, " ")
-			if len(tickerLine) > rect.W-2 {
-				tickerLine = tickerLine[:rect.W-2]
+			if utf8.RuneCountInString(tickerLine) > rect.W-2 {
+				tickerLine = format.Truncate(tickerLine, rect.W-2)
 			}
 			startC := rect.X + 1
-			for ci, ch := range tickerLine {
+			for ci, ch := range []rune(tickerLine) {
 				c := startC + ci
 				if c < rect.X+rect.W && c < chartW {
 					grid[tickerRow][c] = ch
@@ -387,18 +443,27 @@ func (m Model) viewOverview() string {
 // ── Drilldown: individual stock tiles within a sector ────────────────
 
 func (m Model) viewDrilldown() string {
-	sect := m.sectors[m.sectorIdx]
-	sectorChg := m.sectorChange(sect)
+	sect, ok := m.sector(m.sectorIdx)
+	if !ok {
+		return m.viewOverview()
+	}
+	sectorChg, quoted := m.sectorChange(sect)
 
 	var sb strings.Builder
 
 	// Header: sector name + change + breadcrumb
 	sectorColor := theme.HeatmapColor(sectorChg)
+	if quoted == 0 {
+		sectorColor = theme.ColorDim
+	}
 	title := lipgloss.NewStyle().Foreground(sectorColor).Bold(true).
 		Render(fmt.Sprintf("  %s", sect.Name))
 	chgStr := fmt.Sprintf(" %.2f%%", sectorChg)
 	chgStyle := theme.StyleUp
-	if sectorChg < 0 {
+	if quoted == 0 {
+		chgStr = " n/a"
+		chgStyle = theme.StyleDim
+	} else if sectorChg < 0 {
 		chgStyle = theme.StyleDown
 	}
 	sb.WriteString(title)
@@ -406,8 +471,9 @@ func (m Model) viewDrilldown() string {
 	sb.WriteString(theme.StyleDim.Render("  esc:back  j/k/h/l:nav"))
 	sb.WriteString("\n")
 
-	// Separator
-	sb.WriteString(theme.StyleDim.Render("  " + strings.Repeat("─", m.width-4)))
+	// Separator. width-4 goes negative on a very narrow frame, which is
+	// exactly what strings.Repeat panics on — format.Repeat clamps.
+	sb.WriteString(theme.StyleDim.Render("  " + format.Repeat("─", m.width-4)))
 	sb.WriteString("\n\n")
 
 	if len(m.quotes) == 0 {
@@ -495,10 +561,7 @@ func (m Model) viewDrilldown() string {
 				symStyle.Render(fmt.Sprintf("%-6s", e.sym)),
 				lipgloss.NewStyle().Foreground(theme.ColorFg).Render(fmt.Sprintf("%9s", priceStr)),
 			)
-			padding := tileW - lipgloss.Width(cell)
-			if padding > 0 {
-				cell += strings.Repeat(" ", padding)
-			}
+			cell += format.Spaces(tileW - lipgloss.Width(cell))
 			line1 = append(line1, cell)
 		}
 		sb.WriteString("  " + strings.Join(line1, " "))
@@ -508,7 +571,7 @@ func (m Model) viewDrilldown() string {
 		var line2 []string
 		for _, e := range chunk {
 			if !e.has || e.quote.Price == 0 {
-				line2 = append(line2, strings.Repeat(" ", tileW))
+				line2 = append(line2, format.Spaces(tileW))
 				continue
 			}
 			pct := e.quote.ChangePct
@@ -529,13 +592,10 @@ func (m Model) viewDrilldown() string {
 			if barLen < 1 && pct != 0 {
 				barLen = 1
 			}
-			bar := lipgloss.NewStyle().Foreground(clr).Render(strings.Repeat("█", barLen))
+			bar := lipgloss.NewStyle().Foreground(clr).Render(format.Repeat("█", barLen))
 
 			cell := chgRendered + bar
-			w := lipgloss.Width(cell)
-			if w < tileW {
-				cell += strings.Repeat(" ", tileW-w)
-			}
+			cell += format.Spaces(tileW - lipgloss.Width(cell))
 			line2 = append(line2, cell)
 		}
 		sb.WriteString("  " + strings.Join(line2, " "))
@@ -545,15 +605,12 @@ func (m Model) viewDrilldown() string {
 		var line3 []string
 		for _, e := range chunk {
 			if !e.has || e.quote.Volume == 0 {
-				line3 = append(line3, strings.Repeat(" ", tileW))
+				line3 = append(line3, format.Spaces(tileW))
 				continue
 			}
 			vol := format.FormatVolume(e.quote.Volume)
 			cell := theme.StyleDim.Render(fmt.Sprintf(" Vol: %-12s", vol))
-			w := lipgloss.Width(cell)
-			if w < tileW {
-				cell += strings.Repeat(" ", tileW-w)
-			}
+			cell += format.Spaces(tileW - lipgloss.Width(cell))
 			line3 = append(line3, cell)
 		}
 		sb.WriteString("  " + strings.Join(line3, " "))
