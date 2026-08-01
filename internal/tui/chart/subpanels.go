@@ -1,550 +1,213 @@
 package chart
 
 import (
-	"fmt"
-	"image/color"
 	"math"
-	"strings"
 
 	"charm.land/lipgloss/v2"
-	"github.com/stxkxs/mkt/internal/indicator"
 	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
-// Sub-panel renderers — each draws one indicator into a fresh grid the
-// height of the supplied panel area. Returned strings include their
-// own header line so the caller can stack them under the main chart.
+// Sub-panel renderers — each draws one indicator into a fresh panel the
+// height of the supplied area. Returned strings include their own header
+// line so the caller can stack them under the main chart.
+//
+// Every one of them reads its series off the viewport (computed over the
+// full fetched history, narrowed to the visible window) and plots at the
+// viewport's candle step, so the sub-panel describes exactly the bars
+// drawn above it and lines up with them column for column.
 
-func (m Model) renderRSI(closes []float64, width, height int) string {
-	if height < 3 || width <= 0 {
-		return ""
-	}
-	rsi := indicator.RSI(closes, 14)
-
-	grid := make([][]rune, height)
-	gridColor := make([][]color.Color, height)
-	for r := range height {
-		grid[r] = make([]rune, width)
-		gridColor[r] = make([]color.Color, width)
-		for c := range width {
-			grid[r][c] = ' '
-		}
-	}
-
-	// Reference lines at 30 and 70
-	row30 := height - 1 - int(30.0/100.0*float64(height-1))
-	row70 := height - 1 - int(70.0/100.0*float64(height-1))
-	row30 = clampRow(row30, height)
-	row70 = clampRow(row70, height)
-	for c := range width {
-		grid[row30][c] = '┄'
-		gridColor[row30][c] = theme.ColorDim
-		grid[row70][c] = '┄'
-		gridColor[row70][c] = theme.ColorDim
-	}
-
-	// Plot RSI
-	for i, v := range rsi {
-		if math.IsNaN(v) {
-			continue
-		}
-		col := i
-		if len(rsi) > width {
-			col = i * width / len(rsi)
-		}
-		if col >= width {
-			break
-		}
-		row := height - 1 - int(v/100.0*float64(height-1))
-		row = clampRow(row, height)
-		grid[row][col] = '●'
-		gridColor[row][col] = theme.ColorMagenta
-	}
-
-	// Render
-	var sb strings.Builder
-	labelWidth := 10
-	sb.WriteString(strings.Repeat(" ", labelWidth+1))
-	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorMagenta).Bold(true).Render("RSI(14)"))
-	sb.WriteString("\n")
-	for r := range height {
-		if r == row70 {
-			sb.WriteString(styleAxis.Render(fmt.Sprintf("%*s ", labelWidth, "70")))
-		} else if r == row30 {
-			sb.WriteString(styleAxis.Render(fmt.Sprintf("%*s ", labelWidth, "30")))
-		} else {
-			sb.WriteString(strings.Repeat(" ", labelWidth+1))
-		}
-		for c := range grid[r] {
-			ch := grid[r][c]
-			clr := gridColor[r][c]
-			if ch == ' ' {
-				sb.WriteRune(' ')
-			} else if clr != nil {
-				sb.WriteString(lipgloss.NewStyle().Foreground(clr).Render(string(ch)))
-			} else {
-				sb.WriteRune(ch)
-			}
-		}
-		sb.WriteString("\n")
-	}
-	return sb.String()
+// oscillatorScale is the fixed 0..100 scale shared by RSI, Stochastic
+// and ADX.
+func oscillatorScale(height int) vscale {
+	return newPanelScale(0, 100, height)
 }
 
-func (m Model) renderMACD(closes []float64, width, height int) string {
+// levelLabel builds a row-label function that prints a caption on the
+// rows carrying the given reference levels.
+func levelLabel(levels map[int]string) func(int) string {
+	return func(r int) string {
+		return levels[r]
+	}
+}
+
+func renderRSI(v viewport, width, height int) string {
 	if height < 3 || width <= 0 {
 		return ""
 	}
-	macd := indicator.MACD(closes, 12, 26, 9)
+	scale := oscillatorScale(height)
+	p := newPanel(width, height)
 
-	// Find range
+	// Reference lines at 30 and 70
+	row30, _ := scale.row(30)
+	row70, _ := scale.row(70)
+	p.hline(row30, refLine, theme.ColorDim, paintOver)
+	p.hline(row70, refLine, theme.ColorDim, paintOver)
+
+	plotSeries(p, v.ind.rsi, v.step, scale, '●', theme.ColorMagenta, paintOver)
+
+	out := panelTitle(lipgloss.NewStyle().Foreground(theme.ColorMagenta).Bold(true).Render("RSI(14)"))
+	return out + p.render(levelLabel(map[int]string{row70: "70", row30: "30"}))
+}
+
+func renderMACD(v viewport, width, height int) string {
+	if height < 3 || width <= 0 {
+		return ""
+	}
+	macd := v.ind.macd
+
+	// Range spans the MACD line and the histogram, always including zero.
 	minV, maxV := 0.0, 0.0
-	for i := range closes {
-		if !math.IsNaN(macd.MACD[i]) {
-			if macd.MACD[i] < minV {
-				minV = macd.MACD[i]
+	for _, series := range [][]float64{macd.MACD, macd.Histogram} {
+		for _, val := range series {
+			if math.IsNaN(val) {
+				continue
 			}
-			if macd.MACD[i] > maxV {
-				maxV = macd.MACD[i]
+			if val < minV {
+				minV = val
 			}
-		}
-		if !math.IsNaN(macd.Histogram[i]) {
-			if macd.Histogram[i] < minV {
-				minV = macd.Histogram[i]
-			}
-			if macd.Histogram[i] > maxV {
-				maxV = macd.Histogram[i]
+			if val > maxV {
+				maxV = val
 			}
 		}
 	}
-	rng := maxV - minV
-	if rng == 0 {
-		rng = 1
-	}
-
-	grid := make([][]rune, height)
-	gridColor := make([][]color.Color, height)
-	for r := range height {
-		grid[r] = make([]rune, width)
-		gridColor[r] = make([]color.Color, width)
-		for c := range width {
-			grid[r][c] = ' '
-		}
-	}
+	scale := newPanelScale(minV, maxV, height)
+	p := newPanel(width, height)
 
 	// Zero line
-	zeroRow := height - 1 - int((0-minV)/rng*float64(height-1))
-	zeroRow = clampRow(zeroRow, height)
-	for c := range width {
-		grid[zeroRow][c] = '┄'
-		gridColor[zeroRow][c] = theme.ColorDim
-	}
+	zeroRow, _ := scale.row(0)
+	p.hline(zeroRow, refLine, theme.ColorDim, paintOver)
 
-	// Histogram bars
-	for i := range closes {
-		if math.IsNaN(macd.Histogram[i]) {
-			continue
-		}
-		col := i
-		if len(closes) > width {
-			col = i * width / len(closes)
-		}
+	// Histogram bars, drawn from the zero line out to the value.
+	for i, val := range macd.Histogram {
+		col := i * v.step
 		if col >= width {
 			break
 		}
-		v := macd.Histogram[i]
-		row := height - 1 - int((v-minV)/rng*float64(height-1))
-		row = clampRow(row, height)
-
-		color := theme.ColorGreen
-		if v < 0 {
-			color = theme.ColorRed
+		row, ok := scale.row(val)
+		if !ok {
+			continue
 		}
-
+		clr := theme.ColorGreen
+		if val < 0 {
+			clr = theme.ColorRed
+		}
 		if row < zeroRow {
 			for r := row; r < zeroRow; r++ {
-				grid[r][col] = '▮'
-				gridColor[r][col] = color
+				p.paint(r, col, '▮', clr, paintOver)
 			}
 		} else {
 			for r := zeroRow + 1; r <= row; r++ {
-				grid[r][col] = '▮'
-				gridColor[r][col] = color
+				p.paint(r, col, '▮', clr, paintOver)
 			}
 		}
 	}
 
-	// MACD line
-	for i := range closes {
-		if math.IsNaN(macd.MACD[i]) {
-			continue
-		}
-		col := i
-		if len(closes) > width {
-			col = i * width / len(closes)
-		}
-		if col >= width {
-			break
-		}
-		row := height - 1 - int((macd.MACD[i]-minV)/rng*float64(height-1))
-		row = clampRow(row, height)
-		grid[row][col] = '●'
-		gridColor[row][col] = theme.ColorAccent
-	}
+	plotSeries(p, macd.MACD, v.step, scale, '●', theme.ColorAccent, paintOver)
+	plotSeries(p, macd.Signal, v.step, scale, '○', theme.ColorYellow, paintIfEmpty)
 
-	// Signal line
-	for i := range closes {
-		if math.IsNaN(macd.Signal[i]) {
-			continue
-		}
-		col := i
-		if len(closes) > width {
-			col = i * width / len(closes)
-		}
-		if col >= width {
-			break
-		}
-		row := height - 1 - int((macd.Signal[i]-minV)/rng*float64(height-1))
-		row = clampRow(row, height)
-		if grid[row][col] == ' ' {
-			grid[row][col] = '○'
-			gridColor[row][col] = theme.ColorYellow
-		}
-	}
-
-	var sb strings.Builder
-	labelWidth := 10
-	sb.WriteString(strings.Repeat(" ", labelWidth+1))
-	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("MACD(12,26,9)"))
-	sb.WriteString("\n")
-	for r := range height {
-		sb.WriteString(strings.Repeat(" ", labelWidth+1))
-		for c := range grid[r] {
-			ch := grid[r][c]
-			clr := gridColor[r][c]
-			if ch == ' ' {
-				sb.WriteRune(' ')
-			} else if clr != nil {
-				sb.WriteString(lipgloss.NewStyle().Foreground(clr).Render(string(ch)))
-			} else {
-				sb.WriteRune(ch)
-			}
-		}
-		sb.WriteString("\n")
-	}
-	return sb.String()
+	out := panelTitle(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("MACD(12,26,9)"))
+	return out + p.render(nil)
 }
 
-func (m Model) renderADX(highs, lows, closes []float64, width, height int) string {
-	if height < 3 || width <= 0 || len(closes) == 0 {
+func renderADX(v viewport, width, height int) string {
+	if height < 3 || width <= 0 || v.len() == 0 {
 		return ""
 	}
-	adx, plusDI, minusDI := indicator.ADX(highs, lows, closes, 14)
-
-	grid := make([][]rune, height)
-	gridColor := make([][]color.Color, height)
-	for r := range height {
-		grid[r] = make([]rune, width)
-		gridColor[r] = make([]color.Color, width)
-		for c := range width {
-			grid[r][c] = ' '
-		}
-	}
+	scale := oscillatorScale(height)
+	p := newPanel(width, height)
 
 	// Reference line at 25 (conventional trending threshold)
-	row25 := height - 1 - int(25.0/100.0*float64(height-1))
-	row25 = clampRow(row25, height)
-	for c := range width {
-		grid[row25][c] = '┄'
-		gridColor[row25][c] = theme.ColorDim
-	}
+	row25, _ := scale.row(25)
+	p.hline(row25, refLine, theme.ColorDim, paintOver)
 
-	plotSeries := func(series []float64, clr color.Color, glyph rune) {
-		for i, v := range series {
-			if math.IsNaN(v) {
-				continue
-			}
-			col := i
-			if len(series) > width {
-				col = i * width / len(series)
-			}
-			if col >= width {
-				break
-			}
-			row := height - 1 - int(v/100.0*float64(height-1))
-			row = clampRow(row, height)
-			if grid[row][col] == ' ' || grid[row][col] == '┄' {
-				grid[row][col] = glyph
-				gridColor[row][col] = clr
-			}
-		}
-	}
-	plotSeries(plusDI, theme.ColorGreen, '+')
-	plotSeries(minusDI, theme.ColorRed, '-')
-	plotSeries(adx, theme.ColorAccent, '●')
+	plotSeries(p, v.ind.plusDI, v.step, scale, '+', theme.ColorGreen, paintIfClear)
+	plotSeries(p, v.ind.minusDI, v.step, scale, '-', theme.ColorRed, paintIfClear)
+	plotSeries(p, v.ind.adx, v.step, scale, '●', theme.ColorAccent, paintIfClear)
 
-	var sb strings.Builder
-	labelWidth := 10
-	sb.WriteString(strings.Repeat(" ", labelWidth+1))
-	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("ADX(14) "))
-	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorGreen).Render("+DI "))
-	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorRed).Render("-DI"))
-	sb.WriteString("\n")
-	for r := range height {
-		if r == row25 {
-			sb.WriteString(styleAxis.Render(fmt.Sprintf("%*s ", labelWidth, "25")))
-		} else {
-			sb.WriteString(strings.Repeat(" ", labelWidth+1))
-		}
-		for c := range grid[r] {
-			ch := grid[r][c]
-			clr := gridColor[r][c]
-			if ch == ' ' {
-				sb.WriteRune(' ')
-			} else if clr != nil {
-				sb.WriteString(lipgloss.NewStyle().Foreground(clr).Render(string(ch)))
-			} else {
-				sb.WriteRune(ch)
-			}
-		}
-		sb.WriteString("\n")
-	}
-	return sb.String()
+	title := lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("ADX(14) ") +
+		lipgloss.NewStyle().Foreground(theme.ColorGreen).Render("+DI ") +
+		lipgloss.NewStyle().Foreground(theme.ColorRed).Render("-DI")
+	return panelTitle(title) + p.render(levelLabel(map[int]string{row25: "25"}))
 }
 
-func (m Model) renderATR(highs, lows, closes []float64, width, height int) string {
-	if height < 3 || width <= 0 || len(closes) == 0 {
+func renderATR(v viewport, width, height int) string {
+	if height < 3 || width <= 0 || v.len() == 0 {
 		return ""
 	}
-	atr := indicator.ATR(highs, lows, closes, 14)
-
-	// Range over non-NaN ATR values
-	minV, maxV := math.Inf(1), math.Inf(-1)
-	for _, v := range atr {
-		if math.IsNaN(v) {
-			continue
-		}
-		if v < minV {
-			minV = v
-		}
-		if v > maxV {
-			maxV = v
-		}
-	}
-	if math.IsInf(minV, 1) {
+	minV, maxV, ok := finiteRange(v.ind.atr)
+	if !ok {
 		return ""
 	}
-	rng := maxV - minV
-	if rng == 0 {
-		rng = 1
-	}
+	scale := newPanelScale(minV, maxV, height)
+	p := newPanel(width, height)
+	plotSeries(p, v.ind.atr, v.step, scale, '●', theme.ColorAccent, paintOver)
 
-	grid := make([][]rune, height)
-	gridColor := make([][]color.Color, height)
-	for r := range height {
-		grid[r] = make([]rune, width)
-		gridColor[r] = make([]color.Color, width)
-		for c := range width {
-			grid[r][c] = ' '
-		}
-	}
-
-	for i, v := range atr {
-		if math.IsNaN(v) {
-			continue
-		}
-		col := i
-		if len(atr) > width {
-			col = i * width / len(atr)
-		}
-		if col >= width {
-			break
-		}
-		row := height - 1 - int((v-minV)/rng*float64(height-1))
-		row = clampRow(row, height)
-		grid[row][col] = '●'
-		gridColor[row][col] = theme.ColorAccent
-	}
-
-	var sb strings.Builder
-	labelWidth := 10
-	sb.WriteString(strings.Repeat(" ", labelWidth+1))
-	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("ATR(14)"))
-	sb.WriteString("\n")
-	for r := range height {
-		sb.WriteString(strings.Repeat(" ", labelWidth+1))
-		for c := range grid[r] {
-			ch := grid[r][c]
-			clr := gridColor[r][c]
-			if ch == ' ' {
-				sb.WriteRune(' ')
-			} else if clr != nil {
-				sb.WriteString(lipgloss.NewStyle().Foreground(clr).Render(string(ch)))
-			} else {
-				sb.WriteRune(ch)
-			}
-		}
-		sb.WriteString("\n")
-	}
-	return sb.String()
+	out := panelTitle(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("ATR(14)"))
+	return out + p.render(nil)
 }
 
-func (m Model) renderStoch(highs, lows, closes []float64, width, height int) string {
-	if height < 3 || width <= 0 || len(closes) == 0 {
+func renderStoch(v viewport, width, height int) string {
+	if height < 3 || width <= 0 || v.len() == 0 {
 		return ""
 	}
-	k, d := indicator.Stochastic(highs, lows, closes, 14, 3)
-
-	grid := make([][]rune, height)
-	gridColor := make([][]color.Color, height)
-	for r := range height {
-		grid[r] = make([]rune, width)
-		gridColor[r] = make([]color.Color, width)
-		for c := range width {
-			grid[r][c] = ' '
-		}
-	}
+	scale := oscillatorScale(height)
+	p := newPanel(width, height)
 
 	// Reference lines at 20 and 80
-	row20 := height - 1 - int(20.0/100.0*float64(height-1))
-	row80 := height - 1 - int(80.0/100.0*float64(height-1))
-	row20 = clampRow(row20, height)
-	row80 = clampRow(row80, height)
-	for c := range width {
-		grid[row20][c] = '┄'
-		gridColor[row20][c] = theme.ColorDim
-		grid[row80][c] = '┄'
-		gridColor[row80][c] = theme.ColorDim
-	}
+	row20, _ := scale.row(20)
+	row80, _ := scale.row(80)
+	p.hline(row20, refLine, theme.ColorDim, paintOver)
+	p.hline(row80, refLine, theme.ColorDim, paintOver)
 
-	plotSeries := func(series []float64, clr color.Color, glyph rune) {
-		for i, v := range series {
-			if math.IsNaN(v) {
-				continue
-			}
-			col := i
-			if len(series) > width {
-				col = i * width / len(series)
-			}
-			if col >= width {
-				break
-			}
-			row := height - 1 - int(v/100.0*float64(height-1))
-			row = clampRow(row, height)
-			if grid[row][col] == ' ' || grid[row][col] == '┄' {
-				grid[row][col] = glyph
-				gridColor[row][col] = clr
-			}
-		}
-	}
-	plotSeries(k, theme.ColorAccent, '●')
-	plotSeries(d, theme.ColorYellow, '○')
+	plotSeries(p, v.ind.stochK, v.step, scale, '●', theme.ColorAccent, paintIfClear)
+	plotSeries(p, v.ind.stochD, v.step, scale, '○', theme.ColorYellow, paintIfClear)
 
-	var sb strings.Builder
-	labelWidth := 10
-	sb.WriteString(strings.Repeat(" ", labelWidth+1))
-	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("Stochastic"))
-	sb.WriteString("\n")
-	for r := range height {
-		switch r {
-		case row80:
-			sb.WriteString(styleAxis.Render(fmt.Sprintf("%*s ", labelWidth, "80")))
-		case row20:
-			sb.WriteString(styleAxis.Render(fmt.Sprintf("%*s ", labelWidth, "20")))
-		default:
-			sb.WriteString(strings.Repeat(" ", labelWidth+1))
-		}
-		for c := range grid[r] {
-			ch := grid[r][c]
-			clr := gridColor[r][c]
-			if ch == ' ' {
-				sb.WriteRune(' ')
-			} else if clr != nil {
-				sb.WriteString(lipgloss.NewStyle().Foreground(clr).Render(string(ch)))
-			} else {
-				sb.WriteRune(ch)
-			}
-		}
-		sb.WriteString("\n")
-	}
-	return sb.String()
+	out := panelTitle(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("Stochastic"))
+	return out + p.render(levelLabel(map[int]string{row80: "80", row20: "20"}))
 }
 
-func (m Model) renderOBV(closes, volumes []float64, width, height int) string {
-	if height < 3 || width <= 0 || len(closes) == 0 {
+func renderOBV(v viewport, width, height int) string {
+	if height < 3 || width <= 0 || v.len() == 0 {
 		return ""
 	}
-	obv := indicator.OBV(closes, volumes)
-
-	// Find OBV range
-	minV, maxV := obv[0], obv[0]
-	for _, v := range obv {
-		if v < minV {
-			minV = v
-		}
-		if v > maxV {
-			maxV = v
-		}
+	minV, maxV, ok := finiteRange(v.ind.obv)
+	if !ok {
+		return ""
 	}
-	rng := maxV - minV
-	if rng == 0 {
-		rng = 1
-	}
-
-	grid := make([][]rune, height)
-	gridColor := make([][]color.Color, height)
-	for r := range height {
-		grid[r] = make([]rune, width)
-		gridColor[r] = make([]color.Color, width)
-		for c := range width {
-			grid[r][c] = ' '
-		}
-	}
+	scale := newPanelScale(minV, maxV, height)
+	p := newPanel(width, height)
 
 	// Zero reference line if it falls inside the range
 	if minV < 0 && maxV > 0 {
-		zeroRow := height - 1 - int((0-minV)/rng*float64(height-1))
-		zeroRow = clampRow(zeroRow, height)
-		for c := range width {
-			grid[zeroRow][c] = '┄'
-			gridColor[zeroRow][c] = theme.ColorDim
+		if zeroRow, ok := scale.row(0); ok {
+			p.hline(zeroRow, refLine, theme.ColorDim, paintOver)
 		}
 	}
+	plotSeries(p, v.ind.obv, v.step, scale, '●', theme.ColorAccent, paintOver)
 
-	// Plot OBV line
-	for i, v := range obv {
-		col := i
-		if len(obv) > width {
-			col = i * width / len(obv)
-		}
-		if col >= width {
-			break
-		}
-		row := height - 1 - int((v-minV)/rng*float64(height-1))
-		row = clampRow(row, height)
-		grid[row][col] = '●'
-		gridColor[row][col] = theme.ColorAccent
-	}
+	out := panelTitle(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("OBV"))
+	return out + p.render(nil)
+}
 
-	var sb strings.Builder
-	labelWidth := 10
-	sb.WriteString(strings.Repeat(" ", labelWidth+1))
-	sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("OBV"))
-	sb.WriteString("\n")
-	for r := range height {
-		sb.WriteString(strings.Repeat(" ", labelWidth+1))
-		for c := range grid[r] {
-			ch := grid[r][c]
-			clr := gridColor[r][c]
-			if ch == ' ' {
-				sb.WriteRune(' ')
-			} else if clr != nil {
-				sb.WriteString(lipgloss.NewStyle().Foreground(clr).Render(string(ch)))
-			} else {
-				sb.WriteRune(ch)
-			}
+// finiteRange is the min and max of the finite samples in a series.
+// ok is false when the series carries no plottable value, in which case
+// the sub-panel renders nothing rather than an empty axis.
+func finiteRange(series []float64) (minV, maxV float64, ok bool) {
+	minV, maxV = math.Inf(1), math.Inf(-1)
+	for _, v := range series {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			continue
 		}
-		sb.WriteString("\n")
+		if v < minV {
+			minV = v
+		}
+		if v > maxV {
+			maxV = v
+		}
+		ok = true
 	}
-	return sb.String()
+	if !ok {
+		return 0, 0, false
+	}
+	return minV, maxV, true
 }
