@@ -43,6 +43,12 @@ func (p *Provider) FetchMacroQuotes(ctx context.Context) []provider.Quote {
 			if err != nil {
 				return
 			}
+			// Belt and braces with the guard inside fetchQuoteViaChart: a
+			// zero-priced macro tile renders as a -100% move, which is
+			// worse than showing nothing.
+			if q.Price <= 0 {
+				return
+			}
 			mu.Lock()
 			quotes = append(quotes, q)
 			mu.Unlock()

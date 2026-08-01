@@ -5,22 +5,31 @@ package fred
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/stxkxs/mkt/internal/httpx"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/symbol"
 )
-
-// Prefix marks symbols this provider handles.
-const Prefix = "FRED:"
 
 // DefaultBaseURL is the public CSV endpoint base.
 const DefaultBaseURL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+
+// maxObservations bounds how many rows parseCSV will accumulate. httpx
+// already caps the transferred bytes, but a 16 MiB CSV still decodes to
+// hundreds of thousands of OHLCV structs; this is the second half of that
+// cap, on the parsed side. The longest daily series FRED publishes is a
+// few tens of thousands of rows, so this only ever trips on a response
+// that is not really a FRED series.
+const maxObservations = 200_000
 
 // Provider implements provider.HistoryProvider for FRED series.
 type Provider struct {
@@ -43,32 +52,29 @@ func (p *Provider) SetBaseURL(u string) { p.baseURL = u }
 func (p *Provider) Name() string { return "fred" }
 
 // Supports implements provider.HistoryProvider. Returns true iff the
-// symbol carries the FRED: prefix.
-func (p *Provider) Supports(symbol string) bool {
-	return strings.HasPrefix(symbol, Prefix)
+// symbol carries the FRED: prefix, in any case — config files and CLI
+// arguments are hand-written, and a lowercase "fred:dgs10" used to match
+// no provider at all and silently route nowhere.
+func (p *Provider) Supports(s string) bool {
+	return symbol.IsFRED(s)
 }
 
 // History fetches the series and returns OHLCV with open/high/low/close
 // all equal to the observation value.
 func (p *Provider) History(ctx context.Context, params provider.HistoryParams) ([]provider.OHLCV, error) {
-	series := strings.TrimPrefix(params.Symbol, Prefix)
-	if series == "" {
-		return nil, fmt.Errorf("fred: empty series id")
-	}
-	url := fmt.Sprintf("%s?id=%s", p.baseURL, series)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	series, err := seriesID(params.Symbol)
 	if err != nil {
-		return nil, fmt.Errorf("fred: build request: %w", err)
+		return nil, err
 	}
-	resp, err := p.client.Do(req)
+	// Escape the id rather than interpolating it: it comes from user
+	// config, and a raw '&' or '?' in it would otherwise let the caller
+	// append query parameters to the fredgraph request.
+	endpoint := fmt.Sprintf("%s?id=%s", p.baseURL, url.QueryEscape(series))
+	body, err := httpx.Get(ctx, p.client, endpoint, map[string]string{"Accept": "text/csv"})
 	if err != nil {
 		return nil, fmt.Errorf("fred: get %s: %w", series, err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("fred: %s returned status %d", series, resp.StatusCode)
-	}
-	rows, err := parseCSV(resp.Body)
+	rows, err := parseCSV(bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +83,26 @@ func (p *Provider) History(ctx context.Context, params provider.HistoryParams) (
 		rows = rows[len(rows)-params.Limit:]
 	}
 	return rows, nil
+}
+
+// seriesID strips the FRED: prefix (case-insensitively) and returns the
+// canonical uppercase series id. FRED series ids are uppercase
+// alphanumerics, so anything else is rejected before it reaches the wire.
+func seriesID(sym string) (string, error) {
+	s := strings.TrimSpace(sym)
+	if !symbol.IsFRED(s) {
+		return "", fmt.Errorf("fred: %q is not a FRED symbol", sym)
+	}
+	series := strings.ToUpper(strings.TrimSpace(s[len(symbol.FREDPrefix):]))
+	if series == "" {
+		return "", fmt.Errorf("fred: empty series id")
+	}
+	for _, c := range series {
+		if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+			return "", fmt.Errorf("fred: invalid series id %q", series)
+		}
+	}
+	return series, nil
 }
 
 func parseCSV(r io.Reader) ([]provider.OHLCV, error) {
@@ -108,6 +134,9 @@ func parseCSV(r io.Reader) ([]provider.OHLCV, error) {
 		v, err := strconv.ParseFloat(val, 64)
 		if err != nil {
 			continue
+		}
+		if len(out) >= maxObservations {
+			return nil, fmt.Errorf("fred: parse: more than %d observations", maxObservations)
 		}
 		out = append(out, provider.OHLCV{
 			Time:  t,

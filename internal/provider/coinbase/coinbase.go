@@ -24,13 +24,19 @@ var wsReconnects = observe.NewCounter("mkt_provider_coinbase_ws_reconnects_total
 
 const (
 	wsURL        = "wss://advanced-trade-ws.coinbase.com"
-	restURL      = "https://api.exchange.coinbase.com"
 	reconnectMin = 1 * time.Second
 	reconnectMax = 30 * time.Second
 	// reconnectJitter randomizes up to ±this fraction of the current
 	// backoff to avoid synchronized reconnect storms when many clients
 	// see the same disconnect (e.g. a regional WS outage).
 	reconnectJitter = 0.3
+	// reconnectStable is how long a connection has to stay up before it
+	// counts as a genuine recovery rather than a flap. Resetting the
+	// backoff on any successful dial would let a server that accepts then
+	// immediately drops us spin at reconnectMin forever; requiring a
+	// stable session means real recoveries reset the delay and flapping
+	// ones keep backing off.
+	reconnectStable = 60 * time.Second
 	// WS liveness: actively ping the server on this cadence and give the
 	// pong this long to arrive. A silently half-open connection (no data,
 	// no error — common through NAT/proxies/load balancers) blocks Read
@@ -38,7 +44,13 @@ const (
 	// existing reconnect logic kicks in.
 	pingInterval = 15 * time.Second
 	pingTimeout  = 10 * time.Second
+	// maxCandlesPerRequest is the Coinbase Exchange per-request candle cap.
+	maxCandlesPerRequest = 300
 )
+
+// restURL is the Coinbase Exchange REST base; a var so tests can point it
+// at an httptest server.
+var restURL = "https://api.exchange.coinbase.com"
 
 // Provider implements QuoteProvider and HistoryProvider for Coinbase.
 type Provider struct {
@@ -71,29 +83,77 @@ func (p *Provider) StatusChan() <-chan bool {
 
 // Subscribe connects to Coinbase WebSocket and streams quotes.
 func (p *Provider) Subscribe(ctx context.Context, symbols []string, out chan<- provider.Quote) error {
-	// Normalize symbols to Coinbase format (BTC -> BTC-USD)
-	productIDs := make([]string, 0, len(symbols))
-	for _, s := range symbols {
-		productIDs = append(productIDs, toCoinbaseSymbol(s))
-	}
+	ids := productIDs(symbols)
 
-	backoff := reconnectMin
+	b := newBackoff()
 	for {
-		err := p.connect(ctx, productIDs, out)
+		established, err := p.connect(ctx, ids, out)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		wsReconnects.Inc()
-		log.Printf("coinbase ws disconnected: %v, reconnecting in %v", err, backoff)
 		p.notifyStatus(false)
+
+		delay := b.observe(established, time.Now())
+		log.Printf("coinbase ws disconnected: %v, reconnecting in %v", err, delay)
 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(jittered(backoff)):
+		case <-time.After(delay):
 		}
-		backoff = min(backoff*2, reconnectMax)
 	}
+}
+
+// productIDs normalizes a watchlist to Coinbase product IDs, preserving
+// order and dropping empties and duplicates: several spellings collapse to
+// the same product, and subscribing to one twice only doubles the inbound
+// ticker rate.
+func productIDs(symbols []string) []string {
+	out := make([]string, 0, len(symbols))
+	seen := make(map[string]bool, len(symbols))
+	for _, s := range symbols {
+		id := toCoinbaseSymbol(s)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+// backoff is the reconnect delay state for a single stream. It exists
+// because the delay used to be a bare local that only ever doubled: after
+// a couple of early blips it pinned at reconnectMax for the lifetime of
+// the process, so a connection that had been healthy for hours still
+// waited 30s to come back. observe folds each finished session into the
+// state and resets the delay when the session was genuinely healthy.
+type backoff struct {
+	cur    time.Duration // delay for the next attempt, before jitter
+	min    time.Duration
+	max    time.Duration
+	stable time.Duration // session lifetime that counts as a real recovery
+}
+
+// newBackoff returns the reconnect policy shared by the ticker and level2
+// streams.
+func newBackoff() *backoff {
+	return &backoff{cur: reconnectMin, min: reconnectMin, max: reconnectMax, stable: reconnectStable}
+}
+
+// observe folds one finished session into the backoff and returns how long
+// to wait before retrying. established is when the session came up (zero
+// if it never did) and now is the current time. A session that stayed up
+// at least b.stable resets the delay to b.min; anything shorter keeps
+// backing off toward b.max.
+func (b *backoff) observe(established, now time.Time) time.Duration {
+	if !established.IsZero() && now.Sub(established) >= b.stable {
+		b.cur = b.min
+	}
+	d := jittered(b.cur)
+	b.cur = min(b.cur*2, b.max)
+	return d
 }
 
 // jittered returns d ± up to reconnectJitter of d, full-jitter style.
@@ -104,10 +164,14 @@ func jittered(d time.Duration) time.Duration {
 	return d + time.Duration((rand.Float64()*2-1)*delta)
 }
 
-func (p *Provider) connect(ctx context.Context, productIDs []string, out chan<- provider.Quote) error {
+// connect dials, subscribes, and pumps quotes until the stream fails. It
+// returns the instant the subscription went live — zero if the connection
+// never got that far — so Subscribe can tell a real session from a
+// dial-then-drop flap when deciding whether to reset the backoff.
+func (p *Provider) connect(ctx context.Context, productIDs []string, out chan<- provider.Quote) (time.Time, error) {
 	ws, _, err := websocket.Dial(ctx, wsURL, nil)
 	if err != nil {
-		return fmt.Errorf("dial: %w", err)
+		return time.Time{}, fmt.Errorf("dial: %w", err)
 	}
 	defer ws.CloseNow()
 
@@ -121,12 +185,13 @@ func (p *Provider) connect(ctx context.Context, productIDs []string, out chan<- 
 	}
 	subData, err := json.Marshal(sub)
 	if err != nil {
-		return fmt.Errorf("marshal subscribe: %w", err)
+		return time.Time{}, fmt.Errorf("marshal subscribe: %w", err)
 	}
 	if err := ws.Write(ctx, websocket.MessageText, subData); err != nil {
-		return fmt.Errorf("write subscribe: %w", err)
+		return time.Time{}, fmt.Errorf("write subscribe: %w", err)
 	}
 
+	established := time.Now()
 	p.notifyStatus(true)
 
 	// Probe liveness in the background so a stalled-but-open stream is
@@ -138,7 +203,7 @@ func (p *Provider) connect(ctx context.Context, productIDs []string, out chan<- 
 	for {
 		_, data, err := ws.Read(connCtx)
 		if err != nil {
-			return fmt.Errorf("read: %w", err)
+			return established, fmt.Errorf("read: %w", err)
 		}
 
 		var msg wsMessage
@@ -160,7 +225,7 @@ func (p *Provider) connect(ctx context.Context, productIDs []string, out chan<- 
 				case out <- q:
 				case <-connCtx.Done():
 					ws.Close(websocket.StatusNormalClosure, "closing")
-					return connCtx.Err()
+					return established, connCtx.Err()
 				}
 			}
 		}
@@ -219,7 +284,11 @@ func tickerToQuote(t wsTicker) (provider.Quote, error) {
 	}
 
 	return provider.Quote{
-		Symbol:    t.ProductID,
+		// Re-canonicalize rather than trusting the server echo: every
+		// consumer (cache, alerts, portfolio) keys off Symbol, so it has
+		// to be the same "<BASE>-USD" string symbol.Canonical produces
+		// from user input no matter how Coinbase spells the product.
+		Symbol:    toCoinbaseSymbol(t.ProductID),
 		Price:     price,
 		Change:    change,
 		ChangePct: pctChange,
@@ -234,43 +303,87 @@ func tickerToQuote(t wsTicker) (provider.Quote, error) {
 	}, nil
 }
 
-// toCoinbaseSymbol converts various formats to Coinbase product ID.
+// quoteSuffixes are the quote-currency tails the fallback path collapses
+// onto -USD, longest first so USDT/USDC are matched before the USD they
+// end with.
+var quoteSuffixes = []string{"USDT", "USDC", "BUSD", "USD"}
+
+// toCoinbaseSymbol converts any spelling of a crypto symbol into the
+// canonical Coinbase product ID "<BASE>-USD".
+//
+// For anything symbol.IsCrypto recognizes it defers to symbol.Canonical,
+// which is what the watchlist, cache and alert engine key off. Deferring
+// rather than re-deriving is the point: the shared package also applies
+// ticker migrations (MATIC -> POL), and a private copy of the rules here
+// would silently stream POL-USD prices under a MATIC-USD key.
+//
+// The fallback only covers symbols reaching the exported History /
+// StreamOrderBook entry points directly, bypassing Supports; it folds a
+// stablecoin quote currency onto USD so a hand-typed BTC-USDT still
+// resolves to the one market mkt tracks per base asset.
 func toCoinbaseSymbol(s string) string {
-	s = strings.ToUpper(s)
-	// Already in Coinbase format
-	if strings.Contains(s, "-") {
-		return s
+	if symbol.IsCrypto(s) {
+		return symbol.Canonical(s)
 	}
-	// Strip trailing USDT/USD
-	base := s
-	if strings.HasSuffix(base, "USDT") {
-		base = strings.TrimSuffix(base, "USDT")
-	} else if strings.HasSuffix(base, "USD") {
-		base = strings.TrimSuffix(base, "USD")
+	base := strings.ToUpper(strings.TrimSpace(s))
+	if i := strings.IndexByte(base, '-'); i >= 0 {
+		base = base[:i]
+	} else {
+		for _, q := range quoteSuffixes {
+			if len(base) > len(q) && strings.HasSuffix(base, q) {
+				base = strings.TrimSuffix(base, q)
+				break
+			}
+		}
+	}
+	if base == "" {
+		return ""
 	}
 	return base + "-USD"
 }
 
-// History fetches historical OHLCV from Coinbase Exchange REST API.
+// History fetches historical OHLCV from the Coinbase Exchange REST API and
+// returns candles at exactly params.Interval, oldest first.
+//
+// Coinbase only serves 60/300/900/3600/21600/86400-second candles, so 4h
+// and 1w have no native granularity. Rather than silently returning 1h
+// candles under a "4h" label, History over-fetches at the nearest native
+// granularity and aggregates the result into buckets of the requested
+// interval (see aggregate). Callers can therefore label the series with
+// the interval they asked for.
+//
+// params.Limit counts candles at the requested interval, not native ones.
+// The Coinbase per-request cap of 300 native candles applies to the
+// over-fetch, so a large Limit at 1w yields fewer buckets than asked for
+// rather than an upstream error. The oldest bucket may cover a partial
+// period when the fetch window does not begin on a bucket boundary.
+//
 // Coinbase candle format: [time, low, high, open, close, volume]
 func (p *Provider) History(ctx context.Context, params provider.HistoryParams) ([]provider.OHLCV, error) {
 	productID := toCoinbaseSymbol(params.Symbol)
-	granularity := coinbaseGranularity(params.Interval)
+	granularity := nativeGranularity(params.Interval)
+
+	// How many native candles make up one candle at the requested interval.
+	perBucket := int(intervalDuration(params.Interval) / (time.Duration(granularity) * time.Second))
+	if perBucket < 1 {
+		perBucket = 1
+	}
 
 	limit := params.Limit
 	if limit == 0 {
 		limit = 100
 	}
-	// Coinbase max 300 candles per request
-	if limit > 300 {
-		limit = 300
+	native := limit * perBucket
+	if native > maxCandlesPerRequest {
+		native = maxCandlesPerRequest
+		limit = native / perBucket
 	}
 
 	end := time.Now()
 	if !params.End.IsZero() {
 		end = params.End
 	}
-	start := end.Add(-time.Duration(limit) * granularityDuration(granularity))
+	start := end.Add(-time.Duration(native*granularity) * time.Second)
 	if !params.Start.IsZero() {
 		start = params.Start
 	}
@@ -293,7 +406,7 @@ func (p *Provider) History(ctx context.Context, params provider.HistoryParams) (
 			continue
 		}
 		candles = append(candles, provider.OHLCV{
-			Time:   time.Unix(int64(r[0]), 0),
+			Time:   time.Unix(int64(r[0]), 0).UTC(),
 			Low:    r[1],
 			High:   r[2],
 			Open:   r[3],
@@ -301,10 +414,22 @@ func (p *Provider) History(ctx context.Context, params provider.HistoryParams) (
 			Volume: r[5],
 		})
 	}
-	return candles, nil
+	if perBucket == 1 {
+		return candles, nil
+	}
+
+	buckets := aggregate(candles, params.Interval)
+	if len(buckets) > limit {
+		buckets = buckets[len(buckets)-limit:]
+	}
+	return buckets, nil
 }
 
-func coinbaseGranularity(i provider.Interval) int {
+// nativeGranularity returns the candle granularity, in seconds, that the
+// Coinbase Exchange API will actually serve for i. Coinbase supports only
+// 60/300/900/3600/21600/86400, so 4h is served from 1h candles and 1w from
+// 1d candles; History aggregates those up before returning.
+func nativeGranularity(i provider.Interval) int {
 	switch i {
 	case provider.Interval1m:
 		return 60
@@ -312,19 +437,93 @@ func coinbaseGranularity(i provider.Interval) int {
 		return 300
 	case provider.Interval15m:
 		return 900
-	case provider.Interval1h:
+	case provider.Interval1h, provider.Interval4h:
 		return 3600
-	case provider.Interval4h:
-		return 3600 // Coinbase candles only support 60/300/900/3600/21600/86400; fall back to 1h
-	case provider.Interval1d:
+	case provider.Interval1d, provider.Interval1w:
 		return 86400
-	case provider.Interval1w:
-		return 86400 // Coinbase candles only support 60/300/900/3600/21600/86400; fall back to 1d
 	default:
 		return 86400
 	}
 }
 
-func granularityDuration(g int) time.Duration {
-	return time.Duration(g) * time.Second
+// intervalDuration is the wall-clock span of one candle History returns at
+// interval i — as opposed to nativeGranularity, which is what Coinbase
+// serves.
+func intervalDuration(i provider.Interval) time.Duration {
+	switch i {
+	case provider.Interval1m:
+		return time.Minute
+	case provider.Interval5m:
+		return 5 * time.Minute
+	case provider.Interval15m:
+		return 15 * time.Minute
+	case provider.Interval1h:
+		return time.Hour
+	case provider.Interval4h:
+		return 4 * time.Hour
+	case provider.Interval1d:
+		return 24 * time.Hour
+	case provider.Interval1w:
+		return 7 * 24 * time.Hour
+	default:
+		return 24 * time.Hour
+	}
+}
+
+// aggregate folds chronologically ordered native candles into buckets of
+// interval i: the bucket opens at the first candle's open, closes at the
+// last candle's close, and carries the extreme high/low and summed volume
+// across the bucket. Bucket timestamps are the bucket start.
+//
+// Gaps are tolerated — a bucket is emitted whenever the bucket start
+// changes, so a missing native candle shortens a bucket instead of merging
+// two of them.
+func aggregate(candles []provider.OHLCV, i provider.Interval) []provider.OHLCV {
+	if len(candles) == 0 {
+		return candles
+	}
+	out := make([]provider.OHLCV, 0, len(candles))
+	var cur provider.OHLCV
+	var open bool
+	for _, c := range candles {
+		bs := bucketStart(c.Time, i)
+		if !open || !bs.Equal(cur.Time) {
+			if open {
+				out = append(out, cur)
+			}
+			cur = provider.OHLCV{
+				Time:   bs,
+				Open:   c.Open,
+				High:   c.High,
+				Low:    c.Low,
+				Close:  c.Close,
+				Volume: c.Volume,
+			}
+			open = true
+			continue
+		}
+		if c.High > cur.High {
+			cur.High = c.High
+		}
+		if c.Low < cur.Low {
+			cur.Low = c.Low
+		}
+		cur.Close = c.Close
+		cur.Volume += c.Volume
+	}
+	return append(out, cur)
+}
+
+// bucketStart returns the UTC start of the aggregation bucket t falls in.
+// Intraday and daily buckets align to the UTC epoch; weekly buckets align
+// to Monday 00:00 UTC so a "1w" candle spans the conventional trading week
+// rather than an arbitrary 7-day offset from the zero time.
+func bucketStart(t time.Time, i provider.Interval) time.Time {
+	u := t.UTC()
+	if i == provider.Interval1w {
+		day := time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
+		offset := (int(day.Weekday()) + 6) % 7 // Monday == 0
+		return day.AddDate(0, 0, -offset)
+	}
+	return u.Truncate(intervalDuration(i))
 }

@@ -1,6 +1,153 @@
 package coinbase
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
+
+// fastBackoff keeps the reconnect policy shape but shrinks the delays so
+// the loop can be exercised in milliseconds.
+func fastBackoff(stable time.Duration) *backoff {
+	return &backoff{cur: time.Millisecond, min: time.Millisecond, max: 8 * time.Millisecond, stable: stable}
+}
+
+// drainStatus collects everything buffered on ch without blocking.
+func drainStatus(ch chan OrderBookStatus) []OrderBookStatus {
+	var out []OrderBookStatus
+	for {
+		select {
+		case s := <-ch:
+			out = append(out, s)
+		default:
+			return out
+		}
+	}
+}
+
+func TestOrderBookLoopRetriesAndReportsStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	status := make(chan OrderBookStatus, 32)
+	boom := errors.New("socket closed")
+	attempts := 0
+
+	err := orderBookLoop(ctx, "BTC-USD", fastBackoff(time.Hour), status,
+		func(ctx context.Context, onConnected func()) error {
+			attempts++
+			onConnected()
+			if attempts >= 4 {
+				cancel()
+				return ctx.Err()
+			}
+			return boom
+		})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("loop returned %v, want context.Canceled", err)
+	}
+	if attempts != 4 {
+		t.Fatalf("attempts = %d, want 4 — a dropped socket must be retried, not swallowed", attempts)
+	}
+
+	got := drainStatus(status)
+	var connected, disconnected int
+	for _, s := range got {
+		if s.ProductID != "BTC-USD" {
+			t.Errorf("status carries %q, want BTC-USD", s.ProductID)
+		}
+		if s.Connected {
+			connected++
+			if s.Err != nil || s.Retry != 0 {
+				t.Errorf("connected status should be clean: %+v", s)
+			}
+			continue
+		}
+		disconnected++
+		if !errors.Is(s.Err, boom) {
+			t.Errorf("disconnected status should carry the stream error, got %v", s.Err)
+		}
+		if s.Retry <= 0 {
+			t.Errorf("disconnected status should advertise the retry delay, got %v", s.Retry)
+		}
+		if s.At.IsZero() {
+			t.Error("status should be timestamped")
+		}
+	}
+	if connected != 4 {
+		t.Errorf("connected transitions = %d, want 4", connected)
+	}
+	if disconnected != 3 {
+		t.Errorf("disconnected transitions = %d, want 3", disconnected)
+	}
+}
+
+func TestOrderBookLoopBacksOffThenResets(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// stable=0 makes every established session count as a recovery, which
+	// is what a long-lived healthy stream looks like in production.
+	b := fastBackoff(0)
+	attempts := 0
+	err := orderBookLoop(ctx, "ETH-USD", b, nil,
+		func(ctx context.Context, onConnected func()) error {
+			attempts++
+			if attempts < 3 {
+				// Never got a subscription up: keep backing off.
+				return errors.New("dial refused")
+			}
+			if attempts == 3 {
+				onConnected()
+				return errors.New("dropped after a healthy run")
+			}
+			cancel()
+			return ctx.Err()
+		})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("loop returned %v, want context.Canceled", err)
+	}
+	// Two failed dials doubled the delay to 4ms; the healthy session reset
+	// it to 1ms and then doubled once more.
+	if b.cur != 2*time.Millisecond {
+		t.Errorf("backoff after recovery = %v, want 2ms", b.cur)
+	}
+}
+
+func TestOrderBookLoopStopsOnCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	calls := 0
+	err := orderBookLoop(ctx, "BTC-USD", fastBackoff(time.Hour), nil,
+		func(ctx context.Context, onConnected func()) error {
+			calls++
+			return ctx.Err()
+		})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("loop returned %v, want context.Canceled", err)
+	}
+	if calls != 1 {
+		t.Errorf("attempts = %d, want 1 on an already-cancelled context", calls)
+	}
+}
+
+func TestSendStatusNeverBlocks(t *testing.T) {
+	full := make(chan OrderBookStatus, 1)
+	full <- OrderBookStatus{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sendStatus(full, OrderBookStatus{ProductID: "BTC-USD"})
+		sendStatus(nil, OrderBookStatus{ProductID: "BTC-USD"})
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sendStatus blocked; a slow UI must not stall the reconnect loop")
+	}
+}
 
 func TestApplyL2Snapshot(t *testing.T) {
 	bids := map[float64]float64{}

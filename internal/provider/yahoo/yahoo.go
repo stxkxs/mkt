@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/http/cookiejar"
@@ -51,13 +50,35 @@ var yahooJSONHeaders = map[string]string{
 	"Accept":     "application/json",
 }
 
+var (
+	_ provider.QuoteProvider   = (*Provider)(nil)
+	_ provider.HistoryProvider = (*Provider)(nil)
+)
+
 // Provider implements QuoteProvider and HistoryProvider for Yahoo Finance.
 type Provider struct {
 	client       *http.Client
 	pollInterval time.Duration
 
+	// sessionMu serializes crumb acquisition. It is deliberately separate
+	// from mu: initSession holds it across network I/O (which can block for
+	// the length of a 429 cooldown), and a crumb *read* must never wait
+	// that long.
+	sessionMu sync.Mutex
+
+	// mu guards crumb only. Every read goes through crumbValue — the crumb
+	// is written by initSession and cleared by resetCrumbOnAuthError from
+	// other goroutines.
 	mu    sync.Mutex
 	crumb string
+
+	// healthMu guards the reachability signal exposed by Healthy,
+	// LastError and StatusChan.
+	healthMu sync.Mutex
+	healthy  bool
+	failures int
+	lastErr  error
+	statusCh chan bool
 }
 
 // New creates a new Yahoo Finance provider.
@@ -72,6 +93,8 @@ func New(pollInterval time.Duration) *Provider {
 			Jar:     jar,
 		},
 		pollInterval: pollInterval,
+		healthy:      true,
+		statusCh:     make(chan bool, 1),
 	}
 }
 
@@ -84,56 +107,64 @@ func (p *Provider) Supports(sym string) bool {
 	return symbol.IsStock(sym)
 }
 
-// initSession fetches Yahoo homepage to get cookies and crumb.
-func (p *Provider) initSession(ctx context.Context) error {
+// crumbValue returns the cached crumb under the lock. All crumb reads must
+// go through it; reading p.crumb directly races with initSession and
+// resetCrumbOnAuthError.
+func (p *Provider) crumbValue() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.crumb
+}
 
-	if p.crumb != "" {
+func (p *Provider) setCrumb(c string) {
+	p.mu.Lock()
+	p.crumb = c
+	p.mu.Unlock()
+}
+
+// crumbParam returns the crumb query parameter (with the given separator)
+// for endpoint building, or "" when no crumb is cached.
+func (p *Provider) crumbParam(sep string) string {
+	c := p.crumbValue()
+	if c == "" {
+		return ""
+	}
+	return sep + "crumb=" + url.QueryEscape(c)
+}
+
+// initSession fetches Yahoo homepage to get cookies and crumb.
+func (p *Provider) initSession(ctx context.Context) error {
+	p.sessionMu.Lock()
+	defer p.sessionMu.Unlock()
+
+	if p.crumbValue() != "" {
 		return nil
 	}
 
 	// Step 1: Hit finance page to get cookies
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sessionURL, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-
-	resp, err := p.client.Do(req)
+	body, _, err := p.get(ctx, sessionURL, map[string]string{
+		"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		"Accept":     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+	})
 	if err != nil {
 		return fmt.Errorf("fetch yahoo page: %w", err)
 	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, httpx.MaxResponseBytes))
-	resp.Body.Close()
 
 	// Step 2: Extract crumb from page content
-	crumbRe := regexp.MustCompile(`"crumb"\s*:\s*"([^"]+)"`)
 	matches := crumbRe.FindSubmatch(body)
 	if len(matches) >= 2 {
-		p.crumb = string(matches[1])
 		// Unescape unicode
-		p.crumb = strings.ReplaceAll(p.crumb, `\u002F`, "/")
+		p.setCrumb(strings.ReplaceAll(string(matches[1]), `\u002F`, "/"))
 		return nil
 	}
 
 	// Alternative: try the crumb endpoint directly
-	crumbReq, err := http.NewRequestWithContext(ctx, http.MethodGet, crumbURL, nil)
-	if err != nil {
-		return err
-	}
-	crumbReq.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-
-	crumbResp, err := p.client.Do(crumbReq)
+	crumbBody, _, err := p.get(ctx, crumbURL, yahooHeaders)
 	if err != nil {
 		return fmt.Errorf("fetch crumb: %w", err)
 	}
-	crumbBody, _ := io.ReadAll(io.LimitReader(crumbResp.Body, httpx.MaxResponseBytes))
-	crumbResp.Body.Close()
-
-	if crumbResp.StatusCode == 200 && len(crumbBody) > 0 {
-		p.crumb = string(crumbBody)
+	if len(crumbBody) > 0 {
+		p.setCrumb(string(crumbBody))
 		return nil
 	}
 
@@ -141,14 +172,14 @@ func (p *Provider) initSession(ctx context.Context) error {
 	return nil
 }
 
+var crumbRe = regexp.MustCompile(`"crumb"\s*:\s*"([^"]+)"`)
+
 // resetCrumbOnAuthError clears the cached crumb when err reports a 401/403,
 // so the next poll re-establishes the session. Returns whether it matched.
 func (p *Provider) resetCrumbOnAuthError(err error) bool {
 	var se *httpx.StatusError
 	if errors.As(err, &se) && (se.Code == http.StatusUnauthorized || se.Code == http.StatusForbidden) {
-		p.mu.Lock()
-		p.crumb = ""
-		p.mu.Unlock()
+		p.setCrumb("")
 		return true
 	}
 	return false
@@ -178,9 +209,22 @@ func (p *Provider) Subscribe(ctx context.Context, symbols []string, out chan<- p
 	}
 }
 
-const batchSize = 50
+const (
+	// batchSize is how many symbols one v7/finance/quote request carries.
+	batchSize = 50
+	// maxChartFallbacks bounds the per-symbol chart fallback taken when a
+	// batch fails outright. The batch itself is already retried with
+	// backoff inside getJSON, so the fallback exists only to keep a handful
+	// of symbols alive when the batch endpoint is broken for the whole
+	// list — not to re-request every symbol individually.
+	maxChartFallbacks = 8
+)
 
 func (p *Provider) fetchAndSend(ctx context.Context, symbols []string, out chan<- provider.Quote) {
+	// One log line per poll cycle at most: during a Yahoo outage every batch
+	// fails, and this process shares stderr with the TUI.
+	logged := false
+
 	// Try batch endpoint first
 	for i := 0; i < len(symbols); i += batchSize {
 		end := i + batchSize
@@ -191,9 +235,17 @@ func (p *Provider) fetchAndSend(ctx context.Context, symbols []string, out chan<
 
 		quotes, err := p.fetchBatchQuotes(ctx, batch)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			batchFailures.Inc()
-			// Fallback: parallel per-symbol chart API
-			p.fetchParallel(ctx, batch, out)
+			if !logged {
+				log.Printf("yahoo: batch quote for %d symbols failed: %v", len(batch), err)
+				logged = true
+			}
+			if !p.fetchChartFallback(ctx, batch, out) {
+				return
+			}
 			continue
 		}
 
@@ -207,34 +259,32 @@ func (p *Provider) fetchAndSend(ctx context.Context, symbols []string, out chan<
 	}
 }
 
-// fetchParallel fetches quotes for symbols concurrently using the chart API.
-// Limited to 10 concurrent requests to avoid overwhelming the API.
-func (p *Provider) fetchParallel(ctx context.Context, symbols []string, out chan<- provider.Quote) {
-	const workers = 10
-	sem := make(chan struct{}, workers)
-	var wg sync.WaitGroup
-
-	for _, sym := range symbols {
-		select {
-		case <-ctx.Done():
-			return
-		case sem <- struct{}{}:
-		}
-		wg.Add(1)
-		go func(s string) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			q, err := p.fetchQuoteViaChart(ctx, s)
-			if err != nil {
-				return
-			}
-			select {
-			case out <- q:
-			case <-ctx.Done():
-			}
-		}(sym)
+// fetchChartFallback covers for a failed batch with per-symbol chart
+// requests, capped at maxChartFallbacks symbols and issued sequentially
+// through the shared limiter. The previous implementation fanned out one
+// request per symbol, ten at a time and unthrottled: on the ~150-symbol
+// default watchlist a single 429 turned three requests into ~150, which
+// guaranteed more 429s and kept the storm going. Returns false when ctx
+// ended and the caller should stop.
+func (p *Provider) fetchChartFallback(ctx context.Context, symbols []string, out chan<- provider.Quote) bool {
+	if len(symbols) > maxChartFallbacks {
+		symbols = symbols[:maxChartFallbacks]
 	}
-	wg.Wait()
+	for _, sym := range symbols {
+		if ctx.Err() != nil {
+			return false
+		}
+		q, err := p.fetchQuoteViaChart(ctx, sym)
+		if err != nil {
+			continue
+		}
+		select {
+		case out <- q:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
 }
 
 // fetchBatchQuotes fetches quotes for multiple symbols in a single HTTP request
@@ -247,12 +297,10 @@ func (p *Provider) fetchBatchQuotes(ctx context.Context, symbols []string) ([]pr
 	joined := strings.Join(escaped, ",")
 	// Try v7 first (newer), with explicit field list to ensure high/low are returned
 	endpoint := fmt.Sprintf("%s/v7/finance/quote?symbols=%s&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,regularMarketVolume,regularMarketDayHigh,regularMarketDayLow,regularMarketPreviousClose", baseURL, joined)
-	if p.crumb != "" {
-		endpoint += "&crumb=" + url.QueryEscape(p.crumb)
-	}
+	endpoint += p.crumbParam("&")
 
 	var result batchQuoteResponse
-	if err := httpx.GetJSON(ctx, p.client, endpoint, yahooHeaders, &result); err != nil {
+	if err := p.getJSON(ctx, endpoint, yahooHeaders, &result); err != nil {
 		p.resetCrumbOnAuthError(err)
 		return nil, fmt.Errorf("yahoo batch quote: %w", err)
 	}
@@ -286,12 +334,10 @@ func (p *Provider) fetchBatchQuotes(ctx context.Context, symbols []string) ([]pr
 // fetchQuoteViaChart uses the v8 chart API which is more reliable than the quote API.
 func (p *Provider) fetchQuoteViaChart(ctx context.Context, symbol string) (provider.Quote, error) {
 	endpoint := fmt.Sprintf("%s/%s?interval=1d&range=2d", chartURL, url.PathEscape(symbol))
-	if p.crumb != "" {
-		endpoint += "&crumb=" + url.QueryEscape(p.crumb)
-	}
+	endpoint += p.crumbParam("&")
 
 	var result chartResponse
-	if err := httpx.GetJSON(ctx, p.client, endpoint, yahooHeaders, &result); err != nil {
+	if err := p.getJSON(ctx, endpoint, yahooHeaders, &result); err != nil {
 		p.resetCrumbOnAuthError(err)
 		return provider.Quote{}, fmt.Errorf("yahoo chart quote: %w", err)
 	}
@@ -308,7 +354,15 @@ func (p *Provider) fetchQuoteViaChart(ctx context.Context, symbol string) (provi
 	meta := r.Meta
 
 	price := meta.RegularMarketPrice
-	prevClose := meta.ChartPreviousClose
+	if price <= 0 {
+		// Yahoo answers 200 with a chart that omits regularMarketPrice for
+		// halted or thinly-traded symbols. Emitting it anyway produced
+		// phantom quotes downstream (price=0, changePct=-100), so treat a
+		// missing price as no data — the same guard the batch path applies.
+		return provider.Quote{}, fmt.Errorf("no price for %s", symbol)
+	}
+
+	prevClose := previousBarClose(r)
 	change := price - prevClose
 	var changePct float64
 	if prevClose > 0 {
@@ -370,37 +424,80 @@ func (p *Provider) fetchQuoteViaChart(ctx context.Context, symbol string) (provi
 	}, nil
 }
 
-// History fetches historical OHLCV data.
+// previousBarClose returns the close of the bar before the most recent one
+// in the returned series — the reference a daily change is measured against.
+// meta.chartPreviousClose is the close before the *whole requested range*
+// (with range=2d, two sessions back), so using it made every change and
+// change-percent one session stale. It is only the right answer when the
+// series holds a single bar, which is the one case we fall back to it.
+func previousBarClose(r chartResult) float64 {
+	if len(r.Indicators.Quote) > 0 {
+		var prev, last float64
+		var n int
+		for _, c := range r.Indicators.Quote[0].Close {
+			if c == nil {
+				continue
+			}
+			prev, last = last, *c
+			n++
+		}
+		if n >= 2 {
+			return prev
+		}
+	}
+	return r.Meta.ChartPreviousClose
+}
+
+// HistoryResult is a history fetch plus the interval Yahoo actually served.
+// Yahoo has no 4h bucket, so a 4h request comes back as 1h bars; a caller
+// that labels a chart should label it with Interval, not with Requested.
+type HistoryResult struct {
+	Candles   []provider.OHLCV
+	Requested provider.Interval // interval the caller asked for
+	Interval  provider.Interval // interval Yahoo actually served
+}
+
+// History fetches historical OHLCV data. It implements
+// provider.HistoryProvider; callers that need to know which interval was
+// really served should use HistoryWithMeta.
 func (p *Provider) History(ctx context.Context, params provider.HistoryParams) ([]provider.OHLCV, error) {
+	res, err := p.HistoryWithMeta(ctx, params)
+	return res.Candles, err
+}
+
+// HistoryWithMeta fetches historical OHLCV data and reports the interval
+// Yahoo served alongside it. At most params.Limit bars are returned, most
+// recent last; Limit <= 0 means "everything the range yielded".
+func (p *Provider) HistoryWithMeta(ctx context.Context, params provider.HistoryParams) (HistoryResult, error) {
 	if err := p.initSession(ctx); err != nil {
 		log.Printf("yahoo: session init failed for history %s, continuing: %v", params.Symbol, err)
 	}
+
+	out := HistoryResult{Requested: params.Interval, Interval: ServedInterval(params.Interval)}
 
 	interval := yahooInterval(params.Interval)
 	rng := yahooRange(params.Interval, params.Limit)
 
 	endpoint := fmt.Sprintf("%s/%s?interval=%s&range=%s", chartURL, url.PathEscape(params.Symbol), interval, rng)
-	if p.crumb != "" {
-		endpoint += "&crumb=" + url.QueryEscape(p.crumb)
-	}
+	endpoint += p.crumbParam("&")
 
 	var result chartResponse
-	if err := httpx.GetJSON(ctx, p.client, endpoint, yahooHeaders, &result); err != nil {
+	if err := p.getJSON(ctx, endpoint, yahooHeaders, &result); err != nil {
 		p.resetCrumbOnAuthError(err)
-		return nil, fmt.Errorf("yahoo chart history: %w", err)
+		return out, fmt.Errorf("yahoo chart history: %w", err)
 	}
 
 	if result.Chart.Error != nil {
-		return nil, fmt.Errorf("yahoo chart error: %s", result.Chart.Error.Description)
+		return out, fmt.Errorf("yahoo chart error: %s", result.Chart.Error.Description)
 	}
 
 	if len(result.Chart.Result) == 0 {
-		return nil, fmt.Errorf("no chart data for %s", params.Symbol)
+		return out, fmt.Errorf("no chart data for %s", params.Symbol)
 	}
 
 	r := result.Chart.Result[0]
 	if len(r.Indicators.Quote) == 0 {
-		return nil, fmt.Errorf("no indicators for %s", params.Symbol)
+		return out, fmt.Errorf("no indicators for %s", params.Symbol)
 	}
 
 	q := r.Indicators.Quote[0]
@@ -412,19 +509,28 @@ func (p *Provider) History(ctx context.Context, params provider.HistoryParams) (
 		if q.Open[i] == nil || q.Close[i] == nil {
 			continue
 		}
+		// High/Low/Volume are independent slices in the payload; nothing
+		// guarantees they are as long as open/close, so index each one
+		// defensively rather than dereferencing blind.
 		c := provider.OHLCV{
-			Time:  time.Unix(ts, 0),
-			Open:  deref(q.Open[i]),
-			High:  deref(q.High[i]),
-			Low:   deref(q.Low[i]),
-			Close: deref(q.Close[i]),
-		}
-		if i < len(q.Volume) && q.Volume[i] != nil {
-			c.Volume = *q.Volume[i]
+			Time:   time.Unix(ts, 0),
+			Open:   deref(q.Open[i]),
+			High:   at(q.High, i),
+			Low:    at(q.Low, i),
+			Close:  deref(q.Close[i]),
+			Volume: at(q.Volume, i),
 		}
 		candles = append(candles, c)
 	}
-	return candles, nil
+
+	// Honor the requested bar count, keeping the most recent bars — the
+	// chart ranges above are coarse (6mo, 2y), so without this a caller
+	// asking for 50 bars could get hundreds.
+	if params.Limit > 0 && len(candles) > params.Limit {
+		candles = candles[len(candles)-params.Limit:]
+	}
+	out.Candles = candles
+	return out, nil
 }
 
 func deref(f *float64) float64 {
@@ -432,6 +538,15 @@ func deref(f *float64) float64 {
 		return 0
 	}
 	return *f
+}
+
+// at returns s[i] dereferenced, or 0 when i is out of range or the entry is
+// null (Yahoo emits nulls for gapped bars).
+func at(s []*float64, i int) float64 {
+	if i < 0 || i >= len(s) {
+		return 0
+	}
+	return deref(s[i])
 }
 
 func yahooInterval(i provider.Interval) string {
@@ -453,6 +568,30 @@ func yahooInterval(i provider.Interval) string {
 	default:
 		return "1d"
 	}
+}
+
+// ServedInterval reports the bar interval Yahoo actually serves for a
+// requested one. Yahoo has no 4h bucket, so a 4h request is served as 1h
+// bars; unsupported intervals fall back to 1d. Everything else maps 1:1.
+// Exported so a caller can label a chart honestly without inspecting the
+// response.
+func ServedInterval(i provider.Interval) provider.Interval {
+	switch i {
+	case provider.Interval1m, provider.Interval5m, provider.Interval15m,
+		provider.Interval1h, provider.Interval1d, provider.Interval1w:
+		return i
+	case provider.Interval4h:
+		return provider.Interval1h
+	default:
+		return provider.Interval1d
+	}
+}
+
+// ServedInterval is the method form of the package function, so a router
+// holding this provider behind an interface can ask what it will really get
+// without importing this package or type-asserting to a concrete type.
+func (p *Provider) ServedInterval(i provider.Interval) provider.Interval {
+	return ServedInterval(i)
 }
 
 func yahooRange(i provider.Interval, limit int) string {
