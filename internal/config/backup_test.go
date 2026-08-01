@@ -21,6 +21,7 @@ func pinClock(t *testing.T, at time.Time) func(time.Duration) {
 }
 
 func TestBackupCopiesTheFile(t *testing.T) {
+	requireUnixPerms(t)
 	path := isolate(t)
 	writeConfigFile(t, path, validUserConfig)
 	pinClock(t, time.Date(2026, 8, 1, 13, 45, 30, 0, time.Local))
@@ -276,6 +277,7 @@ func TestRestoreMissingBackupFails(t *testing.T) {
 }
 
 func TestRestoredConfigIs0600(t *testing.T) {
+	requireUnixPerms(t)
 	path := isolate(t)
 	pinClock(t, time.Date(2026, 8, 1, 9, 0, 0, 0, time.Local))
 	writeConfigFile(t, path, validUserConfig)
@@ -374,7 +376,11 @@ func TestRestoreBackupIntoUnwritableDirFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Point the restore at a config dir that cannot be created.
+	// Point the restore at a config dir that cannot be created. This depends
+	// on a chmod that actually denies writes, which Windows does not provide
+	// — os.Chmod there only toggles the read-only attribute, and a read-only
+	// directory still accepts new entries.
+	requireUnixPerms(t)
 	home := t.TempDir()
 	isolateAt(t, home)
 	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o500); err != nil {

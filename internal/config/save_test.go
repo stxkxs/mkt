@@ -508,6 +508,7 @@ func TestSaveSafelyIdenticalWriteTakesNoBackup(t *testing.T) {
 }
 
 func TestSaveSafelyWrites0600(t *testing.T) {
+	requireUnixPerms(t)
 	path := isolate(t)
 	if _, err := SaveSafely(dropAll(), SaveOptions{AssumeYes: true}); err != nil {
 		t.Fatal(err)
@@ -622,23 +623,49 @@ func TestWriteAtomicNeverTruncates(t *testing.T) {
 	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Hold the original open across the write: the inode it points at must
-	// be untouched, which is what makes a mid-write crash survivable.
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
+	// On Unix the strongest available proof is to hold the original open
+	// across the write: rename swaps the directory entry, so the descriptor
+	// still sees the whole original file. That is exactly the property that
+	// makes a mid-write crash survivable — the old bytes are intact until the
+	// new file is complete.
+	//
+	// Windows has no equivalent. There is no inode to keep alive, and
+	// MoveFileEx cannot replace a target another handle has open, so the
+	// rename fails rather than succeeding invisibly. Assert the weaker but
+	// still meaningful property there: the replacement is all-or-nothing and
+	// the file is never observed as a truncated prefix.
+	if runtime.GOOS != "windows" {
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+
+		if err := writeAtomic(path, []byte("watchlist: [TSLA]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		held, err := io.ReadAll(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(held) != original {
+			t.Error("the replaced file was modified in place instead of being renamed over")
+		}
+		return
 	}
-	defer f.Close()
 
 	if err := writeAtomic(path, []byte("watchlist: [TSLA]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	held, err := io.ReadAll(f)
+	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(held) != original {
-		t.Error("the replaced file was modified in place instead of being renamed over")
+	if string(got) != "watchlist: [TSLA]\n" {
+		t.Errorf("contents = %q, want the fully replaced file", got)
+	}
+	if strings.HasPrefix(string(got), original[:64]) {
+		t.Error("the file was truncated in place rather than replaced")
 	}
 }
 
