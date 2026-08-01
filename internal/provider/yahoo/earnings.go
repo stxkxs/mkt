@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stxkxs/mkt/internal/httpx"
 	"github.com/stxkxs/mkt/internal/provider/calendar"
 )
 
@@ -69,11 +68,9 @@ func (p *Provider) FetchEarnings(ctx context.Context, tickers []string) ([]calen
 
 func (p *Provider) fetchEarningsOne(ctx context.Context, ticker string) []calendar.Event {
 	endpoint := fmt.Sprintf("%s/%s?modules=calendarEvents", QuoteSummaryURL, url.PathEscape(ticker))
-	if p.crumb != "" {
-		endpoint += "&crumb=" + url.QueryEscape(p.crumb)
-	}
+	endpoint += p.crumbParam("&")
 	var raw quoteSummaryResp
-	if err := httpx.GetJSON(ctx, p.client, endpoint, yahooJSONHeaders, &raw); err != nil {
+	if err := p.getJSON(ctx, endpoint, yahooJSONHeaders, &raw); err != nil {
 		p.resetCrumbOnAuthError(err)
 		return nil
 	}

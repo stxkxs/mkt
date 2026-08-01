@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"time"
-
-	"github.com/stxkxs/mkt/internal/httpx"
 )
 
 // OptionsBaseURL is the v7 options endpoint base; exported so tests can
@@ -65,11 +63,9 @@ func (p *Provider) FetchOptionsChain(ctx context.Context, symbol string) (Option
 		_ = err
 	}
 	endpoint := fmt.Sprintf("%s/%s", OptionsBaseURL, url.PathEscape(symbol))
-	if p.crumb != "" {
-		endpoint += "?crumb=" + url.QueryEscape(p.crumb)
-	}
+	endpoint += p.crumbParam("?")
 	var raw optionsResp
-	if err := httpx.GetJSON(ctx, p.client, endpoint, yahooJSONHeaders, &raw); err != nil {
+	if err := p.getJSON(ctx, endpoint, yahooJSONHeaders, &raw); err != nil {
 		p.resetCrumbOnAuthError(err)
 		return OptionsChain{}, fmt.Errorf("options %s: %w", symbol, err)
 	}

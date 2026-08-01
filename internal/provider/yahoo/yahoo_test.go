@@ -71,12 +71,12 @@ func TestFetchBatchQuotesResetsCrumbOn401(t *testing.T) {
 	defer swapURLs(srv.URL)()
 
 	p := New(5 * time.Second)
-	p.crumb = "stale"
+	p.setCrumb("stale")
 	if _, err := p.fetchBatchQuotes(context.Background(), []string{"AAPL"}); err == nil {
 		t.Fatal("expected error on 401")
 	}
-	if p.crumb != "" {
-		t.Errorf("crumb should be cleared after 401, got %q", p.crumb)
+	if got := p.crumbValue(); got != "" {
+		t.Errorf("crumb should be cleared after 401, got %q", got)
 	}
 }
 

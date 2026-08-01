@@ -3,8 +3,7 @@ package yahoo
 import (
 	"context"
 	"fmt"
-
-	"github.com/stxkxs/mkt/internal/httpx"
+	"net/url"
 )
 
 // SymbolSummary holds fundamental data for a symbol.
@@ -27,14 +26,12 @@ func (p *Provider) FetchSummary(ctx context.Context, symbol string) (SymbolSumma
 		_ = err // non-fatal
 	}
 
-	url := fmt.Sprintf("%s/v10/finance/quoteSummary/%s?modules=summaryDetail,defaultKeyStatistics,summaryProfile",
-		baseURL, symbol)
-	if p.crumb != "" {
-		url += "&crumb=" + p.crumb
-	}
+	endpoint := fmt.Sprintf("%s/v10/finance/quoteSummary/%s?modules=summaryDetail,defaultKeyStatistics,summaryProfile",
+		baseURL, url.PathEscape(symbol))
+	endpoint += p.crumbParam("&")
 
 	var result quoteSummaryResponse
-	if err := httpx.GetJSON(ctx, p.client, url, yahooHeaders, &result); err != nil {
+	if err := p.getJSON(ctx, endpoint, yahooHeaders, &result); err != nil {
 		p.resetCrumbOnAuthError(err)
 		return SymbolSummary{}, fmt.Errorf("yahoo summary: %w", err)
 	}

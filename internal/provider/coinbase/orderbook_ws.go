@@ -36,16 +36,99 @@ type l2Update struct {
 	NewQuantity string `json:"new_quantity"`
 }
 
+// OrderBookStatus reports a connection transition on a
+// StreamOrderBookLoop stream so the UI can mark a frozen book as stale
+// instead of rendering it as live.
+type OrderBookStatus struct {
+	ProductID string        // canonical Coinbase product ID
+	Connected bool          // true once the level2 subscription is live
+	Err       error         // why the last stream ended; nil when Connected
+	At        time.Time     // when the transition happened
+	Retry     time.Duration // wait before the next attempt; 0 when Connected
+}
+
+// StreamOrderBookLoop maintains a level2 subscription for productID for as
+// long as ctx lives, reconnecting with the same jittered exponential
+// backoff the ticker stream uses. This is the entry point UIs should use:
+// the single-shot StreamOrderBook returns on the first dropped socket, and
+// a caller that discards that error is left showing a book frozen at
+// whatever the last update happened to be, forever, with no indication.
+//
+// Book snapshots go to out (throttled to orderBookThrottle) and connection
+// transitions go to status. Both are non-blocking sends so a slow consumer
+// can never stall the reconnect loop — buffer status with room for at
+// least a couple of transitions. status may be nil to opt out.
+//
+// Returns only when ctx is cancelled, with ctx.Err(); stream failures are
+// reported on status and retried.
+func (p *Provider) StreamOrderBookLoop(ctx context.Context, productID string, out chan<- OrderBook, status chan<- OrderBookStatus) error {
+	productID = toCoinbaseSymbol(productID)
+	return orderBookLoop(ctx, productID, newBackoff(), status,
+		func(ctx context.Context, onConnected func()) error {
+			return p.streamOrderBook(ctx, productID, out, onConnected)
+		})
+}
+
+// orderBookLoop drives attempt in a reconnect loop, publishing transitions
+// on status. attempt must synchronously invoke the onConnected callback it
+// is handed as soon as its subscription is live. Split out from
+// StreamOrderBookLoop, and taking the backoff as a parameter, so the retry
+// policy is testable without a WebSocket.
+func orderBookLoop(ctx context.Context, productID string, b *backoff, status chan<- OrderBookStatus, attempt func(context.Context, func()) error) error {
+	for {
+		var established time.Time
+		err := attempt(ctx, func() {
+			established = time.Now()
+			sendStatus(status, OrderBookStatus{ProductID: productID, Connected: true, At: established})
+		})
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		wsReconnects.Inc()
+
+		delay := b.observe(established, time.Now())
+		sendStatus(status, OrderBookStatus{ProductID: productID, Err: err, At: time.Now(), Retry: delay})
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+}
+
+// sendStatus publishes a transition without ever blocking the reconnect
+// loop. A consumer that isn't draining loses the transition, not the
+// stream; the next failure re-publishes the disconnected state.
+func sendStatus(ch chan<- OrderBookStatus, s OrderBookStatus) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- s:
+	default:
+	}
+}
+
 // StreamOrderBook opens a WebSocket connection subscribed to the
 // `level2` channel for productID, maintains the book in memory by
 // applying snapshot + updates, and emits the current OrderBook on out
 // at most every orderBookThrottle. Returns when ctx is cancelled or
 // the connection errors out — caller restarts as needed.
 //
+// Prefer StreamOrderBookLoop, which does that restarting and reports
+// staleness; this is the single-shot primitive underneath it.
+//
 // out should be buffered; full sends are dropped (the next update will
 // catch up).
 func (p *Provider) StreamOrderBook(ctx context.Context, productID string, out chan<- OrderBook) error {
-	productID = toCoinbaseSymbol(productID)
+	return p.streamOrderBook(ctx, toCoinbaseSymbol(productID), out, nil)
+}
+
+// streamOrderBook is StreamOrderBook with an establishment hook. productID
+// must already be canonical. onConnected, if non-nil, is called on this
+// goroutine once the level2 subscribe has been written.
+func (p *Provider) streamOrderBook(ctx context.Context, productID string, out chan<- OrderBook, onConnected func()) error {
 	ws, _, err := websocket.Dial(ctx, wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("orderbook ws dial: %w", err)
@@ -60,6 +143,10 @@ func (p *Provider) StreamOrderBook(ctx context.Context, productID string, out ch
 	}
 	if err := ws.Write(ctx, websocket.MessageText, subData); err != nil {
 		return fmt.Errorf("orderbook write subscribe: %w", err)
+	}
+
+	if onConnected != nil {
+		onConnected()
 	}
 
 	// Probe liveness so a stalled level2 stream reconnects instead of
