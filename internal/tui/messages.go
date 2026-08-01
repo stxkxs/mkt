@@ -72,3 +72,19 @@ type CalendarUpdateMsg struct {
 
 // SpinnerTickMsg drives the braille loading spinner animation.
 type SpinnerTickMsg struct{}
+
+// UnroutableSymbolsMsg carries the symbols the hub could not route to any
+// provider (the return value of market.Hub.Start). They will never quote,
+// so the dashboard names them instead of leaving a blank row up forever.
+// Equivalent to calling App.SetUnroutable; use the message when the data
+// plane is shared by several sessions.
+type UnroutableSymbolsMsg struct {
+	Symbols []string
+}
+
+// ConfigStatusMsg carries how the config file loaded. Equivalent to
+// calling App.SetConfigStatus; use the message when the data plane is
+// shared by several sessions.
+type ConfigStatusMsg struct {
+	Status ConfigStatus
+}

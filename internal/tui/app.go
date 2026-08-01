@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"context"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,6 +15,7 @@ import (
 	"github.com/stxkxs/mkt/internal/provider/calendar"
 	"github.com/stxkxs/mkt/internal/provider/coinbase"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
+	"github.com/stxkxs/mkt/internal/symbol"
 	"github.com/stxkxs/mkt/internal/tui/alertdialog"
 	alertsview "github.com/stxkxs/mkt/internal/tui/alerts"
 	"github.com/stxkxs/mkt/internal/tui/chart"
@@ -30,6 +34,57 @@ import (
 	"github.com/stxkxs/mkt/internal/tui/theme"
 	"github.com/stxkxs/mkt/internal/tui/watchlist"
 )
+
+// ConfigStatus describes how the on-disk config file looked to the
+// loader. A degraded config does not stop the dashboard — mkt starts on
+// built-in defaults — but the session is then showing somebody else's
+// watchlist, so the App keeps a banner up for its whole lifetime and
+// says whether config writes are being refused.
+//
+// Populate it from config.LoadResult:
+//
+//	app.SetConfigStatus(tui.ConfigStatus{
+//	    Degraded:       res.Degraded,
+//	    Path:           res.Path,
+//	    Line:           res.Line,
+//	    Err:            res.Err,
+//	    WritesDisabled: res.Degraded && !force,
+//	})
+type ConfigStatus struct {
+	// Degraded is true when the config file failed to parse and this
+	// session is running on defaults.
+	Degraded bool
+	// Path is the config file that failed. Only its base name is shown.
+	Path string
+	// Line is the 1-based line the parse error points at, or 0 when the
+	// loader could not localize it.
+	Line int
+	// Err is the underlying load error. Shown when Line is unknown.
+	Err error
+	// WritesDisabled is true when this session refuses to persist config
+	// changes because it would overwrite a file it could not read.
+	WritesDisabled bool
+}
+
+// banner renders the one-line degraded-config warning.
+func (s ConfigStatus) banner() string {
+	where := filepath.Base(s.Path)
+	switch where {
+	case "", ".", string(filepath.Separator):
+		where = "config"
+	}
+	if s.Line > 0 {
+		where = fmt.Sprintf("%s:%d", where, s.Line)
+	}
+	msg := fmt.Sprintf("⚠ %s failed to parse — running on defaults.", where)
+	if s.Line <= 0 && s.Err != nil {
+		msg = fmt.Sprintf("⚠ %s failed to parse (%v) — running on defaults.", where, s.Err)
+	}
+	if s.WritesDisabled {
+		msg += " Config writes are disabled until fixed."
+	}
+	return msg
+}
 
 // App is the root TUI model.
 type App struct {
@@ -55,12 +110,24 @@ type App struct {
 	alertDialog alertdialog.Model
 	symbolInfo  symbolinfo.Model
 	help        helpview.Model
-	cache       *market.Cache
+
+	// alertEngine is kept so the router can tell whether the alerts tab
+	// actually has a rule to delete before mirroring its confirm prompt.
+	alertEngine *alert.Engine
+
+	// alertsConfirming mirrors the alerts tab's delete confirmation so
+	// the root router can hand it the next key ahead of the global quit
+	// binding. See armAlertConfirm.
+	alertsConfirming bool
+
+	// configStatus and unroutable drive the persistent notice rows drawn
+	// under the tab bar.
+	configStatus ConfigStatus
+	unroutable   []string
 }
 
 // NewApp creates the root TUI model.
 func NewApp(groups []watchlist.Group, cache *market.Cache, histProvider chart.HistoryProvider, portfolios []portfolio.Portfolio, alertEngine *alert.Engine, yahooProv *yahoo.Provider, coinbaseProv *coinbase.Provider) *App {
-	union := unionSymbols(groups)
 	a := &App{
 		activeTab:   TabWatchlist,
 		watchlist:   watchlist.New(groups, cache),
@@ -73,16 +140,124 @@ func NewApp(groups []watchlist.Group, cache *market.Cache, histProvider chart.Hi
 		news:        newsview.New(),
 		heatmap:     heatmapview.New(),
 		options:     optionsview.New(yahooProv),
-		correl:      correlview.New(union, cache),
+		correl:      correlview.New(nil, cache),
 		palette:     paletteview.New(tabNames),
 		statusbar:   statusbar.New(),
 		alertDialog: alertdialog.New(alertEngine),
 		symbolInfo:  symbolinfo.New(yahooProv),
 		help:        helpview.New(),
-		cache:       cache,
+		alertEngine: alertEngine,
 	}
+	a.SetWatchlistGroups(groups)
 	a.statusbar.SetThemeName(theme.CurrentName)
 	return a
+}
+
+// SetWatchlistGroups re-seeds every view whose universe is derived from
+// the watchlist: the heatmap's sector tiles and the correlation matrix.
+// Called by NewApp, and again by any caller that reloads the config —
+// without it, pruning a watchlist group leaves the Heatmap tab painting
+// symbols the hub no longer subscribes to.
+func (a *App) SetWatchlistGroups(groups []watchlist.Group) {
+	sectors := make([]heatmapview.Sector, 0, len(groups))
+	for _, g := range groups {
+		sectors = append(sectors, heatmapview.Sector{Name: g.Name, Symbols: canonicalAll(g.Symbols)})
+	}
+	a.heatmap.SetSectors(sectors)
+	a.correl.SetSymbols(CanonicalSymbols(groups))
+}
+
+// CanonicalSymbols returns the deduplicated union of every group's
+// symbols in the canonical spelling the hub subscribes with. It is the
+// one place the TUI derives "the symbols this session cares about", and
+// it is exported so callers that build the same list for the data plane
+// share it instead of keeping their own copy of the same loop.
+func CanonicalSymbols(groups []watchlist.Group) []string {
+	var all []string
+	for _, g := range groups {
+		all = append(all, g.Symbols...)
+	}
+	return canonicalAll(all)
+}
+
+// canonicalAll normalizes a symbol list the way the hub does and drops
+// duplicates. Both the heatmap and the correlation matrix key off
+// incoming quotes, which always carry canonical symbols, so a
+// hand-typed `btc` in the config would otherwise index a tile nothing
+// ever fills — and deduplicating before normalizing would let `btc` and
+// `BTC-USD` survive as two entries for the same instrument, which the
+// correlation matrix would then draw as two identical rows. Canonical is
+// idempotent, so this is a no-op when the caller already normalized.
+func canonicalAll(symbols []string) []string {
+	if len(symbols) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(symbols))
+	out := make([]string, 0, len(symbols))
+	for _, s := range symbols {
+		c := symbol.Canonical(s)
+		if c == "" {
+			continue
+		}
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	return out
+}
+
+// SetContext supplies the process context to the sub-models that own
+// background streams — today the detail panel's level-2 order book — so
+// they are torn down when the app exits instead of leaking a socket per
+// session. Call before Run.
+func (a *App) SetContext(ctx context.Context) {
+	a.detail.SetContext(ctx)
+}
+
+// SetBenchmark selects the symbol the portfolio tab samples alongside
+// each equity mark for its Beta readout. Pass "" to drop Beta entirely.
+// Defaults to portfolioview.DefaultBenchmark.
+func (a *App) SetBenchmark(sym string) {
+	a.portfolio.SetBenchmark(sym)
+}
+
+// SetConfigStatus records how the config file loaded. A degraded status
+// raises a banner that stays up for the whole session and marks the tab
+// bar, because a silently-defaulted watchlist looks exactly like a
+// correct one.
+func (a *App) SetConfigStatus(s ConfigStatus) {
+	a.configStatus = s
+}
+
+// SetUnroutable records the symbols the hub could not route to any
+// provider (market.Hub.Start returns them). They will never produce a
+// quote, so the dashboard says so rather than showing an empty row
+// forever.
+func (a *App) SetUnroutable(symbols []string) {
+	a.unroutable = symbols
+}
+
+// LoadConfigBanner is the Load* form of SetConfigStatus, matching the
+// optional interface the data plane wires models through. It assumes the
+// session refuses config writes, which is the default for a degraded
+// config; a caller that re-enabled them (--force) should call
+// SetConfigStatus instead so the banner does not claim otherwise.
+func (a *App) LoadConfigBanner(path string, line int, err error) {
+	a.SetConfigStatus(ConfigStatus{
+		Degraded:       true,
+		Path:           path,
+		Line:           line,
+		Err:            err,
+		WritesDisabled: true,
+	})
+}
+
+// LoadUnroutableSymbols is the Load* form of SetUnroutable, matching the
+// optional interface the data plane wires models through.
+func (a *App) LoadUnroutableSymbols(symbols []string) {
+	a.SetUnroutable(symbols)
 }
 
 // LoadPastAlerts populates the alerts tab with previously persisted
@@ -109,22 +284,6 @@ func (a *App) LoadCalendarEvents(events []calendar.Event) {
 // LoadNotes seeds the detail panel with per-symbol freeform notes.
 func (a *App) LoadNotes(notes map[string]string) {
 	a.detail.SetNotes(notes)
-}
-
-// unionSymbols returns the deduplicated union of every group's symbols.
-func unionSymbols(groups []watchlist.Group) []string {
-	seen := make(map[string]struct{})
-	var out []string
-	for _, g := range groups {
-		for _, s := range g.Symbols {
-			if _, ok := seen[s]; ok {
-				continue
-			}
-			seen[s] = struct{}{}
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 func (a *App) Init() tea.Cmd {
@@ -224,6 +383,23 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Batch(cmds...)
 		}
 
+		// A tab holding a confirm prompt sees the key before the global
+		// bindings do. The alerts tab prompts "y: confirm, any other
+		// key: cancel", so without this 'q' at the prompt quit mkt
+		// instead of cancelling the delete.
+		if a.activeTab != TabAlerts {
+			a.alertsConfirming = false
+		}
+		if a.alertsConfirming {
+			a.alertsConfirming = false
+			var cmd tea.Cmd
+			a.alerts, cmd = a.alerts.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return a, tea.Batch(cmds...)
+		}
+
 		if isQuit(msg) {
 			return a, tea.Quit
 		}
@@ -287,128 +463,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 
-		// Forward to active tab
-		switch a.activeTab {
-		case TabWatchlist:
-			switch msg.String() {
-			case "enter":
-				sym := a.watchlist.SelectedSymbol()
-				if sym != "" {
-					cmd := a.detail.SetSymbol(sym)
-					a.detail.SetActive(true)
-					return a, cmd
-				}
-				return a, nil
-			case "c":
-				sym := a.watchlist.SelectedSymbol()
-				if sym != "" {
-					cmd := a.chart.SetSymbol(sym)
-					return a, cmd
-				}
-				return a, nil
-			case "a":
-				sym := a.watchlist.SelectedSymbol()
-				if sym != "" {
-					a.compare.AddSymbol(sym)
-				}
-				return a, nil
-			case "C":
-				if len(a.compare.Symbols()) > 0 {
-					cmd := a.compare.Open()
-					return a, cmd
-				}
-				return a, nil
-			case "A":
-				sym := a.watchlist.SelectedSymbol()
-				if sym != "" {
-					price := a.watchlist.CurrentPrice(sym)
-					a.alertDialog.Open(sym, price)
-				}
-				return a, nil
-			case "i":
-				sym := a.watchlist.SelectedSymbol()
-				if sym != "" {
-					cmd := a.symbolInfo.Open(sym)
-					return a, cmd
-				}
-				return a, nil
-			case "O":
-				sym := a.watchlist.SelectedSymbol()
-				if sym != "" {
-					a.activeTab = TabOptions
-					cmd := a.options.LoadSymbol(sym)
-					return a, cmd
-				}
-				return a, nil
+		// Watchlist shortcuts open other views, so they are handled
+		// before the key reaches the watchlist model itself.
+		if a.activeTab == TabWatchlist {
+			if cmd, handled := a.watchlistShortcut(msg); handled {
+				return a, cmd
 			}
-			var cmd tea.Cmd
-			a.watchlist, cmd = a.watchlist.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-
-		case TabPortfolio:
-			var cmd tea.Cmd
-			a.portfolio, cmd = a.portfolio.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-
-		case TabAlerts:
-			var cmd tea.Cmd
-			a.alerts, cmd = a.alerts.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-
-		case TabChart:
-			var cmd tea.Cmd
-			a.chart, cmd = a.chart.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-
-		case TabMacro:
-			// Macro has no Update (no interactive keys beyond tab switching)
-
-		case TabNews:
-			var cmd tea.Cmd
-			a.news, cmd = a.news.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-
-		case TabHeatmap:
-			var cmd tea.Cmd
-			a.heatmap, cmd = a.heatmap.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-
-		case TabOptions:
-			var cmd tea.Cmd
-			a.options, cmd = a.options.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-
-		case TabCorrel:
-			var cmd tea.Cmd
-			a.correl, cmd = a.correl.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
+		}
+		if cmd := a.forwardKeyToActiveTab(msg); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 
 	case tea.MouseClickMsg:
-		if msg.Y == 0 {
-			tab := a.tabAtX(msg.X)
-			if tab >= 0 {
-				a.activeTab = tab
-			}
-			return a, nil
-		}
-		// Full-screen overlays take mouse focus before tab routing.
+		// The full-screen chart views own every row of the frame and draw
+		// no tab bar, so they have to claim the click before the tab
+		// hit-test does — otherwise a click on the chart's top row
+		// switches a tab the user cannot see.
 		if a.chart.Active() {
 			var cmd tea.Cmd
 			a.chart, cmd = a.chart.Update(msg)
@@ -425,11 +495,37 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, tea.Batch(cmds...)
 		}
-		adjusted := tea.MouseClickMsg{
-			X:      msg.X,
-			Y:      msg.Y - 1, // subtract tab bar height
-			Button: msg.Button,
+		// A centered modal is modal for the mouse as well: the key path
+		// above returns before tab switching, so a click must not do what
+		// the same modal refuses to let a key do.
+		if a.modalActive() {
+			return a, nil
 		}
+		if msg.Y < tabBarHeight {
+			tab := a.tabAtX(msg.X)
+			if tab >= 0 {
+				// The detail panel is drawn over the content area while
+				// the tab bar stays visible, so a click on a tab has to
+				// close it — otherwise the tab the user picked stays
+				// hidden behind the panel.
+				a.detail.SetActive(false)
+				a.activeTab = tab
+			}
+			return a, nil
+		}
+		// The detail panel covers the content area. Without this the
+		// click would move the selection on the watchlist behind it,
+		// invisibly, and the user would find a different row selected on
+		// closing the panel.
+		if a.detail.Active() {
+			var cmd tea.Cmd
+			a.detail, cmd = a.detail.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return a, tea.Batch(cmds...)
+		}
+		adjusted := tea.MouseClickMsg(a.toContentCoords(tea.Mouse(msg)))
 		if cmd := a.forwardMouseToActiveTab(adjusted); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -473,7 +569,21 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, tea.Batch(cmds...)
 		}
-		if cmd := a.forwardMouseToActiveTab(msg); cmd != nil {
+		if a.modalActive() {
+			return a, nil
+		}
+		// Same reasoning as the click path: the panel is on top, so the
+		// wheel must not scroll the tab hidden underneath it.
+		if a.detail.Active() {
+			var cmd tea.Cmd
+			a.detail, cmd = a.detail.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return a, tea.Batch(cmds...)
+		}
+		adjusted := tea.MouseWheelMsg(a.toContentCoords(tea.Mouse(msg)))
+		if cmd := a.forwardMouseToActiveTab(adjusted); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 
@@ -518,6 +628,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusbar.SetProviderStatus(msg.Provider, msg.Connected)
 		return a, nil
 
+	case UnroutableSymbolsMsg:
+		a.SetUnroutable(msg.Symbols)
+		return a, nil
+
+	case ConfigStatusMsg:
+		a.SetConfigStatus(msg.Status)
+		return a, nil
+
 	case theme.ChangedMsg:
 		statusbar.RebuildStyles()
 		macroview.RebuildStyles()
@@ -536,6 +654,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		a.heatmap, cmd = a.heatmap.Update(msg)
 		cmds = append(cmds, cmd)
+		a.macro, cmd = a.macro.Update(msg)
+		cmds = append(cmds, cmd)
 		a.detail, cmd = a.detail.Update(msg)
 		cmds = append(cmds, cmd)
 		a.alertDialog, cmd = a.alertDialog.Update(msg)
@@ -549,32 +669,145 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(cmds...)
 
 	default:
-		// Forward unknown messages to chart (for history loaded) and compare
-		if a.chart.Active() || a.activeTab == TabChart {
-			var cmd tea.Cmd
-			a.chart, cmd = a.chart.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
+		// Async results arrive as message types the sub-models keep
+		// private, so a model with a load in flight has to be offered
+		// every message it might be waiting on. Routing is unconditional
+		// rather than gated on the model being visible: a fetch started
+		// with 'c' or 'O' has to land even if the user tabbed away or
+		// pressed esc while it was in flight, and order-book frames
+		// stream in from a goroutine that outlives any one tab. Stale
+		// results are each model's own problem — the chart views carry a
+		// request sequence and drop anything older — so the router does
+		// not try to second-guess which one is still wanted. Dropping
+		// them here instead is what left the Options tab on "Loading…"
+		// forever and the detail panel's order book permanently empty.
+		var cmd tea.Cmd
+		a.chart, cmd = a.chart.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
 		}
-		if a.compare.Active() {
-			var cmd tea.Cmd
-			a.compare, cmd = a.compare.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
+		a.compare, cmd = a.compare.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
 		}
-		// Forward to symbol info for async load messages
-		if a.symbolInfo.Active() {
-			var cmd tea.Cmd
-			a.symbolInfo, cmd = a.symbolInfo.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
+		a.symbolInfo, cmd = a.symbolInfo.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		a.options, cmd = a.options.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		a.detail, cmd = a.detail.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 	}
 
 	return a, tea.Batch(cmds...)
+}
+
+// watchlistShortcut handles the Watch tab keys that open another view
+// (detail panel, chart, alert dialog, options chain). It reports whether
+// it consumed the key; anything it did not consume falls through to the
+// watchlist model itself.
+func (a *App) watchlistShortcut(msg tea.KeyPressMsg) (tea.Cmd, bool) {
+	sym := a.watchlist.SelectedSymbol()
+	switch msg.String() {
+	case "enter":
+		if sym != "" {
+			cmd := a.detail.SetSymbol(sym)
+			a.detail.SetActive(true)
+			return cmd, true
+		}
+		return nil, true
+	case "c":
+		if sym != "" {
+			return a.chart.SetSymbol(sym), true
+		}
+		return nil, true
+	case "a":
+		if sym != "" {
+			a.compare.AddSymbol(sym)
+		}
+		return nil, true
+	case "C":
+		if len(a.compare.Symbols()) > 0 {
+			return a.compare.Open(), true
+		}
+		return nil, true
+	case "A":
+		if sym != "" {
+			a.alertDialog.Open(sym, a.watchlist.CurrentPrice(sym))
+		}
+		return nil, true
+	case "i":
+		if sym != "" {
+			return a.symbolInfo.Open(sym), true
+		}
+		return nil, true
+	case "O":
+		if sym != "" {
+			a.activeTab = TabOptions
+			return a.options.LoadSymbol(sym), true
+		}
+		return nil, true
+	}
+	return nil, false
+}
+
+// forwardKeyToActiveTab routes a key press to the model backing the
+// active tab. Kept as one table so the normal path and the modal path
+// (a tab holding a confirm prompt) cannot drift apart.
+func (a *App) forwardKeyToActiveTab(msg tea.KeyPressMsg) tea.Cmd {
+	var cmd tea.Cmd
+	switch a.activeTab {
+	case TabWatchlist:
+		a.watchlist, cmd = a.watchlist.Update(msg)
+	case TabPortfolio:
+		a.portfolio, cmd = a.portfolio.Update(msg)
+	case TabAlerts:
+		a.alerts, cmd = a.alerts.Update(msg)
+		a.armAlertConfirm(msg)
+	case TabChart:
+		a.chart, cmd = a.chart.Update(msg)
+	case TabMacro:
+		a.macro, cmd = a.macro.Update(msg)
+	case TabNews:
+		a.news, cmd = a.news.Update(msg)
+	case TabHeatmap:
+		a.heatmap, cmd = a.heatmap.Update(msg)
+	case TabOptions:
+		a.options, cmd = a.options.Update(msg)
+	case TabCorrel:
+		a.correl, cmd = a.correl.Update(msg)
+	}
+	return cmd
+}
+
+// armAlertConfirm mirrors the alerts tab's delete confirmation. That
+// prompt resolves on the very next key press ("y" confirms, anything
+// else cancels), so a single one-shot flag is the whole state machine —
+// but the root router has to know about it, or the global quit binding
+// fires first and 'q' at the prompt kills the process. The tab exposes
+// no predicate for its own prompt, so the arming rule is mirrored here;
+// worst case the mirror is wrong by one key press, never by a lost
+// quit.
+func (a *App) armAlertConfirm(msg tea.KeyPressMsg) {
+	switch msg.String() {
+	case "d", "delete":
+		a.alertsConfirming = a.alertEngine != nil && len(a.alertEngine.Rules()) > 0
+	default:
+		a.alertsConfirming = false
+	}
+}
+
+// modalActive reports whether one of the centered overlays owns input.
+// They are drawn on top of the tab content, so anything they do not
+// handle has to be swallowed rather than delivered to the tab behind
+// them — the key path already returns early for each of these.
+func (a *App) modalActive() bool {
+	return a.palette.Active() || a.alertDialog.Active() || a.symbolInfo.Active() || a.help.Active()
 }
 
 // forwardMouseToActiveTab routes a mouse message to the model backing the
@@ -591,12 +824,16 @@ func (a *App) forwardMouseToActiveTab(msg tea.Msg) tea.Cmd {
 		a.portfolio, cmd = a.portfolio.Update(msg)
 	case TabAlerts:
 		a.alerts, cmd = a.alerts.Update(msg)
+	case TabMacro:
+		a.macro, cmd = a.macro.Update(msg)
 	case TabNews:
 		a.news, cmd = a.news.Update(msg)
 	case TabHeatmap:
 		a.heatmap, cmd = a.heatmap.Update(msg)
 	case TabOptions:
 		a.options, cmd = a.options.Update(msg)
+	case TabCorrel:
+		a.correl, cmd = a.correl.Update(msg)
 	}
 	return cmd
 }
@@ -626,20 +863,14 @@ func (a *App) View() tea.View {
 
 	// Detail panel overlay
 	if a.detail.Active() {
-		tabBar := a.renderTabBar()
-		statusBar := a.statusbar.View()
 		contentW, contentH := a.contentSize(a.width, a.height)
 		a.detail.SetSize(contentW, contentH)
-		content := a.detail.View()
-		panel := a.renderContentPanel("Detail", content, contentH)
-		s := lipgloss.JoinVertical(lipgloss.Left, tabBar, panel, statusBar)
+		panel := a.renderContentPanel("Detail", a.detail.View(), contentH)
+		s := a.frame(panel, a.statusbar.View())
 		v := tea.NewView(s)
 		v.AltScreen = true
 		return withMouse(v)
 	}
-
-	tabBar := a.renderTabBar()
-	statusBar := a.statusbar.View()
 
 	contentW, contentH := a.contentSize(a.width, a.height)
 	var content string
@@ -674,15 +905,11 @@ func (a *App) View() tea.View {
 
 	panel := a.renderContentPanel(tabNames[a.activeTab], content, contentH)
 
-	bottom := statusBar
+	bottom := a.statusbar.View()
 	if a.palette.Active() {
-		bottom = a.palette.View(a.width) + "\n" + statusBar
+		bottom = a.palette.View(a.width) + "\n" + bottom
 	}
-	s := lipgloss.JoinVertical(lipgloss.Left,
-		tabBar,
-		panel,
-		bottom,
-	)
+	s := a.frame(panel, bottom)
 
 	// Overlay: alert dialog
 	if a.alertDialog.Active() {
@@ -702,6 +929,19 @@ func (a *App) View() tea.View {
 	v := tea.NewView(s)
 	v.AltScreen = true
 	return withMouse(v)
+}
+
+// frame stacks the fixed chrome around a rendered content panel: tab
+// bar, persistent notice rows, panel, then the bottom block. Every view
+// path goes through it so the notice rows can never be drawn on one tab
+// and skipped on another — which would also desynchronize the mouse
+// offset from what is on screen.
+func (a *App) frame(panel, bottom string) string {
+	rows := make([]string, 0, 4)
+	rows = append(rows, a.renderTabBar())
+	rows = append(rows, a.renderNotices()...)
+	rows = append(rows, panel, bottom)
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
 // overlayCenter composites overlay on top of bg, centered. The underlying
@@ -737,15 +977,55 @@ func withMouseAllMotion(v tea.View) tea.View {
 	return v
 }
 
+// Fixed chrome rows around the content panel.
+const (
+	tabBarHeight    = 1
+	statusBarHeight = 1
+)
+
 // usePanelBorders returns true if the terminal is large enough for panel borders.
 func (a *App) usePanelBorders() bool {
 	return a.width >= 30 && a.height >= 15
 }
 
+// notices returns the persistent warnings drawn under the tab bar, in
+// priority order. They are facts about the whole session rather than
+// transient toasts, so they are never dismissible: a silently-defaulted
+// config or a symbol that routes nowhere looks exactly like a working
+// dashboard otherwise.
+func (a *App) notices() []string {
+	var out []string
+	if a.configStatus.Degraded {
+		out = append(out, a.configStatus.banner())
+	}
+	if n := len(a.unroutable); n > 0 {
+		noun := "symbols route"
+		if n == 1 {
+			noun = "symbol routes"
+		}
+		out = append(out, fmt.Sprintf("⚠ %d %s to no provider: %s",
+			n, noun, strings.Join(a.unroutable, ", ")))
+	}
+	return out
+}
+
+// renderNotices styles the notice rows and clips them to the frame.
+func (a *App) renderNotices() []string {
+	src := a.notices()
+	if len(src) == 0 {
+		return nil
+	}
+	style := lipgloss.NewStyle().Foreground(theme.ColorYellow)
+	out := make([]string, 0, len(src))
+	for _, n := range src {
+		out = append(out, style.Render(format.Truncate(n, a.width)))
+	}
+	return out
+}
+
 // contentSize returns the width and height available for content inside the panel.
 func (a *App) contentSize(totalW, totalH int) (int, int) {
-	// tab bar (1) + status bar (1) = 2
-	h := totalH - 2
+	h := totalH - tabBarHeight - statusBarHeight - len(a.notices())
 	w := totalW
 	if a.usePanelBorders() {
 		h -= 2 // top + bottom border
@@ -758,6 +1038,31 @@ func (a *App) contentSize(totalW, totalH int) (int, int) {
 		w = 1
 	}
 	return w, h
+}
+
+// contentOrigin returns the screen coordinate of the top-left cell of the
+// tab content: past the tab bar, past any notice rows, and past the
+// panel's own border when one is drawn. Mouse coordinates are translated
+// by it, so the hit-test is derived from the same layout the renderer
+// uses instead of a second copy of the arithmetic. The missing border row
+// here is what made every click on Watch/Portfolio/Alerts select the row
+// below the one under the cursor.
+func (a *App) contentOrigin() (int, int) {
+	x, y := 0, tabBarHeight+len(a.notices())
+	if a.usePanelBorders() {
+		x++ // left border column
+		y++ // top border row
+	}
+	return x, y
+}
+
+// toContentCoords rebases a mouse event from screen coordinates into the
+// active tab's content coordinates.
+func (a *App) toContentCoords(m tea.Mouse) tea.Mouse {
+	x, y := a.contentOrigin()
+	m.X -= x
+	m.Y -= y
+	return m
 }
 
 // renderContentPanel wraps content in a bordered panel with an embedded title.
@@ -775,13 +1080,10 @@ func (a *App) renderContentPanel(title, content string, contentH int) string {
 	titleRendered := theme.StylePanelTitle.Render(" " + title + " ")
 	titleVisualWidth := lipgloss.Width(titleRendered)
 	topFillLen := innerWidth - 1 - titleVisualWidth // "─" + title + fill
-	if topFillLen < 0 {
-		topFillLen = 0
-	}
-	top := theme.StyleBorderChar.Render("╭─") + titleRendered + theme.StyleBorderChar.Render(strings.Repeat("─", topFillLen)+"╮")
+	top := theme.StyleBorderChar.Render("╭─") + titleRendered + theme.StyleBorderChar.Render(format.Repeat("─", topFillLen)+"╮")
 
 	// Bottom border: ╰────────────────────────────────╯
-	bottom := theme.StyleBorderChar.Render("╰" + strings.Repeat("─", innerWidth) + "╯")
+	bottom := theme.StyleBorderChar.Render("╰" + format.Repeat("─", innerWidth) + "╯")
 
 	// Content lines with side borders
 	contentRendered := lipgloss.NewStyle().
@@ -795,14 +1097,9 @@ func (a *App) renderContentPanel(title, content string, contentH int) string {
 	sb.WriteString("\n")
 	border := theme.StyleBorderChar.Render("│")
 	for _, line := range lines {
-		lineW := lipgloss.Width(line)
-		pad := innerWidth - lineW
-		if pad < 0 {
-			pad = 0
-		}
 		sb.WriteString(border)
 		sb.WriteString(line)
-		sb.WriteString(strings.Repeat(" ", pad))
+		sb.WriteString(format.Spaces(innerWidth - lipgloss.Width(line)))
 		sb.WriteString(border)
 		sb.WriteString("\n")
 	}
@@ -811,37 +1108,30 @@ func (a *App) renderContentPanel(title, content string, contentH int) string {
 	return sb.String()
 }
 
-func (a *App) renderTabBar() string {
-	sep := theme.StyleTabSeparator.Render(" │ ")
+// tabBarLeadPad is the leading pad rendered before the first tab label.
+const tabBarLeadPad = 1
 
-	var parts []string
-	for i, name := range tabNames {
-		indicator := "◇"
-		style := theme.StyleTabInactive
-		if Tab(i) == a.activeTab {
-			indicator = "◆"
-			style = theme.StyleTabActive
-		}
-		parts = append(parts, style.Render(indicator+" "+name))
-	}
-
-	bar := theme.StyleTabBar.Render(" ") + strings.Join(parts, sep)
-	right := theme.StyleBranding.Render("▸ mkt ")
-	barW := lipgloss.Width(bar)
-	rightW := lipgloss.Width(right)
-	pad := a.width - barW - rightW
-	if pad < 0 {
-		pad = 0
-	}
-	filler := theme.StyleTabBar.Render(strings.Repeat(" ", pad))
-	return lipgloss.JoinHorizontal(lipgloss.Top, bar, filler, right)
+// tabSegment is one tab label as drawn in the tab bar, together with the
+// column range it occupies.
+type tabSegment struct {
+	text  string
+	start int
+	width int
 }
 
-// tabAtX returns which tab index was clicked at the given X coordinate, or -1.
-func (a *App) tabAtX(x int) Tab {
-	sep := theme.StyleTabSeparator.Render(" │ ")
-	sepW := lipgloss.Width(sep)
-	cumX := 1 // leading space from StyleTabBar " "
+// tabSeparator is the glyph drawn between two tab labels.
+func tabSeparator() string {
+	return theme.StyleTabSeparator.Render(" │ ")
+}
+
+// tabSegments lays the tab labels out left to right. renderTabBar draws
+// these and tabAtX hit-tests them, so the geometry on screen and the
+// geometry the mouse is measured against are the same numbers rather
+// than two copies of the same arithmetic.
+func (a *App) tabSegments() []tabSegment {
+	sepW := lipgloss.Width(tabSeparator())
+	segs := make([]tabSegment, 0, len(tabNames))
+	x := tabBarLeadPad
 	for i, name := range tabNames {
 		indicator := "◇"
 		style := theme.StyleTabInactive
@@ -851,10 +1141,50 @@ func (a *App) tabAtX(x int) Tab {
 		}
 		text := style.Render(indicator + " " + name)
 		w := lipgloss.Width(text)
-		if x >= cumX && x < cumX+w {
+		segs = append(segs, tabSegment{text: text, start: x, width: w})
+		x += w + sepW
+	}
+	return segs
+}
+
+func (a *App) renderTabBar() string {
+	segs := a.tabSegments()
+	parts := make([]string, 0, len(segs))
+	for _, s := range segs {
+		parts = append(parts, s.text)
+	}
+
+	bar := theme.StyleTabBar.Render(format.Spaces(tabBarLeadPad)) + strings.Join(parts, tabSeparator())
+
+	// Right side: the degraded-config marker rides alongside the
+	// branding so the warning is on every tab, not only the tabs whose
+	// content happens to mention it. It is dropped rather than allowed
+	// to push the bar past the frame — the notice row below carries the
+	// same warning and is never dropped.
+	barW := lipgloss.Width(bar)
+	right := theme.StyleBranding.Render("▸ mkt ")
+	if a.configStatus.Degraded {
+		marker := lipgloss.NewStyle().
+			Background(theme.ColorTabBg).
+			Foreground(theme.ColorYellow).
+			Bold(true).
+			Render("⚠ config ")
+		if barW+lipgloss.Width(marker)+lipgloss.Width(right) <= a.width {
+			right = marker + right
+		}
+	}
+
+	pad := a.width - barW - lipgloss.Width(right)
+	filler := theme.StyleTabBar.Render(format.Spaces(pad))
+	return lipgloss.JoinHorizontal(lipgloss.Top, bar, filler, right)
+}
+
+// tabAtX returns which tab index was clicked at the given X coordinate, or -1.
+func (a *App) tabAtX(x int) Tab {
+	for i, s := range a.tabSegments() {
+		if x >= s.start && x < s.start+s.width {
 			return Tab(i)
 		}
-		cumX += w + sepW
 	}
 	return -1
 }
