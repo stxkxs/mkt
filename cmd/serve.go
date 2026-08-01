@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -95,15 +97,20 @@ func runServe(cmd *cobra.Command, args []string) error {
 	defer cancel()
 	b.startDataPlane(ctx)
 
+	sessions := newSessionRegistry()
+	go poll(ctx, serveDropInterval, func() { sessions.logDrops(b) })
+
 	// Per-session: fresh model, its own program wired to the SSH PTY, and a
 	// broadcaster registration torn down when the session's context ends.
 	handler := func(sess ssh.Session) *tea.Program {
-		app := b.buildApp()
+		app := b.buildApp(ctx)
 		p := tea.NewProgram(app, bubbletea.MakeOptions(sess)...)
 		b.bc.Add(p)
+		sessions.add(p, sess.RemoteAddr().String())
 		go func() {
 			<-sess.Context().Done()
 			b.bc.Remove(p)
+			sessions.remove(p)
 		}()
 		return p
 	}
@@ -146,6 +153,64 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("mkt serve: %w", err)
 	}
 	return nil
+}
+
+// serveDropInterval is how often the shared data plane reports back-pressure.
+const serveDropInterval = 5 * time.Minute
+
+// sessionRegistry tracks the live SSH sessions so back-pressure can be
+// attributed to one of them.
+//
+// broadcast.Broadcaster.DropsFor answers "which session is wedged", but only
+// if the caller still holds the sender it registered — the broadcaster does
+// not hand its subscribers back. Keeping the mapping here is what turns "the
+// data plane is dropping messages" into "the session from 10.0.0.7 is".
+type sessionRegistry struct {
+	mu    sync.Mutex
+	peers map[*tea.Program]string
+}
+
+func newSessionRegistry() *sessionRegistry {
+	return &sessionRegistry{peers: make(map[*tea.Program]string)}
+}
+
+func (r *sessionRegistry) add(p *tea.Program, peer string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.peers[p] = peer
+}
+
+func (r *sessionRegistry) remove(p *tea.Program) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.peers, p)
+}
+
+// logDrops reports every lossy path, and stays silent while everything is
+// keeping up so a healthy server produces no periodic noise.
+func (r *sessionRegistry) logDrops(b *backend) {
+	if d := b.hub.Drops(); d > 0 {
+		log.Printf("serve: hub dropped %d quote(s) on the UI dispatch path", d)
+	}
+	if d := b.hub.ObserverDrops(); d > 0 {
+		log.Printf("serve: hub dropped %d quote(s) on the reliable path — an observer is wedged (backlog %d)",
+			d, b.hub.ObserverBacklog())
+	}
+	if d := b.alertEngine.NotifyDrops(); d > 0 {
+		log.Printf("serve: %d notification(s) dropped (queue full or rate limited)", d)
+	}
+	total := b.bc.Drops()
+	if total == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	log.Printf("serve: broadcaster dropped %d message(s) across %d session(s)", total, len(r.peers))
+	for p, peer := range r.peers {
+		if d := b.bc.DropsFor(p); d > 0 {
+			log.Printf("serve:   %s is behind — %d message(s) dropped", peer, d)
+		}
+	}
 }
 
 // loadAuthorizedKeys builds the public-key allowlist from the inline

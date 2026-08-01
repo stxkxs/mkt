@@ -6,17 +6,9 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/stxkxs/mkt/internal/alert"
-	"github.com/stxkxs/mkt/internal/config"
-	"github.com/stxkxs/mkt/internal/market"
-	"github.com/stxkxs/mkt/internal/provider"
-	"github.com/stxkxs/mkt/internal/provider/coinbase"
-	"github.com/stxkxs/mkt/internal/provider/yahoo"
 )
 
 func init() {
@@ -26,99 +18,59 @@ func init() {
 		Long: `Subscribes to the configured providers, evaluates alerts, and fires
 all configured notifiers (desktop, webhook, ntfy, Pushover, history)
 without showing a TUI. Useful on a VPS / always-on machine. Stops on
-SIGTERM or SIGINT.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
+SIGTERM or SIGINT.
 
-			// Pick the union of every configured watchlist group
-			symbols := append([]string(nil), cfg.Watchlist...)
-			for _, w := range cfg.Watchlists {
-				symbols = append(symbols, w.Symbols...)
-			}
-			symbols = dedupeStrings(symbols)
-			if len(symbols) == 0 {
-				return fmt.Errorf("no symbols configured")
-			}
-
-			cache := market.NewCache(cfg.SparklineLen)
-			coinbaseProv := coinbase.New()
-			yahooProv := yahoo.New(cfg.PollDuration())
-			hub := market.NewHub(cache, coinbaseProv, yahooProv)
-
-			// Alert engine + notifiers (mirror dashboard wiring).
-			engine := alert.NewEngine(5*time.Minute, nil)
-			var rules []alert.Rule
-			for _, r := range cfg.Alerts {
-				var subs []alert.SubCondition
-				for _, s := range r.Conditions {
-					subs = append(subs, alert.SubCondition{
-						Type:   alert.Condition(s.Condition),
-						Value:  s.Value,
-						Period: s.Period,
-					})
-				}
-				rules = append(rules, alert.Rule{
-					Symbol:     r.Symbol,
-					Condition:  alert.Condition(r.Condition),
-					Value:      r.Value,
-					Period:     r.Period,
-					Enabled:    r.Enabled,
-					Webhooks:   r.Webhooks,
-					Conditions: subs,
-					Match:      r.Match,
-				})
-			}
-			engine.SetRules(rules)
-			engine.SetPriceSource(cache)
-			// Same notifier gating as the dashboard/serve path (--no-notify,
-			// --no-desktop-notify, notifications:false, per-notifier cap).
-			registerNotifiers(engine, cfg, optsFromFlags(cmd, false))
-			historyFile := alert.NewHistoryFile(filepath.Join(config.ConfigDir(), "alert-history.ndjson"), 500)
-			engine.AddNotifier(alert.NewHistoryNotifier(historyFile))
-
-			// Lifecycle: cancel on SIGTERM / SIGINT.
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			sigs := make(chan os.Signal, 1)
-			signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-			go func() {
-				sig := <-sigs
-				log.Printf("daemon: caught %v, shutting down", sig)
-				cancel()
-			}()
-
-			// Read-only HTTP surface, gated identically to the dashboard path
-			// (honors --require-token / --enable-webhook).
-			apiShutdown, err := startReadAPI(cmd, cache, engine, optsFromFlags(cmd, false))
-			if err != nil {
-				return err
-			}
-			defer apiShutdown()
-
-			log.Printf("daemon: watching %d symbols, %d alert rules", len(symbols), len(rules))
-			hub.Start(ctx, symbols, func(q provider.Quote) {
-				engine.Check(q)
-			})
-
-			<-ctx.Done()
-			return nil
-		},
+The daemon runs the same data plane as the dashboard, so it also keeps
+the portfolio equity curve, news, macro, futures and calendar histories
+up to date — previously those only advanced while a TUI was open.`,
+		RunE: runDaemon,
 	}
+	daemonCmd.Flags().Bool("force", false,
+		"start and keep writing config even when the config file does not parse (a timestamped backup is taken before any write)")
 	rootCmd.AddCommand(daemonCmd)
 }
 
-func dedupeStrings(in []string) []string {
-	seen := make(map[string]struct{}, len(in))
-	var out []string
-	for _, s := range in {
-		if _, ok := seen[s]; ok {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
+// runDaemon runs the shared backend headless.
+//
+// It deliberately owns no TUI-specific state: setupBackend and startDataPlane
+// are the same calls `mkt` and `mkt serve` make, and broadcast.Send with no
+// attached senders is a no-op, so every poller, the equity marker and the
+// history seeding all run exactly as they do under the dashboard. Keeping one
+// implementation is the point — a hand-copied daemon is how it ended up
+// producing no equity marks, no news and no calendar at all.
+func runDaemon(cmd *cobra.Command, args []string) error {
+	b, cleanup, err := setupBackend(optsFromFlags(cmd, false))
+	if err != nil {
+		return err
 	}
-	return out
+	defer cleanup()
+
+	if len(b.symbols) == 0 {
+		return fmt.Errorf("no symbols configured")
+	}
+
+	// Lifecycle: cancel on SIGTERM / SIGINT.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigs
+		log.Printf("daemon: caught %v, shutting down", sig)
+		cancel()
+	}()
+
+	// Read-only HTTP surface, gated identically to the dashboard path
+	// (honors --require-token / --enable-webhook).
+	apiShutdown, err := b.startAPIIfRequested(cmd)
+	if err != nil {
+		return err
+	}
+	defer apiShutdown()
+
+	log.Printf("daemon: watching %d symbols, %d alert rules", len(b.symbols), len(b.alertEngine.Rules()))
+	b.startDataPlane(ctx)
+
+	<-ctx.Done()
+	return nil
 }
