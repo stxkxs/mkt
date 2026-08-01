@@ -86,6 +86,146 @@ func TestRemoveSymbol(t *testing.T) {
 	}
 }
 
+// AddSymbol canonicalizes on the way in, which is what makes
+// `mkt config add btc` put a symbol in the watchlist that the Coinbase feed
+// will actually price.
+func TestAddSymbolCanonicalizes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		start []string
+		add   string
+		added bool
+		want  []string
+	}{
+		{"lowercase stock", []string{}, "aapl", true, []string{"AAPL"}},
+		{"bare crypto base", []string{}, "btc", true, []string{"BTC-USD"}},
+		{"binance spelling", []string{}, "BTCUSDT", true, []string{"BTC-USD"}},
+		{"surrounding space", []string{}, "  eth  ", true, []string{"ETH-USD"}},
+		{"fred series", []string{}, "fred:dgs10", true, []string{"FRED:DGS10"}},
+		{"duplicate in another spelling", []string{"BTC-USD"}, "btc", false, []string{"BTC-USD"}},
+		{"duplicate of a stock", []string{"AAPL"}, "aapl", false, []string{"AAPL"}},
+		{"blank is rejected", []string{"AAPL"}, "   ", false, []string{"AAPL"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Config{Watchlist: append([]string(nil), tc.start...)}
+			if got := c.AddSymbol(tc.add); got != tc.added {
+				t.Errorf("AddSymbol(%q) = %v, want %v", tc.add, got, tc.added)
+			}
+			if !reflect.DeepEqual(c.Watchlist, tc.want) {
+				t.Errorf("watchlist after AddSymbol(%q) = %v, want %v", tc.add, c.Watchlist, tc.want)
+			}
+		})
+	}
+}
+
+func TestRemoveSymbolCanonicalizes(t *testing.T) {
+	t.Parallel()
+	c := &Config{Watchlist: []string{"AAPL", "BTC-USD", "FRED:DGS10"}}
+	if !c.RemoveSymbol("btc") {
+		t.Error("RemoveSymbol(btc) should drop BTC-USD")
+	}
+	if !c.RemoveSymbol("fred:dgs10") {
+		t.Error("RemoveSymbol(fred:dgs10) should drop FRED:DGS10")
+	}
+	if !reflect.DeepEqual(c.Watchlist, []string{"AAPL"}) {
+		t.Errorf("watchlist = %v, want [AAPL]", c.Watchlist)
+	}
+	if c.RemoveSymbol("") {
+		t.Error("RemoveSymbol(\"\") should be a no-op")
+	}
+}
+
+// Everything the config addresses by symbol is canonicalized on load, so a
+// hand-edited file lines up with the quotes flowing through the hub.
+func TestLoadCanonicalizesEverySymbol(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	cfgDir := filepath.Join(dir, ".config", "mkt")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := `watchlist:
+  - btc
+  - aapl
+  - BTC-USD
+watchlists:
+  - name: Mine
+    symbols: [eth, msft]
+alerts:
+  - symbol: btcusdt
+    condition: above
+    value: 100000
+    enabled: true
+portfolios:
+  - name: Mine
+    holdings:
+      - symbol: sol
+        quantity: 10
+        cost_basis: 100
+    transactions:
+      - type: buy
+        symbol: sol
+        quantity: 10
+        price: 100
+notes:
+  btc: digital gold
+`
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// "btc" and "BTC-USD" collapse onto one entry, in first-seen order.
+	if !reflect.DeepEqual(cfg.Watchlist, []string{"BTC-USD", "AAPL"}) {
+		t.Errorf("watchlist = %v, want [BTC-USD AAPL]", cfg.Watchlist)
+	}
+	if len(cfg.Watchlists) != 1 || !reflect.DeepEqual(cfg.Watchlists[0].Symbols, []string{"ETH-USD", "MSFT"}) {
+		t.Errorf("watchlist group = %+v", cfg.Watchlists)
+	}
+	if len(cfg.Alerts) != 1 || cfg.Alerts[0].Symbol != "BTC-USD" {
+		t.Errorf("alert symbol = %+v", cfg.Alerts)
+	}
+	if len(cfg.Portfolios) != 1 {
+		t.Fatalf("portfolios = %+v", cfg.Portfolios)
+	}
+	if got := cfg.Portfolios[0].Holdings[0].Symbol; got != "SOL-USD" {
+		t.Errorf("holding symbol = %q, want SOL-USD", got)
+	}
+	if got := cfg.Portfolios[0].Transactions[0].Symbol; got != "SOL-USD" {
+		t.Errorf("transaction symbol = %q, want SOL-USD", got)
+	}
+	if cfg.Notes["BTC-USD"] != "digital gold" {
+		t.Errorf("notes = %+v, want the note keyed BTC-USD", cfg.Notes)
+	}
+}
+
+func TestCanonicalSymbols(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"nil stays nil", nil, nil},
+		{"canonicalizes", []string{"btc", "aapl"}, []string{"BTC-USD", "AAPL"}},
+		{"dedupes across spellings", []string{"btc", "BTC-USD", "BTCUSDT"}, []string{"BTC-USD"}},
+		{"drops blanks", []string{"AAPL", "", "  "}, []string{"AAPL"}},
+		{"preserves order", []string{"c", "b", "a"}, []string{"C", "B", "A"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := canonicalSymbols(tc.in); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("canonicalSymbols(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestLoadCreatesDefaultsWhenMissing isolates HOME to a tempdir so the
 // real ~/.config/mkt/config.yaml is not touched. The first Load on a
 // fresh dir writes defaults; the second Load reads what was written.

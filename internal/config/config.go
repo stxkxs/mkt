@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/spf13/viper"
+	"github.com/stxkxs/mkt/internal/symbol"
+	"gopkg.in/yaml.v3"
 )
 
 // Holding represents a portfolio position from config.
@@ -160,8 +163,44 @@ func configPath() string {
 	return filepath.Join(ConfigDir(), "config.yaml")
 }
 
-// Load reads the config file, creating defaults if it doesn't exist.
+// LoadResult reports how the config file was resolved, so a caller can tell
+// a healthy load apart from one that fell back to defaults because the file
+// on disk is broken. Degraded is the case that matters: the file exists but
+// does not parse, Config holds defaults rather than the user's settings, and
+// every write must be refused until the file is repaired (see SaveSafely).
+type LoadResult struct {
+	Config   *Config
+	Degraded bool  // file existed but could not be parsed; Config holds defaults
+	Err      error // the parse error, nil unless Degraded
+	Path     string
+	Line     int // best-effort 1-based line from the YAML error; 0 if unknown
+}
+
+// Load reads the config file, creating defaults if it doesn't exist. A file
+// that exists but cannot be parsed is not an error here — the dashboard
+// still starts on defaults. Callers that need to know about that (anything
+// that will later write, or wants to warn the user) should use
+// LoadWithResult instead.
 func Load() (*Config, error) {
+	res, err := LoadWithResult()
+	if err != nil {
+		return nil, err
+	}
+	return res.Config, nil
+}
+
+// LoadWithResult reads the config file and reports how it went. There are
+// exactly three outcomes:
+//
+//   - the file is absent: defaults are seeded and written, Degraded is false;
+//   - the file parses: the user's settings are returned, Degraded is false;
+//   - the file exists but fails to parse: Config holds defaults, Degraded is
+//     true, and Err / Path / Line describe the failure.
+//
+// The error return is reserved for problems that make the config unusable
+// (an unwritable config dir, a decode failure against the struct) — a bad
+// file on disk is reported through LoadResult, not through err.
+func LoadWithResult() (*LoadResult, error) {
 	dir := ConfigDir()
 	// 0o700: holdings and alert rules are user-private; don't expose to other local users.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -173,8 +212,11 @@ func Load() (*Config, error) {
 	// holds holdings + bearer/pushover/webhook secrets — keep it private.
 	_ = os.Chmod(dir, 0o700)
 
+	path := configPath()
+	res := &LoadResult{Path: path}
+
 	v := viper.New()
-	v.SetConfigFile(configPath())
+	v.SetConfigFile(path)
 	v.SetConfigType("yaml")
 	v.SetConfigPermissions(0o600) // secrets at rest — not world-readable
 
@@ -201,11 +243,17 @@ func Load() (*Config, error) {
 			v.SetDefault("alerts", DefaultAlerts)
 			v.SetDefault("edgar_tickers", DefaultEDGARTickers)
 			v.SetDefault("notes", DefaultNotes)
-			if werr := v.WriteConfig(); werr != nil {
-				fmt.Fprintf(os.Stderr, "config: could not write default config to %s: %v\n", configPath(), werr)
+			if werr := writeSeed(path, v.AllSettings()); werr != nil {
+				fmt.Fprintf(os.Stderr, "config: could not write default config to %s: %v\n", path, werr)
 			}
+		} else {
+			// The file is there but unreadable or unparseable. Fall through
+			// with defaults so the dashboard still starts, but record it so
+			// the caller can warn and so every write gets refused.
+			res.Degraded = true
+			res.Err = err
+			res.Line = yamlErrorLine(err)
 		}
-		// Any other read error is non-fatal — fall through with defaults.
 	}
 	// Correct perms on an existing file that may have been written loose by
 	// an older version (viper historically wrote 0644).
@@ -215,18 +263,85 @@ func Load() (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	cfg.normalize()
 
-	// viper lowercases all map keys; notes are keyed by symbol, which is
-	// uppercase everywhere else, so normalize back so lookups match.
-	if len(cfg.Notes) > 0 {
-		notes := make(map[string]string, len(cfg.Notes))
-		for k, v := range cfg.Notes {
-			notes[strings.ToUpper(k)] = v
-		}
-		cfg.Notes = notes
+	res.Config = &cfg
+	return res, nil
+}
+
+// yamlLine matches the "line N" that both viper and gopkg.in/yaml.v3 put in
+// their parse errors. There is no structured position on the error type, so
+// scraping the text is the only way to point the user at the offending line.
+var yamlLine = regexp.MustCompile(`line (\d+)`)
+
+// yamlErrorLine extracts a best-effort 1-based line number from a YAML parse
+// error. Returns 0 when the error carries no position.
+func yamlErrorLine(err error) int {
+	if err == nil {
+		return 0
 	}
+	m := yamlLine.FindStringSubmatch(err.Error())
+	if m == nil {
+		return 0
+	}
+	n, convErr := strconv.Atoi(m[1])
+	if convErr != nil || n < 0 {
+		return 0
+	}
+	return n
+}
 
-	return &cfg, nil
+// normalize rewrites every symbol the config carries into the canonical
+// spelling the providers emit, so a hand-typed `btc`, `BTCUSDT` or `aapl`
+// lines up with the quotes flowing through the hub instead of sitting in
+// the watchlist forever showing no price. Watchlist entries are also
+// de-duplicated, since two spellings can collapse onto one symbol.
+//
+// viper lowercases all map keys, so this doubles as the fix-up for note
+// keys, which are symbols and are uppercase everywhere else.
+func (c *Config) normalize() {
+	c.Watchlist = canonicalSymbols(c.Watchlist)
+	for i := range c.Watchlists {
+		c.Watchlists[i].Symbols = canonicalSymbols(c.Watchlists[i].Symbols)
+	}
+	for i := range c.Alerts {
+		c.Alerts[i].Symbol = symbol.Canonical(c.Alerts[i].Symbol)
+	}
+	for i := range c.Portfolios {
+		p := &c.Portfolios[i]
+		for j := range p.Holdings {
+			p.Holdings[j].Symbol = symbol.Canonical(p.Holdings[j].Symbol)
+		}
+		for j := range p.Transactions {
+			p.Transactions[j].Symbol = symbol.Canonical(p.Transactions[j].Symbol)
+		}
+	}
+	if len(c.Notes) > 0 {
+		notes := make(map[string]string, len(c.Notes))
+		for k, v := range c.Notes {
+			notes[symbol.Canonical(k)] = v
+		}
+		c.Notes = notes
+	}
+}
+
+// canonicalSymbols canonicalizes a symbol list, dropping blanks and
+// duplicates while preserving the user's ordering.
+func canonicalSymbols(in []string) []string {
+	if len(in) == 0 {
+		return in
+	}
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		c := symbol.Canonical(s)
+		if c == "" || seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	return out
 }
 
 // tightenPerms best-effort restricts the config dir to 0700 and config.yaml
@@ -238,12 +353,22 @@ func tightenPerms() {
 	_ = os.Chmod(configPath(), 0o600)
 }
 
-// Save writes the config to disk.
+// Save writes the config to disk. It is SaveSafely with AssumeYes set: the
+// write is atomic, a timestamped backup is taken first, and a config file
+// that does not parse is protected (ErrWouldDestroy) — but the user is never
+// prompted, so existing callers keep their non-interactive behavior.
 func Save(cfg *Config) error {
+	_, err := SaveSafely(cfg, SaveOptions{AssumeYes: true})
+	return err
+}
+
+// encodeConfig renders cfg as the YAML that belongs on disk and returns both
+// the bytes and the settings map they were built from. The settings are
+// assembled through viper so key naming and omissions match what Load reads
+// back, but the marshalling happens here because the bytes have to go to the
+// atomic writer rather than to viper's in-place rewrite.
+func encodeConfig(cfg *Config) ([]byte, map[string]any, error) {
 	v := viper.New()
-	v.SetConfigFile(configPath())
-	v.SetConfigType("yaml")
-	v.SetConfigPermissions(0o600)
 
 	v.Set("watchlist", cfg.Watchlist)
 	if len(cfg.Watchlists) > 0 {
@@ -295,10 +420,25 @@ func Save(cfg *Config) error {
 		v.Set("news_feeds", cfg.NewsFeeds)
 	}
 
-	if err := v.WriteConfig(); err != nil {
+	settings := v.AllSettings()
+	raw, err := yaml.Marshal(settings)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode config: %w", err)
+	}
+	return raw, settings, nil
+}
+
+// writeSeed persists the first-run defaults. Split out so the fresh-install
+// path in LoadWithResult goes through the same atomic writer as every other
+// write — a crash while seeding must not leave a half-written config.
+func writeSeed(path string, settings map[string]any) error {
+	raw, err := yaml.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("encode default config: %w", err)
+	}
+	if err := writeAtomic(path, raw, 0o600); err != nil {
 		return err
 	}
-	tightenPerms()
 	return nil
 }
 
@@ -311,21 +451,33 @@ func (c *Config) PollDuration() time.Duration {
 	return d
 }
 
-// AddSymbol adds a symbol to the watchlist if not already present.
-func (c *Config) AddSymbol(symbol string) bool {
+// AddSymbol adds a symbol to the watchlist if not already present. The
+// symbol is canonicalized first, so `mkt config add btc` stores BTC-USD and
+// a second `mkt config add BTCUSDT` is correctly recognized as a duplicate.
+// A symbol that canonicalizes to nothing (blank input) is rejected.
+func (c *Config) AddSymbol(sym string) bool {
+	want := symbol.Canonical(sym)
+	if want == "" {
+		return false
+	}
 	for _, s := range c.Watchlist {
-		if s == symbol {
+		if symbol.Canonical(s) == want {
 			return false
 		}
 	}
-	c.Watchlist = append(c.Watchlist, symbol)
+	c.Watchlist = append(c.Watchlist, want)
 	return true
 }
 
-// RemoveSymbol removes a symbol from the watchlist.
-func (c *Config) RemoveSymbol(symbol string) bool {
+// RemoveSymbol removes a symbol from the watchlist. Matching is done on the
+// canonical spelling, so `mkt config remove btc` drops a BTC-USD entry.
+func (c *Config) RemoveSymbol(sym string) bool {
+	want := symbol.Canonical(sym)
+	if want == "" {
+		return false
+	}
 	for i, s := range c.Watchlist {
-		if s == symbol {
+		if symbol.Canonical(s) == want {
 			c.Watchlist = append(c.Watchlist[:i], c.Watchlist[i+1:]...)
 			return true
 		}
