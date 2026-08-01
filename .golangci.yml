@@ -14,6 +14,17 @@ linters:
     - unused
     - misspell
     - unconvert
+    # Response bodies that are never closed leak a connection per call. Every
+    # provider in this tree is a long-lived poller, so a single missed Close
+    # compounds for the lifetime of the process.
+    - bodyclose
+    # The config write-safety layer hands *config.DestroyError back through
+    # wrapped errors and callers recover it with errors.As. A `==` comparison
+    # or an unwrapped %v anywhere on that path silently turns a refusal into
+    # an unrecognized error, so the correctness of %w / errors.As / errors.Is
+    # is load-bearing rather than stylistic.
+    - gosec
+    - errorlint
   settings:
     errcheck:
       check-type-assertions: true
@@ -23,11 +34,27 @@ linters:
         - (*github.com/coder/websocket.Conn).Close
         - (*github.com/coder/websocket.Conn).CloseNow
         - io/ioutil.ReadAll
+        # Writes to a cobra command's stdout/stderr. There is nothing useful a
+        # CLI can do when its own output stream fails, and errcheck itself
+        # shipped this exact exemption as a built-in default for years.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
     govet:
       enable-all: true
       disable:
         - fieldalignment
         - shadow
+    gosec:
+      # G304 flags every os.Open/os.ReadFile whose path is a variable. mkt is
+      # a CLI whose job is to read files the user names — the config file and
+      # its backups, an --listen-token-file, an authorized_keys file, a broker
+      # CSV, an MKT_RECORD capture. There is no privilege boundary between the
+      # caller and the process, so "the path came from outside this function"
+      # describes every correct call site here and none of the incorrect ones.
+      # This is the one gosec rule disabled tree-wide rather than per-path.
+      excludes:
+        - G304
     staticcheck:
       checks:
         - "all"
@@ -44,6 +71,97 @@ linters:
       - source: "defer .*\\.Close\\(\\)"
         linters:
           - errcheck
+
+      # ── gosec / bodyclose scoped exemptions ────────────────────────────
+      # Each rule below is pinned to a specific file or source line and says
+      # why. Nothing is silenced tree-wide; a new occurrence elsewhere still
+      # fails the build.
+
+      # Test fixtures are not an attack surface: httptest handlers ignore
+      # Write errors, read files they just wrote, and parse forms of their own
+      # construction.
+      - path: _test\.go
+        linters:
+          - gosec
+
+      # coder/websocket hands back the HTTP response of the upgrade handshake,
+      # whose body is hijacked by the connection. Closing it would close the
+      # socket; the library documents Conn.Close (which both call sites defer)
+      # as the correct cleanup.
+      - path: internal/provider/(coinbase|yahoo)/
+        source: "websocket\\.Dial"
+        linters:
+          - bodyclose
+
+      # G101 matches on identifier names. These are the *names* of the
+      # environment variables the token is read from, not the token.
+      - path: cmd/root.go
+        text: "G101"
+        linters:
+          - gosec
+
+      # G302 wants <= 0600, which is unopenable for a directory. 0700 on the
+      # config dir is the tightest workable mode and is deliberate — it is
+      # what keeps holdings and alert destinations off a shared host.
+      - path: internal/config/
+        text: "G302"
+        linters:
+          - gosec
+
+      # G703 (path traversal, taint-analysis flavour). The tainted values are
+      # the user's own MKT_RECORD path and their own --listen-token-file /
+      # MKT_LISTEN_TOKEN_FILE path — files they asked mkt to read or write on
+      # their own command line. Same reasoning as the G304 note above.
+      - path: (cmd/backend_record\.go|cmd/root\.go)
+        text: "G703"
+        linters:
+          - gosec
+
+      # Deliberate idempotence assertion: the test calls ruleIdentity twice on
+      # the same rule to prove the key is stable. staticcheck reads the
+      # duplicated expression as a typo.
+      - path: cmd/backtest_test\.go
+        source: "ruleIdentity\\(a\\) != ruleIdentity\\(a\\)"
+        linters:
+          - staticcheck
+
+      # G602 false positives: both loops are bounded by an explicit
+      # len() guard a few lines above the indexing gosec objects to.
+      - path: (internal/indicator/patterns\.go|internal/portfolio/correlation\.go)
+        text: "G602"
+        linters:
+          - gosec
+
+      # G404: reconnect backoff jitter. A predictable jitter value is not a
+      # security property — the point is to desynchronize clients, and
+      # crypto/rand would add a syscall per reconnect for nothing.
+      - source: "rand\\.Float64\\(\\)"
+        text: "G404"
+        linters:
+          - gosec
+
+      # G204: the news tab opens a headline in the user's browser. The URL is
+      # an argv element, never a shell word, so it cannot inject a command.
+      - path: internal/news/open\.go
+        text: "G204"
+        linters:
+          - gosec
+
+      # Closing the websocket on the way out of a reconnect loop that is
+      # already returning an error; the close result has nowhere to go.
+      - path: internal/provider/coinbase/coinbase\.go
+        text: "G104"
+        linters:
+          - gosec
+
+      # wish's ListenAndServe returns ssh.ErrServerClosed unwrapped, exactly
+      # as net/http does. Left as a direct comparison rather than churned to
+      # errors.Is for a sentinel that is documented never to be wrapped.
+      # TODO: switch to errors.Is when cmd/serve.go is next touched.
+      - path: cmd/serve\.go
+        source: "err != ssh\\.ErrServerClosed"
+        linters:
+          - errorlint
 
 formatters:
   enable:
