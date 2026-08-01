@@ -1,6 +1,7 @@
 package indicator
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stxkxs/mkt/internal/provider"
@@ -119,5 +120,23 @@ func TestPatternBullishBearishFlags(t *testing.T) {
 	}
 	if PatternDoji.IsBullish() || PatternDoji.IsBearish() {
 		t.Error("Doji should be neither bullish nor bearish")
+	}
+}
+
+func TestPatternsNonFiniteCandles(t *testing.T) {
+	// Bad provider data must not be classified: every comparison against a
+	// NaN is false, so an unguarded pass would silently report PatternNone
+	// anyway — the explicit guard keeps that contract from drifting.
+	candles := []provider.OHLCV{
+		{Open: math.NaN(), High: 108, Low: 99, Close: 107},
+		{Open: 100, High: math.Inf(1), Low: 99, Close: 100},
+		{Open: 100, High: 108, Low: math.NaN(), Close: 107},
+		{Open: 100, High: 100, Low: 100, Close: 100}, // zero range
+	}
+	got := Patterns(candles)
+	for i, p := range got {
+		if p != PatternNone {
+			t.Errorf("i=%d expected PatternNone for unusable data, got %v", i, p)
+		}
 	}
 }

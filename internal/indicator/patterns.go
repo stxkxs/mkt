@@ -48,12 +48,16 @@ func (p Pattern) IsBearish() bool {
 
 // Patterns detects classic candle patterns in the input series. Returns
 // one Pattern per candle; PatternNone for bars without a match or
-// without sufficient context (e.g., two-candle patterns at index 0).
-// Detection order: Doji → Hammer → Shooting Star → Engulfing. First
-// matching pattern wins.
+// without sufficient context (e.g., two-candle patterns at index 0) or with
+// non-finite OHLC values. Detection order: Doji → Hammer → Shooting Star →
+// Engulfing. First matching pattern wins.
 func Patterns(candles []provider.OHLCV) []Pattern {
 	out := make([]Pattern, len(candles))
 	for i, c := range candles {
+		if !finite(c.Open) || !finite(c.High) ||
+			!finite(c.Low) || !finite(c.Close) {
+			continue
+		}
 		body := math.Abs(c.Close - c.Open)
 		rng := c.High - c.Low
 		if rng <= 0 {

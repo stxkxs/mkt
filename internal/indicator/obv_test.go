@@ -1,6 +1,7 @@
 package indicator
 
 import (
+	"math"
 	"testing"
 )
 
@@ -42,6 +43,23 @@ func TestOBV(t *testing.T) {
 		if len(got) != 0 {
 			t.Fatalf("want empty, got %v", got)
 		}
+	})
+
+	t.Run("a non-finite candle holds the total instead of poisoning it", func(t *testing.T) {
+		closes := []float64{1, 2, math.NaN(), 4, 5}
+		vols := []float64{10, 20, 30, 40, 50}
+		// Bars 2 and 3 both touch the bad close, so only bar 4 resumes.
+		got := OBV(closes, vols)
+		want := []float64{0, 20, 20, 20, 70}
+		assertFloatSliceEqual(t, got, want, 1e-9)
+	})
+
+	t.Run("a non-finite volume holds the total", func(t *testing.T) {
+		closes := []float64{1, 2, 3, 4}
+		vols := []float64{10, 20, math.Inf(1), 40}
+		got := OBV(closes, vols)
+		want := []float64{0, 20, 20, 60}
+		assertFloatSliceEqual(t, got, want, 1e-9)
 	})
 
 	t.Run("mismatched lengths returns zero-filled", func(t *testing.T) {

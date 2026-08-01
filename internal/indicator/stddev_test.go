@@ -57,4 +57,27 @@ func TestStddev(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("negative period returns all NaN", func(t *testing.T) {
+		got := Stddev([]float64{1, 2, 3}, -4)
+		for i, v := range got {
+			if !math.IsNaN(v) {
+				t.Fatalf("i=%d want NaN, got %v", i, v)
+			}
+		}
+	})
+
+	t.Run("non-finite values blank only the windows they touch", func(t *testing.T) {
+		got := Stddev([]float64{1, 2, math.Inf(1), 4, 5, 6, 7}, 3)
+		for i := 0; i < 5; i++ {
+			if !math.IsNaN(got[i]) {
+				t.Fatalf("i=%d want NaN, got %v", i, got[i])
+			}
+		}
+		for i := 5; i < len(got); i++ {
+			if math.IsNaN(got[i]) || math.IsInf(got[i], 0) {
+				t.Fatalf("i=%d should have recovered, got %v", i, got[i])
+			}
+		}
+	})
 }

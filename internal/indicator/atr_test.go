@@ -63,4 +63,64 @@ func TestATR(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("length exactly period+1 emits one value", func(t *testing.T) {
+		n := 4
+		highs := []float64{2, 3, 4, 5}
+		lows := []float64{1, 2, 3, 4}
+		closes := []float64{1.5, 2.5, 3.5, 4.5}
+		atr := ATR(highs, lows, closes, 3)
+		for i := 0; i < n-1; i++ {
+			if !math.IsNaN(atr[i]) {
+				t.Fatalf("i=%d expected NaN, got %v", i, atr[i])
+			}
+		}
+		if math.IsNaN(atr[n-1]) {
+			t.Fatalf("i=%d expected the seed value, got NaN", n-1)
+		}
+	})
+
+	t.Run("a non-finite bar does not poison the rest of the series", func(t *testing.T) {
+		n := 30
+		highs := make([]float64, n)
+		lows := make([]float64, n)
+		closes := make([]float64, n)
+		for i := range highs {
+			highs[i] = 101
+			lows[i] = 99
+			closes[i] = 100
+		}
+		closes[19] = math.NaN() // breaks TR at bars 19 and 20
+		atr := ATR(highs, lows, closes, 14)
+		var bad int
+		for i := 14; i < n; i++ {
+			if math.IsNaN(atr[i]) {
+				bad++
+			}
+		}
+		if bad == 0 {
+			t.Fatalf("expected the bad bars themselves to report NaN")
+		}
+		if math.IsNaN(atr[n-1]) {
+			t.Fatalf("i=%d should have recovered after the gap, got NaN", n-1)
+		}
+	})
+
+	t.Run("all output is finite for finite input", func(t *testing.T) {
+		n := 40
+		highs := make([]float64, n)
+		lows := make([]float64, n)
+		closes := make([]float64, n)
+		for i := range highs {
+			highs[i] = 1e-9
+			lows[i] = 0
+			closes[i] = 0
+		}
+		atr := ATR(highs, lows, closes, 14)
+		for i := 14; i < n; i++ {
+			if math.IsNaN(atr[i]) || math.IsInf(atr[i], 0) {
+				t.Fatalf("i=%d leaked %v", i, atr[i])
+			}
+		}
+	})
 }

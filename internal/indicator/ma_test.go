@@ -42,6 +42,39 @@ func TestSMA(t *testing.T) {
 			period: 0,
 			want:   []float64{math.NaN(), math.NaN(), math.NaN()},
 		},
+		{
+			name:   "period longer than input",
+			input:  []float64{1, 2, 3},
+			period: 5,
+			want:   []float64{math.NaN(), math.NaN(), math.NaN()},
+		},
+		{
+			// A NaN blanks only the windows that contain it. Folding it
+			// into the running sum instead would make every later value
+			// NaN — that is what left Stochastic %D permanently NaN.
+			name:   "NaN blanks only its own windows",
+			input:  []float64{1, 2, math.NaN(), 4, 5, 6, 7},
+			period: 3,
+			want: []float64{
+				math.NaN(), math.NaN(), math.NaN(), math.NaN(), math.NaN(),
+				5, 6,
+			},
+		},
+		{
+			name:   "leading NaN warm-up then real values",
+			input:  []float64{math.NaN(), math.NaN(), 3, 4, 5, 6},
+			period: 3,
+			want:   []float64{math.NaN(), math.NaN(), math.NaN(), math.NaN(), 4, 5},
+		},
+		{
+			name:   "Inf blanks only its own windows",
+			input:  []float64{1, 2, math.Inf(1), 4, 5, 6, 7},
+			period: 3,
+			want: []float64{
+				math.NaN(), math.NaN(), math.NaN(), math.NaN(), math.NaN(),
+				5, 6,
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -100,6 +133,44 @@ func TestEMA(t *testing.T) {
 		for i, v := range got {
 			if !math.IsNaN(v) {
 				t.Fatalf("i=%d want NaN, got %v", i, v)
+			}
+		}
+	})
+
+	t.Run("period longer than input returns all NaN", func(t *testing.T) {
+		got := EMA([]float64{1, 2, 3}, 5)
+		for i, v := range got {
+			if !math.IsNaN(v) {
+				t.Fatalf("i=%d want NaN, got %v", i, v)
+			}
+		}
+	})
+
+	t.Run("non-finite sample re-seeds instead of poisoning", func(t *testing.T) {
+		in := []float64{1, 2, 3, 4, math.NaN(), 10, 20, 30, 40, 50}
+		got := EMA(in, 4)
+		if math.IsNaN(got[3]) {
+			t.Fatalf("i=3 expected the seed value, got NaN")
+		}
+		for i := 4; i < 8; i++ {
+			if !math.IsNaN(got[i]) {
+				t.Fatalf("i=%d expected NaN during the restarted warm-up, got %v", i, got[i])
+			}
+		}
+		// Re-seeds on the simple mean of 10, 20, 30, 40.
+		if math.Abs(got[8]-25) > 1e-9 {
+			t.Fatalf("i=8 got %v, want the re-seeded mean 25", got[8])
+		}
+		if math.IsNaN(got[9]) {
+			t.Fatalf("i=9 expected a value after the re-seed, got NaN")
+		}
+	})
+
+	t.Run("Inf sample does not escape into the output", func(t *testing.T) {
+		got := EMA([]float64{1, 2, 3, math.Inf(1), 5, 6, 7, 8}, 3)
+		for i, v := range got {
+			if math.IsInf(v, 0) {
+				t.Fatalf("i=%d leaked an infinity", i)
 			}
 		}
 	})

@@ -2,19 +2,25 @@ package indicator
 
 import "math"
 
-// ATR computes the Average True Range using Wilder's smoothing. True Range
-// for bar i is max(H[i]-L[i], |H[i]-C[i-1]|, |L[i]-C[i-1]|). The first
-// period entries are NaN.
+// ATR computes the Average True Range using Wilder's smoothing.
+//
+// Reference definition (Wilder): True Range for bar i is
+// max(H[i]-L[i], |H[i]-C[i-1]|, |L[i]-C[i-1]|); the series is seeded with the
+// simple mean of the first `period` true ranges and then smoothed as
+// ATR_t = (ATR_{t-1}*(period-1) + TR_t) / period. Checked against that
+// definition — a constant bar range returns that range.
+//
+// The first period entries are NaN: bar 0 has no previous close, so the seed
+// window is bars 1..period. A bar whose true range is not finite is missing
+// data — it reports NaN and is left out of both the seed and the smoothing,
+// rather than turning every later value into NaN.
 func ATR(highs, lows, closes []float64, period int) []float64 {
 	n := len(closes)
 	out := make([]float64, n)
 	if period <= 0 || n == 0 ||
 		len(highs) != n || len(lows) != n ||
 		n < period+1 {
-		for i := range out {
-			out[i] = math.NaN()
-		}
-		return out
+		return fillNaN(out)
 	}
 
 	// True Range slice (skip i=0 since we need a previous close)
@@ -33,16 +39,34 @@ func ATR(highs, lows, closes []float64, period int) []float64 {
 		out[i] = math.NaN()
 	}
 
-	// Seed: simple average of the first period TR values (indices 1..period)
-	var sum float64
+	// Seed: simple average of the usable TR values in indices 1..period.
+	// Accumulated incrementally — true ranges can be large enough that a
+	// plain running sum overflows to +Inf, while the incremental mean stays
+	// bounded by the largest sample.
+	var atr float64
+	var seen int
 	for i := 1; i <= period; i++ {
-		sum += tr[i]
+		if !finite(tr[i]) {
+			continue
+		}
+		seen++
+		atr += (tr[i] - atr) / float64(seen)
 	}
-	out[period] = sum / float64(period)
+	if seen == 0 {
+		return fillNaN(out)
+	}
+	out[period] = atr
 
-	// Wilder smoothing: ATR_t = (ATR_{t-1}*(period-1) + TR_t) / period
+	// Wilder smoothing: ATR_t = (ATR_{t-1}*(period-1) + TR_t) / period,
+	// written in the algebraically identical increment form for the same
+	// overflow reason.
 	for i := period + 1; i < n; i++ {
-		out[i] = (out[i-1]*float64(period-1) + tr[i]) / float64(period)
+		if !finite(tr[i]) {
+			out[i] = math.NaN()
+			continue
+		}
+		atr += (tr[i] - atr) / float64(period)
+		out[i] = atr
 	}
 	return out
 }
