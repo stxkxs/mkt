@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stxkxs/mkt/internal/config"
+	"github.com/stxkxs/mkt/internal/portfolio"
 )
 
 func validCfg() *config.Config {
@@ -80,9 +81,12 @@ func TestValidateConfigCatchesProblems(t *testing.T) {
 		{"missing alert symbol", func(c *config.Config) { c.Alerts[0].Symbol = "" }, "symbol is required"},
 		{"typo tax method", func(c *config.Config) { c.Portfolios[0].TaxMethod = "fifoo" }, "tax_method"},
 		{"negative quantity", func(c *config.Config) { c.Portfolios[0].Holdings[0].Quantity = -1 }, "quantity"},
-		{"bad tx type", func(c *config.Config) { c.Portfolios[0].Transactions[0].Type = "transfer" }, "buy or sell"},
+		{"bad tx type", func(c *config.Config) { c.Portfolios[0].Transactions[0].Type = "transfer" }, "must be one of buy, sell, dividend"},
 		{"bad tx time", func(c *config.Config) { c.Portfolios[0].Transactions[0].Time = "01/02/2025" }, "not a recognized format"},
 		{"empty watchlist group", func(c *config.Config) { c.Watchlists = []config.Watchlist{{Name: "Empty"}} }, "no symbols"},
+		{"unroutable watchlist symbol", func(c *config.Config) { c.Watchlist = append(c.Watchlist, "APPLE INC") }, "routes to no provider"},
+		{"unroutable holding", func(c *config.Config) { c.Portfolios[0].Holdings[0].Symbol = "BTC/USD" }, "routes to no provider"},
+		{"unroutable alert symbol", func(c *config.Config) { c.Alerts[0].Symbol = "my stock" }, "routes to no provider"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -112,5 +116,110 @@ func TestValidThemeAcceptsDarkAlias(t *testing.T) {
 	}
 	if validTheme("light") {
 		t.Error("unknown theme accepted")
+	}
+}
+
+// TestValidateAcceptsDividendTransactions is the regression test for two
+// first-party commands contradicting each other: `mkt portfolio import`
+// writes "dividend" for both supported CSV formats, and validate rejected it.
+func TestValidateAcceptsDividendTransactions(t *testing.T) {
+	cfg := validCfg()
+	cfg.Portfolios[0].Transactions = append(cfg.Portfolios[0].Transactions, config.Transaction{
+		Type: string(portfolio.TxDividend), Symbol: "AAPL", Quantity: 10, Price: 0.24, Time: "2025-02-13",
+	})
+	for _, issue := range validateConfig(cfg) {
+		if strings.Contains(issue, "dividend") || strings.Contains(issue, "transactions[1]") {
+			t.Errorf("dividend transaction rejected: %s", issue)
+		}
+	}
+}
+
+func TestValidTxType(t *testing.T) {
+	for _, ok := range []string{"buy", "sell", "dividend"} {
+		if !validTxType(ok) {
+			t.Errorf("validTxType(%q) = false", ok)
+		}
+	}
+	for _, bad := range []string{"", "transfer", "BUY"} {
+		if validTxType(bad) {
+			t.Errorf("validTxType(%q) = true", bad)
+		}
+	}
+}
+
+func TestRoutable(t *testing.T) {
+	for _, ok := range []string{"AAPL", "BTC-USD", "btc", "^GSPC", "GC=F", "EURUSD=X", "FRED:DGS10", "BRK.B"} {
+		if !routable(ok) {
+			t.Errorf("routable(%q) = false", ok)
+		}
+	}
+	for _, bad := range []string{"", "APPLE INC", "BTC/USD", "a much longer string"} {
+		if routable(bad) {
+			t.Errorf("routable(%q) = true", bad)
+		}
+	}
+}
+
+// TestCanonicalNotesReadsTheFileNotTheConfig checks the report survives
+// normalization: Load rewrites every symbol, so the note has to come off
+// the bytes on disk.
+func TestCanonicalNotesReadsTheFileNotTheConfig(t *testing.T) {
+	path := seedConfig(t, `watchlist:
+  - btc
+  - aapl
+  - MATIC
+portfolios:
+  - name: Core
+    holdings:
+      - symbol: eth
+        quantity: 1
+`)
+	notes := canonicalNotes(path)
+	joined := strings.Join(notes, "\n")
+	for _, want := range []string{"BTC-USD", "AAPL", "POL-USD", "ETH-USD"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("no note mapping onto %s:\n%s", want, joined)
+		}
+	}
+}
+
+func TestCanonicalNotesSilentOnACanonicalFile(t *testing.T) {
+	path := seedConfig(t, goodConfig)
+	if notes := canonicalNotes(path); len(notes) != 0 {
+		t.Errorf("canonical file produced notes: %v", notes)
+	}
+}
+
+// TestConfigSymbolsIsTheDeduplicatedUnion guards what --check-symbols walks.
+func TestConfigSymbolsIsTheDeduplicatedUnion(t *testing.T) {
+	cfg := &config.Config{
+		Watchlist:  []string{"AAPL", "AAPL"},
+		Watchlists: []config.Watchlist{{Name: "g", Symbols: []string{"MSFT"}}},
+		Portfolios: []config.Portfolio{{Name: "p", Holdings: []config.Holding{{Symbol: "VTI"}}}},
+		Alerts:     []config.AlertRule{{Symbol: "BTC-USD"}},
+	}
+	got := configSymbols(cfg)
+	want := []string{"AAPL", "BTC-USD", "MSFT", "VTI"}
+	if len(got) != len(want) {
+		t.Fatalf("configSymbols = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("configSymbols = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestValidateCleanConfigExitsZero is the other side of the headline test:
+// a healthy file must still say so.
+func TestValidateCleanConfigExitsZero(t *testing.T) {
+	seedConfig(t, goodConfig)
+
+	out, errOut, err := runCLI(t, nil, "config", "validate")
+	if err != nil {
+		t.Fatalf("validate on a healthy config: %v\n%s", err, errOut)
+	}
+	if !strings.Contains(out, "Config OK") {
+		t.Errorf("healthy config not reported OK:\n%s", out)
 	}
 }
