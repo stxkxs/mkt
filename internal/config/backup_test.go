@@ -376,7 +376,7 @@ func TestRestoreBackupIntoUnwritableDirFails(t *testing.T) {
 	}
 	// Point the restore at a config dir that cannot be created.
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateAt(t, home)
 	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o500); err != nil {
 		t.Fatal(err)
 	}

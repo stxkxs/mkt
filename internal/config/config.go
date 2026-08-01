@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -152,8 +153,25 @@ type Config struct {
 	NewsFeeds     []NewsFeed        `mapstructure:"news_feeds,omitempty" yaml:"news_feeds,omitempty"`
 }
 
+// DirEnv overrides the config directory. It exists so a caller can point mkt
+// at a specific directory without depending on how the host resolves a home
+// directory — which is not portable: os.UserHomeDir reads $HOME on Unix but
+// %USERPROFILE% on Windows, so setting $HOME alone relocates nothing there.
+// Tests rely on this to stay isolated on every platform; before it existed,
+// the config tests ran against the developer's real ~/.config/mkt on Windows
+// and wrote backups into it.
+const DirEnv = "MKT_CONFIG_DIR"
+
 // ConfigDir returns the application's config / data directory path.
+//
+// MKT_CONFIG_DIR wins when set and non-empty; otherwise it is
+// <home>/.config/mkt. The XDG base-directory spec is deliberately not
+// consulted: honoring XDG_CONFIG_HOME now would silently relocate the config
+// of every existing user who has it set.
 func ConfigDir() string {
+	if dir := strings.TrimSpace(os.Getenv(DirEnv)); dir != "" {
+		return dir
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "mkt")
 }

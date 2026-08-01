@@ -37,7 +37,7 @@ func validCfg() *config.Config {
 // watchlist groups, portfolios, and EDGAR tickers can never ship a value
 // that `mkt config validate` would flag.
 func TestDefaultSeedDataPassesValidate(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateHome(t, t.TempDir())
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)

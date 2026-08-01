@@ -330,6 +330,12 @@ Press `T` to cycle through 7 color themes: Tokyonight (default), Catppuccin Moch
 
 Config lives at `~/.config/mkt/config.yaml` (mode `0600`, in a `0700` directory — it holds your holdings and any webhook/ntfy/Pushover secrets) and is seeded on first run with 11 thematic watchlists, 12 thematic portfolios and 11 example alerts.
 
+Set `MKT_CONFIG_DIR` to keep it somewhere else — a synced folder, an encrypted volume, or a throwaway directory when you want to try something without touching your real setup. It overrides the home-directory lookup entirely, so it works the same on Linux, macOS and Windows:
+
+```sh
+MKT_CONFIG_DIR=/path/to/dir mkt          # config, backups, alert + equity history all live there
+```
+
 The shape, trimmed (`mkt config show` prints the real thing):
 
 ```yaml

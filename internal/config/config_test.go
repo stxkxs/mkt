@@ -141,7 +141,7 @@ func TestRemoveSymbolCanonicalizes(t *testing.T) {
 // hand-edited file lines up with the quotes flowing through the hub.
 func TestLoadCanonicalizesEverySymbol(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	isolateAt(t, dir)
 	cfgDir := filepath.Join(dir, ".config", "mkt")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -231,7 +231,7 @@ func TestCanonicalSymbols(t *testing.T) {
 // fresh dir writes defaults; the second Load reads what was written.
 func TestLoadCreatesDefaultsWhenMissing(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	isolateAt(t, dir)
 
 	cfg, err := Load()
 	if err != nil {
@@ -261,7 +261,7 @@ func TestLoadCreatesDefaultsWhenMissing(t *testing.T) {
 // config.yaml — otherwise the seeded defaults never reach disk.
 func TestLoadWritesConfigFileOnFirstRun(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	isolateAt(t, dir)
 
 	if _, err := Load(); err != nil {
 		t.Fatalf("Load(): %v", err)
@@ -284,7 +284,7 @@ func TestLoadWritesConfigFileOnFirstRun(t *testing.T) {
 // rewritten on load. Only fresh installs get seeded.
 func TestExistingConfigNotSeeded(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	isolateAt(t, dir)
 	cfgDir := filepath.Join(dir, ".config", "mkt")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -331,7 +331,7 @@ func TestExistingConfigNotSeeded(t *testing.T) {
 
 func TestConfigFileWritten0600(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	isolateAt(t, dir)
 	if _, err := Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestProvidersDefaultOnAndDisable(t *testing.T) {
 // persists (previously dropped) survive a rewrite by `mkt config set`.
 func TestSaveRoundTripWatchlistsNotesServe(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	isolateAt(t, dir)
 	if err := os.MkdirAll(filepath.Join(dir, ".config", "mkt"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestSaveRoundTripWatchlistsNotesServe(t *testing.T) {
 // fields that Save persists round-trip cleanly.
 func TestSaveRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	isolateAt(t, dir)
 
 	// Pre-create the config dir so Save's WriteConfig has somewhere to land.
 	if err := os.MkdirAll(filepath.Join(dir, ".config", "mkt"), 0o700); err != nil {
@@ -463,7 +463,7 @@ func TestSaveRoundTrip(t *testing.T) {
 // file.
 func TestSaveOmitsEmptyOptionalFields(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	isolateAt(t, dir)
 	if err := os.MkdirAll(filepath.Join(dir, ".config", "mkt"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -497,4 +497,37 @@ func contains(haystack []byte, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestConfigDirOverrideWinsOverHome pins the property the whole test suite
+// relies on for isolation, and that a user relies on to relocate their
+// config: MKT_CONFIG_DIR is authoritative and does not consult the home
+// directory at all. Setting HOME is not portable — os.UserHomeDir reads
+// %USERPROFILE% on Windows — so the override is what makes isolation work
+// on every platform.
+func TestConfigDirOverrideWinsOverHome(t *testing.T) {
+	elsewhere := t.TempDir()
+	t.Setenv("HOME", "/nonexistent-home")
+	t.Setenv("USERPROFILE", "/nonexistent-home")
+	t.Setenv(DirEnv, elsewhere)
+
+	if got := ConfigDir(); got != elsewhere {
+		t.Errorf("ConfigDir() = %q, want the override %q", got, elsewhere)
+	}
+}
+
+// An empty or whitespace-only override falls back to the home directory
+// rather than resolving to "" and writing into the working directory.
+func TestConfigDirIgnoresBlankOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	for _, blank := range []string{"", "   "} {
+		t.Setenv(DirEnv, blank)
+		want := filepath.Join(home, ".config", "mkt")
+		if got := ConfigDir(); got != want {
+			t.Errorf("ConfigDir() with override %q = %q, want %q", blank, got, want)
+		}
+	}
 }
