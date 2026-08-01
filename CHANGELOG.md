@@ -1,4 +1,309 @@
+# Changelog
+
+All notable changes to this project are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
+adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 ## Unreleased
+
+A remediation pass across the whole tree: every leaf and mid-layer package was
+audited and fixed, then those fixes were wired through the CLI and the TUI root.
+110 files changed. Several behaviours changed in ways an existing user will
+notice — read **Behavioral changes** first.
+
+### Behavioral changes
+
+These are not bugs being fixed quietly; they change what `mkt` does with an
+unchanged config.
+
+- **Alert conditions are now edge-triggered.** A level condition (`above`,
+  `below`, `pct_up`, `pct_down`, `rsi_above`, `rsi_below`, `volume_above`,
+  `stddev_above`) fires on the *transition into* the condition rather than on
+  every quote while the condition merely holds. **The first evaluation after
+  startup establishes a baseline and does not fire**, so a rule that is already
+  breached at launch stays quiet until it un-breaches and re-breaches. This is
+  what stopped a fresh install from spraying a notification for every seeded
+  alert that happened to be true at that moment. Cross conditions
+  (`sma_cross_above`, `sma_cross_below`, `macd_cross`) were already
+  edge-triggered by construction and are unchanged.
+- **Config writes are refused while `config.yaml` does not parse.** `mkt` no
+  longer refuses to *start* — it runs on defaults and shows a persistent banner —
+  but every write (CLI or TUI) is refused until the file is repaired, because
+  writing then would replace the user's real settings with the defaults mkt fell
+  back to. `--force` overrides.
+- **Portfolio totals exclude unpriced positions.** A holding with no quote used
+  to be folded into the totals at break-even, which quietly understated P&L%
+  and overstated cost coverage. `Summary` now carries `Unpriced`,
+  `FullyPriced()`, `UnpricedCost()` and `Coverage()`, and the portfolio tab and
+  MCP `get_portfolio` report them.
+- **`broadcast.Send` is asynchronous.** It used to block on the slowest attached
+  program, so one wedged SSH session could stall the shared data plane for
+  everyone. It now queues (256 slots by default, `NewSized` to change) and drops
+  for that sender alone, counted by `Drops()` / `DropsFor(sender)`.
+- **`alert.Engine` notifier fan-out is asynchronous.** Callers must call
+  `Engine.Flush(timeout)` before process exit or queued notifications are lost.
+  All three commands do this via the shared cleanup path.
+- **`market.Hub.Start` now returns `[]string`** — the symbols no provider can
+  serve. Callers that ignored the return value compile unchanged; the dashboard
+  uses it to name unroutable symbols instead of letting them silently never
+  price.
+- **`fred.Prefix` was removed.** Use `symbol.FREDPrefix`, the single source of
+  truth.
+- **Default symbol updates:** `EATON` → `ETN`, `SQ` → `XYZ` (Block's ticker
+  change), `GOLD` → `B` (Barrick's ticker change), and `MATIC` → `POL`. `MATIC`
+  in an existing config is remapped automatically by `symbol.Canonical`, so no
+  edit is required.
+- **`mkt daemon` runs the full data plane.** It previously ran only the hub and
+  alert engine; it now also keeps the equity curve, news, macro, futures, DeFi
+  TVL and calendar advancing, seeds the cache, and honours `MKT_RECORD`.
+
+### Added
+
+- **`mkt config repair`** — recover a config that was broken by hand or
+  overwritten. `--list` prints the available timestamped backups (`# / TAKEN /
+  AGE / SIZE / PATH`, newest first); `--from-backup <path|N>` restores one, and
+  backs up the file it replaces first. Exits non-zero if the restored file still
+  does not parse.
+- **`mkt portfolio stats`** — Sharpe, Sortino, max drawdown, volatility, CAGR
+  and beta computed from the recorded equity curve. `--portfolio` narrows to
+  one, `--rf` sets the risk-free rate per mark interval, `--benchmark` picks the
+  beta reference (default `SPY`; empty string skips the fetch). Prints `n/a` for
+  undefined statistics and warns that annualized figures are extrapolations when
+  there is less than a week of history.
+- **Automatic timestamped config backups.** Every write that changes the file
+  leaves a `config.yaml.bak.YYYYMMDD-HHMMSS` beside it; the newest 10 are kept.
+  New `config.Backup`, `ListBackups`, `RestoreBackup`, `MaxBackups`.
+- **Destructive-write confirmation.** `config.SaveSafely` diffs the file on disk
+  against what is about to be written, names exactly what would be lost, and
+  asks before proceeding. `--yes` / `-y` skips the prompt (available on
+  `mkt config …` and `mkt portfolio …`); `--force` implies `--yes` and
+  additionally authorizes a write over a file that does not parse. With no
+  terminal to prompt on, the write is refused rather than silently accepted.
+  New `SaveOptions`, `SaveReport`, `DestroyError`, `ErrWouldDestroy`.
+- **Degraded-config banner.** A config that does not parse no longer blocks
+  startup. `mkt` runs on defaults, prints the path, line and parse error on
+  stderr, and shows a persistent, non-dismissible banner under the tab bar on
+  every tab plus a `⚠ config` marker in the tab bar. New
+  `config.LoadWithResult` / `LoadResult`, `tui.ConfigStatus`,
+  `App.LoadConfigBanner`, `App.SetConfigStatus`.
+- **`--force`** on `mkt`, `mkt serve` and `mkt daemon`: start and keep writing
+  config even when the file does not parse (a timestamped backup is still taken
+  before any write).
+- **`--persist-alerts`** on `mkt serve`: let SSH sessions write alerts they
+  create/toggle/delete back to the host's config. Off by default — a guest must
+  not rewrite the host's config.
+- **Alert persistence.** Alerts created, toggled or deleted in the TUI are now
+  written back to `~/.config/mkt/config.yaml`, coalesced with a 2s debounce and
+  backed up per write. Single-writer by construction, so N SSH sessions cannot
+  race. New `alert.Engine.SetOnRulesChanged`.
+- **Startup cache seeding.** Every subscribed symbol is backfilled from daily
+  history at startup (concurrency 4, 20s per symbol, non-fatal, off the first-paint
+  path), so sparklines are populated immediately and `RSI(14)` / SMA-cross rules
+  evaluate over days rather than over accumulated poll ticks. New
+  `market.Cache.Seed`, `SeedCandles`, `Seeded`, `Series`.
+- **Unroutable-symbol reporting.** Symbols no provider can serve are named on
+  stderr at startup (`mkt: 2 symbol(s) no provider can serve, they will never
+  price: APPL, NOTREAL`) with a typo/`FRED:` hint, and surfaced in the TUI as a
+  notice row. New `Hub.Unroutable`, `App.LoadUnroutableSymbols`.
+- **`--listen-token-file`** (and `MKT_LISTEN_TOKEN_FILE`, `MKT_LISTEN_TOKEN`,
+  `MKT_LISTEN`): read the listen bearer token from a file instead of argv.
+  Precedence is `--listen-token` > `--listen-token-file` >
+  `MKT_LISTEN_TOKEN_FILE` > `MKT_LISTEN_TOKEN`. An explicit `--listen-token`
+  now warns that argv is world-readable via `ps`.
+- **`mkt config validate --check-symbols`** — fetch one bar per configured
+  symbol to catch a typo like `APPL` that routes cleanly but will never produce
+  data. Offline validation cannot detect this.
+- **`mkt mcp --expose-config` / `--expose-portfolio`** — both off by default.
+  `mkt://config`, `mkt://portfolios` and `get_portfolio` are hidden unless
+  explicitly enabled.
+- **`internal/symbol`** — single source of truth for symbol classification and
+  canonicalization. `Canonical` normalizes `btc` / `BTCUSDT` / `btc-usd` to
+  `BTC-USD` and `aapl` to `AAPL`, is idempotent, and applies the `MATIC` → `POL`
+  migration. `IsStock` now also accepts the index / futures / FX pseudo-tickers
+  (`^GSPC`, `^TNX`, `^IRX`, `^VIX`, `DX-Y.NYB`, `GC=F`, `CL=F`, `EURUSD=X`, …).
+  `coinbase.Supports`, `yahoo.Supports`, `fred.Supports` and the earnings ticker
+  filter all delegate here, so the lists can no longer drift apart.
+- **`internal/httpx`** — the shared GET → check-status → read-capped-body →
+  decode path every HTTP provider was hand-rolling, with a 16 MiB
+  `io.LimitReader` cap so a hostile upstream cannot stream an unbounded body
+  into memory. New `StatusError` recoverable with `errors.As`.
+- **Macro tab is scrollable** — `j`/`k`, arrows, `g`/`G`, `pgup`/`pgdn` and the
+  mouse wheel. It previously had no `Update` at all.
+- **Chart `f`** restores auto-fit zoom.
+- **Watchlist `/`** opens a fuzzy symbol search (`enter` jumps, `esc` cancels,
+  `ctrl+n` / `ctrl+p` move).
+- **Correlation `b`** cycles the resampling bucket (30s → 1m → 5m → 15m), and
+  the matrix is computed over log returns resampled onto that common bucket so a
+  15s-polled stock and a tick-streamed crypto are comparable.
+- `mkt_quote_drops_total` on `/metrics` whenever `--listen` is used — quotes shed
+  by TUI back-pressure. New `api.Server.WithDrops`.
+- `mkt serve` logs back-pressure every 5 minutes (hub dispatch drops, observer
+  drops and backlog, notifier drops, and per-session broadcaster drops named by
+  SSH peer address), and is silent while everything is healthy.
+- `Hub.AddObserver` — a reliable fan-out path that is never dropped. Alert
+  evaluation moved onto it.
+- `portfolio.Returns`, `LogReturns`, `MarkValues`, `MarkReturns`,
+  `StatsFromMarks`, `Stats`, `Sample`, `SamplesFrom`, `CorrelationMatrixSeries`.
+- `alert.Engine.SetClock`, `Statuses`, `RuleStatus`, `SetOnShortHistory`,
+  `Flush`, `NotifyDrops` — deterministic tests, a "this rule has 8 of the 14
+  bars it needs" surface, and a drain-before-exit hook.
+- `yahoo.HistoryWithMeta` / `HistoryResult` / `ServedInterval`, plus
+  `Provider.Healthy`, `LastError` and `StatusChan` mirroring the Coinbase
+  provider, so a Yahoo outage reaches the status bar.
+- `coinbase.StreamOrderBookLoop` and `OrderBookStatus` — a reconnecting level-2
+  stream that reports its own connection state instead of dying silently.
+- `format.Repeat`, `format.Spaces`, `format.VisibleRows`,
+  `theme.SectionHeaderHint`, `heatmap.NormalizeSectors`,
+  `tui.CanonicalSymbols`.
+- Cross-platform CI: tests on ubuntu, macOS and Windows, and a build matrix
+  covering all six release targets (linux/darwin/windows × amd64/arm64).
+- `bodyclose`, `errorlint` and `gosec` added to `.golangci.yml`, each with
+  narrowly-scoped, commented exclusions where they fire on deliberate code.
+
+### Changed
+
+- **`cmd/backend.go` is the single wiring point.** `mkt`, `mkt serve` and
+  `mkt daemon` are thin shells over `setupBackend` → `buildApp` →
+  `startDataPlane`, so all three share one hub, cache, alert engine and poller
+  set. `cmd/daemon.go` shrank from 124 lines to 76 and its hand-copied rule
+  conversion is gone.
+- **Portfolio holdings and transaction symbols are subscribed** even when not on
+  any watchlist. `mkt portfolio import` alone is now enough to get live prices.
+- **Every symbol entering the data plane is canonicalized**, so `btc`,
+  `BTC-USD` and `BTCUSDT` in a config produce one subscription and one
+  correlation row rather than three.
+- **`MKT_RECORD` no longer truncates an existing capture.** The previous file is
+  preserved as `<path>.bak.<timestamp>` (newest 10 kept) and the path is printed.
+  Appending was rejected: an NDJSON of two disjoint sessions replays as one bogus
+  timeline.
+- **`mkt backtest` runs in recorded time.** The engine's clock is driven from
+  each quote's own timestamp, so `--cooldown` (default 5m) expires after the
+  recorded interval it represents rather than after the milliseconds a burst
+  replay actually takes.
+- **The heatmap draws the user's own watchlist groups**, one sector per group,
+  instead of a built-in fallback list — so every tile is a symbol the hub is
+  actually subscribed to. It re-seeds on config reload.
+- **The correlation matrix shares the watchlist universe** and de-duplicates
+  aliases.
+- `mkt config validate` exits non-zero and never prints "Config OK" for a file
+  that did not parse; accepts `dividend`; flags unroutable symbols; and reports
+  non-canonical spellings (`"matic"` → `POL-USD`).
+- `mkt portfolio import` is idempotent — a transaction already present in the
+  destination portfolio (same date, type, symbol, quantity and price) is skipped.
+  Matching is by count, so two identical CSV rows still import as two. `--force`
+  appends everything.
+- `mkt watch` canonicalizes its arguments and errors naming unrecognized symbols
+  instead of blocking forever waiting for a quote that can never arrive.
+- `mkt position` rejects inputs that would produce a meaningless size:
+  `--risk <= 0`, `--risk > 100`, `--stop == --entry`, a stop on the wrong side
+  for the chosen side, and a non-positive ATR-implied stop.
+- MCP `get_quote` reports `source: "live"` or `"daily-close"` (with a `note` on
+  the fallback); `get_portfolio` returns `fullyPriced`, `coverage`, `unpriced`,
+  `unpricedCost` and `fetchErrors`.
+- Runtime failures print the error only; usage is still attached to flag-parse
+  errors.
+- Coinbase history aggregates to exactly the requested interval, so `4h` and
+  `1w` charts are real rather than the nearest supported granularity.
+- Yahoo history honours `params.Limit`, and all Yahoo calls are rate-limited and
+  retried internally.
+- Yahoo provider outages now surface in the status bar; previously only Coinbase
+  reported status. The status bar tracks per-provider state rather than assuming
+  Coinbase.
+- The macro tab's yield spread is relabelled **10Y-3M Spread**. It computes
+  `^TNX - ^IRX`, and `^IRX` is the 13-week bill, so it was never the 2s10s.
+- The Crypto Futures panel reports `— unavailable in this region` instead of
+  rendering a fabricated flat market. `fapi.binance.com` answers HTTP 451 to US
+  IP addresses, which used to display as legitimate-looking `0.00` values.
+- `internal/tui/chart/model.go` split into `model.go`, `grid.go`, `series.go`
+  and `history.go`; `internal/config` split into `config.go`, `save.go`,
+  `backup.go` and `diff.go`.
+- `.github/workflows/release.yml` gates the goreleaser job on the full
+  test/lint/govulncheck suite. A tag push previously published signed artifacts
+  without any of them having run, because `ci.yml` triggered only on
+  push-to-main and pull requests.
+
+### Fixed
+
+- **The Options tab never rendered.** `O` on the Watch tab jumped to it and it
+  stayed on "Loading…" forever; async results were routed conditionally and lost
+  if the user tabbed away or pressed `esc` mid-fetch. Same routing gap fixed for
+  the detail panel's level-2 order book.
+- **`q` quit the process during the alerts delete confirmation.** A tab holding a
+  confirm prompt now consumes the next key before the global quit binding: `y`
+  deletes, anything else cancels, and `q` quits normally once the prompt is gone.
+- **Mouse clicks selected the wrong row.** The click offset now derives from the
+  same `contentOrigin()` the renderer uses (tab bar + notice rows + panel top
+  border), fixing an off-by-one on Watch / Portfolio / Alerts at ≥30×15.
+- **A click on row 0 of the full-screen chart or comparison chart** silently
+  switched a tab the user could not see — those views draw no tab bar. They now
+  claim the click first.
+- **The detail panel and the centered modals are modal for the mouse**, matching
+  how they already absorbed keys. Clicks and wheel events behind them no longer
+  move a hidden selection.
+- **Alert evaluation was on the lossy path.** Alerts were evaluated from the same
+  bounded dispatch that sheds under TUI back-pressure, so a stalled terminal
+  could cost a notification. Evaluation moved to the reliable observer path.
+- **Alerts created in the TUI were lost on exit.** They now persist (see Added).
+- **`mkt backtest` under-reported fires and mis-attributed compound rules.**
+  Cooldowns were anchored in wall time (so a burst replay collapsed four
+  crossings into one fire) and rules were bucketed by `(Symbol, Condition,
+  Value)`, so two compound rules on one symbol shared a bucket and one of them
+  reported `(no fires)`. Attribution is now by rule index; on a synthetic
+  8-quote tape with four upward crossings of 100, `BTC-USD above 100` went from
+  `fires=1` to `fires=4`.
+- **A tape written before quotes carried timestamps replayed from the Unix
+  epoch.** The wire format stores `ts` as unix nanoseconds with no encoding for
+  "absent", so the decoder produced 1970 rather than the zero time and the
+  reported span became `1754-08-30 → 2026-03-02`. Anything at or before the
+  epoch is now treated as absent.
+- **Forced writes destroyed data silently.** `--force` / `--yes` skip the
+  confirmation prompt, which was exactly the path where the list of removed data
+  was discarded rather than reported. Every write that drops data without a
+  prompt now prints what it removed plus the `mkt config repair --from-backup 1`
+  recovery command.
+- Yahoo `4h` charts fall back to `1h` bars (`ServedInterval`) rather than
+  silently returning daily data.
+- Sparklines were empty until enough poll ticks had accumulated; the cache is
+  now seeded from history at startup.
+- Portfolio holdings that were not on a watchlist never priced.
+- Background goroutines leaked: both provider status pumps now select on
+  `ctx.Done()`, and the earnings fetch uses a 30s timeout derived from the
+  parent context instead of `context.Background()`.
+- Queued notifications were lost at exit; the engine is now flushed (up to 3s).
+- Indicators propagated NaN indefinitely. A single bad tick used to poison every
+  later value of an accumulating indicator; rolling-window indicators (SMA,
+  Stddev, Bollinger) now report NaN only while bad data is inside the window and
+  recover as soon as it leaves, and accumulating indicators (EMA, RSI, ATR, ADX,
+  VWAP, OBV) skip the bad sample instead of folding it in.
+- `strings.Repeat` with a negative count panicked at small terminal sizes;
+  `format.Repeat` / `format.Spaces` are negative-safe and the TUI is swept
+  across widths 0–120 and heights 0–40 on every tab in tests.
+
+### Security
+
+- `internal/httpx` caps every provider response body at 16 MiB. A hostile or
+  compromised upstream could previously stream an unbounded body into memory.
+- Notification destination URLs are redacted to `scheme://host/…` before they
+  appear in a log line or an error string. For every destination `mkt` supports
+  the secret *is* the URL — a Slack or Discord webhook path is the credential,
+  an ntfy topic is the credential, and a userinfo section is a password in plain
+  sight.
+- `--listen-token-file` / `MKT_LISTEN_TOKEN_FILE` keep the bearer token off
+  argv, which is world-readable via `ps`. Passing `--listen-token` explicitly now
+  warns.
+- Config writes are atomic (temp file + rename), so an interrupted write can no
+  longer leave a truncated `config.yaml`.
+- `mkt serve` does not write an SSH guest's alert edits back to the host's config
+  unless started with `--persist-alerts`.
+- `gosec`, `bodyclose` and `errorlint` added to the lint gate; the release
+  workflow is gated on lint, tests and `govulncheck`, so a broken tag cannot
+  publish signed artifacts.
+
+---
+
+## v0.1.0 — 2026-07-17
+
+First tagged release. Everything below shipped in it.
 
 ### Added
 - `internal/provider/recording`: NDJSON record/replay for quote streams. `Recording` decorator wraps any `QuoteProvider` and tees observed quotes to a shared `Sink`; `Replay` provider reads the file back, with `ModeBurst` and `ModeRealtime` pacing. Opt-in via `MKT_RECORD=<path>` env var on the dashboard.

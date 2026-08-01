@@ -5,14 +5,36 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Callable from release.yml. A tag push runs this entire workflow before
+  # goreleaser is allowed to publish, so a broken tag cannot ship signed
+  # artifacts that never saw lint, tests or govulncheck.
+  workflow_call:
 
 permissions:
   contents: read
 
 jobs:
+  # mkt ships six cross-platform targets and links a notification stack
+  # (beeep -> go-toast on Windows, systray/esiqveland-notify on Linux,
+  # NSUserNotification on macOS) with real per-OS code paths. Testing only on
+  # Linux leaves two thirds of the release matrix unexercised.
   test:
-    name: test
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            race: "-race"
+          - os: macos-latest
+            race: "-race"
+          # The race detector needs a C toolchain on windows/amd64, which the
+          # runner image does not guarantee. The Windows job exists to prove
+          # the per-OS notifier and terminal paths build and behave, not to
+          # re-check concurrency the other two legs already cover.
+          - os: windows-latest
+            race: ""
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -25,8 +47,35 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      - name: go test -race
-        run: go test -race -count=1 ./...
+      - name: go test
+        run: go test ${{ matrix.race }} -count=1 ./...
+
+  # Compile every target .goreleaser.yaml publishes. Catches per-OS build
+  # constraints that the three test legs above cannot reach (linux/arm64,
+  # darwin/amd64 and windows/arm64 have no runner).
+  build:
+    name: build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+    env:
+      CGO_ENABLED: "0"
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go build
+        run: go build ./...
 
   lint:
     name: lint

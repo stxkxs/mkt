@@ -65,6 +65,21 @@ signs:
     artifacts: checksum
     output: true
 
+# A Homebrew tap is deliberately NOT enabled here. `brew_casks` / `homebrew_casks`
+# has to push a formula into a second repository (github.com/stxkxs/homebrew-tap),
+# which the workflow's default GITHUB_TOKEN cannot write to — it would need a PAT
+# in secrets.HOMEBREW_TAP_TOKEN. Enabling it without that token turns every
+# release red at the last step, after the artifacts are already signed and
+# uploaded. To turn it on: create the tap repo, add the PAT, then append
+#
+#   homebrew_casks:
+#     - name: mkt
+#       repository: { owner: stxkxs, name: homebrew-tap, token: "{{ .Env.HOMEBREW_TAP_TOKEN }}" }
+#       homepage: https://github.com/stxkxs/mkt
+#       description: Real-time terminal market dashboard for stocks and crypto
+#
+# Until then the README documents `go install` and the signed release archives.
+
 changelog:
   sort: asc
   use: github

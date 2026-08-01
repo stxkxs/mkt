@@ -6,13 +6,26 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
-  id-token: write # cosign keyless signing (OIDC)
+  contents: read
 
 jobs:
+  # ci.yml only triggers on push-to-main and pull requests, so a tag pushed
+  # from a branch (or a tag moved onto an untested commit) used to reach
+  # goreleaser with nothing verified. Running the full suite as a gate means a
+  # broken tag fails before anything signed is published.
+  ci:
+    name: ci
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   goreleaser:
     name: goreleaser
+    needs: ci
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write # cosign keyless signing (OIDC)
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
