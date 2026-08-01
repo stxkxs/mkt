@@ -69,8 +69,7 @@ func resetFlags(c *cobra.Command) {
 func seedConfig(t *testing.T, body string) string {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := filepath.Join(home, ".config", "mkt")
+	dir := isolateHome(t, home)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -494,7 +493,7 @@ func (e errString) Error() string { return string(e) }
 
 func TestTildePath(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateHome(t, home)
 
 	if got, want := tildePath(filepath.Join(home, ".config", "mkt", "config.yaml")), "~/.config/mkt/config.yaml"; got != want {
 		t.Errorf("tildePath = %q, want %q", got, want)

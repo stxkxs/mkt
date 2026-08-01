@@ -52,17 +52,32 @@ notes:
 webhook_url: https://example.invalid/hook
 `
 
-// isolate points HOME at a fresh tempdir and returns the config path, so a
-// test never touches the developer's real ~/.config/mkt.
+// isolate points the config dir at a fresh tempdir and returns the config
+// path, so a test never touches the developer's real ~/.config/mkt.
 func isolate(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	cfgDir := filepath.Join(dir, ".config", "mkt")
-	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+	dir := isolateAt(t, t.TempDir())
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Join(cfgDir, "config.yaml")
+	return filepath.Join(dir, "config.yaml")
+}
+
+// isolateAt redirects the config dir under home and returns the config dir.
+//
+// Setting HOME alone is not enough: os.UserHomeDir reads $HOME on Unix but
+// %USERPROFILE% on Windows, so a HOME-only test ran against the developer's
+// real config directory there — which is exactly how the Windows CI leg
+// started failing on cross-contaminated state. DirEnv is the portable
+// override; HOME and USERPROFILE are still set because unrelated code paths
+// (SSH host key defaults, ~ expansion) resolve a home directory of their own.
+func isolateAt(t *testing.T, home string) string {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := filepath.Join(home, ".config", "mkt")
+	t.Setenv(DirEnv, dir)
+	return dir
 }
 
 func writeConfigFile(t *testing.T, path, body string) {
@@ -560,7 +575,7 @@ func TestSaveSafelyReportsUnwritableConfigDir(t *testing.T) {
 		t.Skip("running as root: a read-only directory does not stop mkdir")
 	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateAt(t, home)
 	// ~/.config exists but is read-only, so ~/.config/mkt cannot be created.
 	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o500); err != nil {
 		t.Fatal(err)
@@ -868,7 +883,7 @@ func TestLoadFailsWhenConfigDirCannotBeCreated(t *testing.T) {
 		t.Skip("running as root: a read-only directory does not stop mkdir")
 	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateAt(t, home)
 	if err := os.Chmod(home, 0o500); err != nil {
 		t.Fatal(err)
 	}
