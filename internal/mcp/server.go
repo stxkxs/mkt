@@ -6,8 +6,10 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -49,10 +51,21 @@ type Prompt struct {
 }
 
 // Server is an MCP server bound to a set of tools, resources, and prompts.
+//
+// Each registry keeps a parallel slice of keys in registration order: Go
+// map iteration is randomized, so listing straight off the map would hand
+// a different ordering to every tools/list call. Clients cache and diff
+// those listings, so the order has to be stable across calls and across
+// process restarts.
 type Server struct {
 	tools     map[string]Tool
-	resources map[string]Resource
-	prompts   map[string]Prompt
+	toolOrder []string
+
+	resources     map[string]Resource
+	resourceOrder []string
+
+	prompts     map[string]Prompt
+	promptOrder []string
 
 	name    string
 	version string
@@ -70,25 +83,40 @@ func New(name, version string) *Server {
 	}
 }
 
-// WithTools registers the given tools.
+// WithTools registers the given tools. tools/list reports them in
+// registration order; re-registering a name replaces the definition in
+// place without moving it.
 func (s *Server) WithTools(tools ...Tool) *Server {
 	for _, t := range tools {
+		if _, dup := s.tools[t.Name]; !dup {
+			s.toolOrder = append(s.toolOrder, t.Name)
+		}
 		s.tools[t.Name] = t
 	}
 	return s
 }
 
-// WithResources registers the given resources.
+// WithResources registers the given resources. resources/list reports
+// them in registration order; re-registering a URI replaces the
+// definition in place without moving it.
 func (s *Server) WithResources(rs ...Resource) *Server {
 	for _, r := range rs {
+		if _, dup := s.resources[r.URI]; !dup {
+			s.resourceOrder = append(s.resourceOrder, r.URI)
+		}
 		s.resources[r.URI] = r
 	}
 	return s
 }
 
-// WithPrompts registers the given prompts.
+// WithPrompts registers the given prompts. prompts/list reports them in
+// registration order; re-registering a name replaces the definition in
+// place without moving it.
 func (s *Server) WithPrompts(ps ...Prompt) *Server {
 	for _, p := range ps {
+		if _, dup := s.prompts[p.Name]; !dup {
+			s.promptOrder = append(s.promptOrder, p.Name)
+		}
 		s.prompts[p.Name] = p
 	}
 	return s
@@ -101,9 +129,12 @@ type req struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
+// resp is a JSON-RPC response. ID is always emitted — the spec requires
+// the member to be present, and null when the request's own id could not
+// be determined (parse errors, malformed envelopes).
 type resp struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
+	ID      json.RawMessage `json:"id"`
 	Result  any             `json:"result,omitempty"`
 	Error   *rpcError       `json:"error,omitempty"`
 }
@@ -120,27 +151,53 @@ const (
 	errMethodNotFound = -32601
 	errInvalidParams  = -32602
 	errInternal       = -32603
-	errAppError       = -32000
+	// errResourceNotFound is MCP's resource-specific code. An unknown URI
+	// is not a JSON-RPC method lookup failure, so it does not use -32601.
+	errResourceNotFound = -32002
+	errAppError         = -32000
 )
 
+// nullID is the JSON `null` used as the response id when the request's own
+// id is unknown or malformed.
+var nullID = json.RawMessage("null")
+
+// maxLineBytes caps a single inbound message. A longer line is drained and
+// answered with a parse error rather than tearing the session down: a
+// stdio server that dies on one oversized frame takes the client's whole
+// session with it.
+const maxLineBytes = 4 * 1024 * 1024
+
 // Serve reads JSON-RPC messages line-by-line from r, dispatches, and
-// writes responses (one per line) to w. Notifications (requests without
-// an `id`) generate no response. Returns when r is exhausted.
+// writes responses (one per line) to w. Notifications (requests with no
+// `id`, or an explicit null one) generate no response, and a batch whose
+// members are all notifications generates no response either. Returns
+// when r is exhausted or ctx is cancelled.
 func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	br := bufio.NewReaderSize(r, 64*1024)
 	enc := json.NewEncoder(w)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
+	for {
+		if ctx.Err() != nil {
+			// The caller is shutting the transport down. Not an error
+			// condition — stdio is simply going away.
+			return nil
+		}
+		line, tooLong, err := readLine(br, maxLineBytes)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		if tooLong {
+			if err := enc.Encode(errReply(nullID, errParseError, "message too large")); err != nil {
+				return err
+			}
 			continue
 		}
-		var rq req
-		if err := json.Unmarshal(line, &rq); err != nil {
-			_ = enc.Encode(resp{JSONRPC: "2.0", Error: &rpcError{Code: errParseError, Message: "parse error"}})
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
-		out, suppress := s.dispatch(ctx, rq)
+		out, suppress := s.handle(ctx, line)
 		if suppress {
 			continue
 		}
@@ -148,13 +205,145 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			return err
 		}
 	}
-	return sc.Err()
+}
+
+// readLine reads one newline-delimited message. A line longer than max is
+// consumed and discarded, reporting tooLong so the caller can answer with
+// a parse error instead of aborting the session.
+func readLine(br *bufio.Reader, max int) (line []byte, tooLong bool, err error) {
+	for {
+		chunk, isPrefix, err := br.ReadLine()
+		if err != nil {
+			return nil, false, err
+		}
+		switch {
+		case tooLong:
+			// Already over the cap; keep draining to the newline.
+		case len(line)+len(chunk) > max:
+			tooLong, line = true, nil
+		default:
+			line = append(line, chunk...)
+		}
+		if !isPrefix {
+			return line, tooLong, nil
+		}
+	}
+}
+
+// handle parses one line — a single request or a JSON-RPC batch — and
+// returns the value to encode plus a flag that, when true, tells Serve to
+// write nothing.
+func (s *Server) handle(ctx context.Context, line []byte) (any, bool) {
+	if trimmed := bytes.TrimLeft(line, " \t\r\n"); len(trimmed) > 0 && trimmed[0] == '[' {
+		return s.handleBatch(ctx, line)
+	}
+	var rq req
+	if err := json.Unmarshal(line, &rq); err != nil {
+		return errReply(nullID, errParseError, "parse error"), false
+	}
+	return s.dispatchChecked(ctx, rq)
+}
+
+// handleBatch dispatches an array of requests and answers with an array of
+// responses, per JSON-RPC 2.0 (the batching the 2025-03-26 MCP revision
+// permits). Notification members contribute nothing; a batch of nothing
+// but notifications is answered with silence.
+func (s *Server) handleBatch(ctx context.Context, line []byte) (any, bool) {
+	var raws []json.RawMessage
+	if err := json.Unmarshal(line, &raws); err != nil {
+		return errReply(nullID, errParseError, "parse error"), false
+	}
+	if len(raws) == 0 {
+		return errReply(nullID, errInvalidRequest, "empty batch"), false
+	}
+	out := make([]resp, 0, len(raws))
+	for _, raw := range raws {
+		var rq req
+		if err := json.Unmarshal(raw, &rq); err != nil {
+			out = append(out, errReply(nullID, errInvalidRequest, "invalid request"))
+			continue
+		}
+		r, suppress := s.dispatchChecked(ctx, rq)
+		if !suppress {
+			out = append(out, r)
+		}
+	}
+	if len(out) == 0 {
+		return nil, true
+	}
+	return out, false
+}
+
+// dispatchChecked validates the JSON-RPC envelope and then dispatches. It
+// is also the panic barrier: a handler that panics yields an error
+// response instead of unwinding through Serve and killing the session.
+func (s *Server) dispatchChecked(ctx context.Context, rq req) (out resp, suppress bool) {
+	id, ok := normalizeID(rq.ID)
+	if !ok {
+		return errReply(nullID, errInvalidRequest, "id must be a string or a number"), false
+	}
+	rq.ID = id
+	isNotification := len(id) == 0
+
+	// A wrong version is a malformed envelope (a JSON-RPC 1.0 client, say).
+	// An absent one is tolerated: some clients omit it and the intent is
+	// unambiguous over an MCP transport.
+	if rq.JSONRPC != "" && rq.JSONRPC != "2.0" {
+		if isNotification {
+			return resp{}, true
+		}
+		return errReply(id, errInvalidRequest, `jsonrpc must be "2.0"`), false
+	}
+	if rq.Method == "" {
+		if isNotification {
+			return resp{}, true
+		}
+		return errReply(id, errInvalidRequest, "missing method"), false
+	}
+
+	defer func() {
+		p := recover()
+		if p == nil {
+			return
+		}
+		if isNotification {
+			out, suppress = resp{}, true
+			return
+		}
+		out, suppress = errReply(id, errInternal, fmt.Sprintf("internal error: %v", p)), false
+	}()
+	out, suppress = s.dispatch(ctx, rq)
+	if isNotification {
+		// A request with no id is a notification whatever its method:
+		// JSON-RPC says run it and answer nothing. The handler still ran,
+		// so any side effect the client asked for happened.
+		return resp{}, true
+	}
+	return out, suppress
+}
+
+// normalizeID canonicalizes a request id. Both an absent id and an
+// explicit null mean "no response wanted": MCP forbids a null id on a real
+// request, and answering one produces a response the client cannot match
+// to anything. Anything that is not a string or a number is a malformed
+// envelope and reports ok=false.
+func normalizeID(raw json.RawMessage) (json.RawMessage, bool) {
+	t := bytes.TrimSpace(raw)
+	if len(t) == 0 || bytes.Equal(t, []byte("null")) {
+		return nil, true
+	}
+	if c := t[0]; c == '"' || c == '-' || (c >= '0' && c <= '9') {
+		return t, true
+	}
+	return nil, false
 }
 
 // dispatch returns the response and a flag that, when true, tells Serve
 // to skip writing anything (used for notifications).
+// Requests carrying no id are suppressed centrally by dispatchChecked, so
+// the suppress flag here only covers methods that are notification-only by
+// definition.
 func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
-	isNotification := len(rq.ID) == 0
 	switch rq.Method {
 	case "initialize":
 		return resp{JSONRPC: "2.0", ID: rq.ID, Result: map[string]any{
@@ -169,15 +358,17 @@ func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 		}}, false
 
 	case "notifications/initialized", "notifications/cancelled", "notifications/progress":
-		// Notifications never get a response.
+		// Notification-only methods: silent even if a confused client
+		// attached an id.
 		return resp{}, true
 
 	case "ping":
 		return resp{JSONRPC: "2.0", ID: rq.ID, Result: map[string]any{}}, false
 
 	case "tools/list":
-		var tools []map[string]any
-		for _, t := range s.tools {
+		tools := make([]map[string]any, 0, len(s.toolOrder))
+		for _, name := range s.toolOrder {
+			t := s.tools[name]
 			tools = append(tools, map[string]any{
 				"name":        t.Name,
 				"description": t.Description,
@@ -196,17 +387,25 @@ func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 		}
 		t, ok := s.tools[params.Name]
 		if !ok {
-			return errReply(rq.ID, errMethodNotFound, fmt.Sprintf("unknown tool %q", params.Name)), false
+			// Asking for a tool that was never listed is a client fault,
+			// so it stays a protocol error (the code the MCP spec uses for
+			// an unknown tool name).
+			return errReply(rq.ID, errInvalidParams, fmt.Sprintf("unknown tool %q", params.Name)), false
 		}
-		out, err := t.Handler(ctx, params.Arguments)
+		out, err := callTool(ctx, t, params.Arguments)
 		if err != nil {
-			return errReply(rq.ID, errAppError, err.Error()), false
+			// A tool that ran and failed is not a protocol fault: the MCP
+			// spec wants it reported as an ordinary result carrying
+			// isError, so the calling model can read what went wrong and
+			// retry instead of seeing the transport blow up.
+			return resp{JSONRPC: "2.0", ID: rq.ID, Result: toolError(err)}, false
 		}
 		return resp{JSONRPC: "2.0", ID: rq.ID, Result: toolResult(out)}, false
 
 	case "resources/list":
-		var rs []map[string]any
-		for _, r := range s.resources {
+		rs := make([]map[string]any, 0, len(s.resourceOrder))
+		for _, uri := range s.resourceOrder {
+			r := s.resources[uri]
 			rs = append(rs, map[string]any{
 				"uri":         r.URI,
 				"name":        r.Name,
@@ -225,9 +424,9 @@ func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 		}
 		r, ok := s.resources[params.URI]
 		if !ok {
-			return errReply(rq.ID, errMethodNotFound, fmt.Sprintf("unknown resource %q", params.URI)), false
+			return errReply(rq.ID, errResourceNotFound, fmt.Sprintf("unknown resource %q", params.URI)), false
 		}
-		text, err := r.Handler(ctx)
+		text, err := callResource(ctx, r)
 		if err != nil {
 			return errReply(rq.ID, errAppError, err.Error()), false
 		}
@@ -236,12 +435,17 @@ func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 		}}, false
 
 	case "prompts/list":
-		var ps []map[string]any
-		for _, p := range s.prompts {
+		ps := make([]map[string]any, 0, len(s.promptOrder))
+		for _, name := range s.promptOrder {
+			p := s.prompts[name]
+			args := p.Arguments
+			if args == nil {
+				args = []PromptArg{}
+			}
 			ps = append(ps, map[string]any{
 				"name":        p.Name,
 				"description": p.Description,
-				"arguments":   p.Arguments,
+				"arguments":   args,
 			})
 		}
 		return resp{JSONRPC: "2.0", ID: rq.ID, Result: map[string]any{"prompts": ps}}, false
@@ -256,9 +460,9 @@ func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 		}
 		p, ok := s.prompts[params.Name]
 		if !ok {
-			return errReply(rq.ID, errMethodNotFound, fmt.Sprintf("unknown prompt %q", params.Name)), false
+			return errReply(rq.ID, errInvalidParams, fmt.Sprintf("unknown prompt %q", params.Name)), false
 		}
-		text, err := p.Handler(ctx, params.Arguments)
+		text, err := callPrompt(ctx, p, params.Arguments)
 		if err != nil {
 			return errReply(rq.ID, errAppError, err.Error()), false
 		}
@@ -278,14 +482,55 @@ func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 		return resp{JSONRPC: "2.0", ID: rq.ID, Result: map[string]any{}}, false
 	}
 
-	if isNotification {
-		// Unknown notifications: silently ignored per the JSON-RPC spec.
-		return resp{}, true
-	}
 	return errReply(rq.ID, errMethodNotFound, fmt.Sprintf("method %q not found", rq.Method)), false
 }
 
+// callTool invokes a tool handler, turning a panic or a missing handler
+// into an ordinary error. The caller reports it through isError.
+func callTool(ctx context.Context, t Tool, args map[string]any) (out any, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			out, err = nil, fmt.Errorf("tool %q panicked: %v", t.Name, p)
+		}
+	}()
+	if t.Handler == nil {
+		return nil, fmt.Errorf("tool %q has no handler", t.Name)
+	}
+	return t.Handler(ctx, args)
+}
+
+// callResource invokes a resource handler, turning a panic or a missing
+// handler into an ordinary error.
+func callResource(ctx context.Context, r Resource) (text string, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			text, err = "", fmt.Errorf("resource %q panicked: %v", r.URI, p)
+		}
+	}()
+	if r.Handler == nil {
+		return "", fmt.Errorf("resource %q has no handler", r.URI)
+	}
+	return r.Handler(ctx)
+}
+
+// callPrompt invokes a prompt handler, turning a panic or a missing
+// handler into an ordinary error.
+func callPrompt(ctx context.Context, p Prompt, args map[string]string) (text string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			text, err = "", fmt.Errorf("prompt %q panicked: %v", p.Name, r)
+		}
+	}()
+	if p.Handler == nil {
+		return "", fmt.Errorf("prompt %q has no handler", p.Name)
+	}
+	return p.Handler(ctx, args)
+}
+
 func errReply(id json.RawMessage, code int, msg string) resp {
+	if len(id) == 0 {
+		id = nullID
+	}
 	return resp{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: code, Message: msg}}
 }
 
@@ -310,5 +555,17 @@ func toolResult(out any) map[string]any {
 	return map[string]any{
 		"content":           []map[string]any{{"type": "text", "text": string(b)}},
 		"structuredContent": out,
+	}
+}
+
+// toolError renders a tool handler's failure as a tools/call result with
+// isError set. This is the shape the MCP spec reserves for execution
+// failures: the model sees the message in content and can correct its
+// arguments, where a JSON-RPC error would surface to the client as a
+// transport-level fault it cannot act on.
+func toolError(err error) map[string]any {
+	return map[string]any{
+		"content": []map[string]any{{"type": "text", "text": err.Error()}},
+		"isError": true,
 	}
 }
