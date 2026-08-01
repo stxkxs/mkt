@@ -2,6 +2,7 @@ package alertdialog
 
 import (
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/stxkxs/mkt/internal/alert"
@@ -223,5 +224,42 @@ func TestSMACrossConditionGetsDefaultPeriod(t *testing.T) {
 	rules := engine.Rules()
 	if len(rules) != 1 || rules[0].Period != 20 {
 		t.Errorf("SMA cross rule period: got %+v, want period=20", rules)
+	}
+}
+
+var (
+	sweepWidths  = []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 20, 40, 80, 120, 200}
+	sweepHeights = []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 20, 40, 60}
+)
+
+// The condition slice is read on every key and on every render; an empty
+// one used to index straight off the end.
+func TestEmptyConditionListClosesInsteadOfPanicking(t *testing.T) {
+	m := New(alert.NewEngine(time.Minute, func(alert.TriggeredAlert) {}))
+	m.conditions = nil
+	m.Open("BTC-USD", 100)
+	if m.View() != "" {
+		t.Error("dialog rendered with no conditions to choose from")
+	}
+	for _, k := range []string{"left", "right", "enter", "backspace", "5"} {
+		m, _ = m.Update(tea.KeyPressMsg{Code: rune(k[0]), Text: k})
+	}
+	if m.Active() {
+		t.Error("dialog stayed active with no conditions")
+	}
+}
+
+func TestViewSurvivesEverySize(t *testing.T) {
+	keys := []string{"left", "right", "enter", "backspace", "1", ".", "esc"}
+	for _, w := range sweepWidths {
+		for _, h := range sweepHeights {
+			for _, k := range keys {
+				m := New(alert.NewEngine(time.Minute, func(alert.TriggeredAlert) {}))
+				m.SetSize(w, h)
+				m.Open("BTC-USD", 65000)
+				m, _ = m.Update(tea.KeyPressMsg{Code: rune(k[0]), Text: k})
+				_ = m.View()
+			}
+		}
 	}
 }

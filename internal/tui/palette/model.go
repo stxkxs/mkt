@@ -111,7 +111,7 @@ func (m Model) parse() Result {
 // View renders the prompt as a single bottom line. Returns empty when
 // inactive.
 func (m Model) View(width int) string {
-	if !m.active {
+	if !m.active || width <= 0 {
 		return ""
 	}
 	prompt := lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render(": ")

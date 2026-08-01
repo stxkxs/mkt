@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/alert"
+	"github.com/stxkxs/mkt/internal/tui/format"
 	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
@@ -115,13 +116,64 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if len(rules) == 0 {
 			return m, nil
 		}
-		// Local header: section header + column header + separator = 3 rows.
-		row := msg.Y - 3
-		if row >= 0 && row < len(rules) {
-			m.cursor = row
+		row := msg.Y - rulesHeaderLines
+		if row < 0 {
+			return m, nil
+		}
+		ruleRows, _ := m.layout(len(rules))
+		idx := format.ViewportStart(m.cursor, len(rules), ruleRows) + row
+		if idx >= 0 && idx < len(rules) {
+			m.cursor = idx
 		}
 	}
 	return m, nil
+}
+
+// Fixed rows the rules block spends on chrome: section header, column
+// header and separator above; a blank line and the hint/confirm line
+// below.
+const (
+	rulesHeaderLines = 3
+	rulesFooterLines = 2
+	historyChrome    = 2  // blank line + section header
+	historyMax       = 10 // most recent triggers worth showing
+)
+
+// layout splits the available height between the rules table and the
+// recent-alerts list. Both blocks scroll rather than overflowing the
+// frame: rules the cursor cannot reach are as good as missing, and a
+// list that paints past the bottom of the tab pushes the status bar off
+// screen. Rules get first claim on the space, but never more than half
+// when there is history to show.
+func (m Model) layout(ruleCount int) (ruleRows, histRows int) {
+	histTotal := len(m.history)
+	if histTotal > historyMax {
+		histTotal = historyMax
+	}
+	if ruleCount == 0 {
+		return 0, format.VisibleRows(m.height, historyChrome, histTotal)
+	}
+
+	reserved := rulesHeaderLines + rulesFooterLines
+	if histTotal > 0 {
+		want := histTotal + historyChrome
+		if half := (m.height - reserved) / 2; want > half {
+			want = half
+		}
+		if want > 0 {
+			reserved += want
+		}
+	}
+	ruleRows = format.VisibleRows(m.height, reserved, ruleCount)
+
+	histRows = m.height - rulesHeaderLines - rulesFooterLines - ruleRows - historyChrome
+	if histRows < 0 {
+		histRows = 0
+	}
+	if histRows > histTotal {
+		histRows = histTotal
+	}
+	return ruleRows, histRows
 }
 
 // View renders the alerts view.
@@ -132,6 +184,7 @@ func (m Model) View() string {
 
 	var sb strings.Builder
 	rules := m.engine.Rules()
+	ruleRows, histRows := m.layout(len(rules))
 
 	if len(rules) == 0 && len(m.history) == 0 {
 		sb.WriteString(theme.StyleDim.Render("  No alerts configured.\n"))
@@ -147,15 +200,22 @@ func (m Model) View() string {
 
 	// Rules table
 	if len(rules) > 0 {
+		start := format.ViewportStart(m.cursor, len(rules), ruleRows)
+		end := start + ruleRows
+		if end > len(rules) {
+			end = len(rules)
+		}
+
 		sb.WriteString(theme.SectionHeader("Alert Rules", m.width))
 		sb.WriteString("\n")
 		header := fmt.Sprintf("  %-12s %-16s %12s %8s", "SYMBOL", "CONDITION", "VALUE", "STATUS")
 		sb.WriteString(theme.StyleHeader.Render(header))
 		sb.WriteString("\n")
-		sb.WriteString(theme.StyleBorderChar.Render(strings.Repeat("─", m.width)))
+		sb.WriteString(theme.StyleBorderChar.Render(format.Repeat("─", m.width)))
 		sb.WriteString("\n")
 
-		for i, r := range rules {
+		for i, r := range rules[start:end] {
+			i += start
 			cursor := "  "
 			if i == m.cursor {
 				cursor = theme.StyleCursorGutter.Render("▎") + " "
@@ -197,22 +257,22 @@ func (m Model) View() string {
 			sb.WriteString(styleOff.Render(fmt.Sprintf("  Delete %s %s?", r.Symbol, what)))
 			sb.WriteString(theme.StyleDim.Render("  y: confirm  any other key: cancel"))
 		} else {
-			sb.WriteString(theme.StyleDim.Render("  t: toggle  d: delete  j/k: navigate"))
+			hint := "  t: toggle  d: delete  j/k: navigate"
+			if ruleRows < len(rules) {
+				hint += fmt.Sprintf("   showing %d-%d of %d", start+1, end, len(rules))
+			}
+			sb.WriteString(theme.StyleDim.Render(hint))
 		}
 		sb.WriteString("\n")
 	}
 
-	// Recent alerts
-	if len(m.history) > 0 {
+	// Recent alerts — most recent last, clipped to whatever height the
+	// rules table left over.
+	if histRows > 0 {
 		sb.WriteString("\n")
 		sb.WriteString(theme.SectionHeader("Recent Alerts", m.width))
 		sb.WriteString("\n")
-		// Show last 10
-		start := len(m.history) - 10
-		if start < 0 {
-			start = 0
-		}
-		for _, a := range m.history[start:] {
+		for _, a := range m.history[len(m.history)-histRows:] {
 			sb.WriteString(fmt.Sprintf("  %s  %s\n",
 				theme.StyleDim.Render(a.Timestamp.Format("15:04:05")),
 				styleAlert.Render(a.Message),

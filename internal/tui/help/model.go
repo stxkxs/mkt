@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/stxkxs/mkt/internal/tui/format"
 	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
@@ -46,7 +47,7 @@ var tabBindings = map[string][]binding{
 		{"[ / ]", "switch portfolio"},
 	},
 	"Alerts": {
-		{"j/k, arrows", "navigate rules"},
+		{"j/k, arrows", "navigate rules (list scrolls)"},
 		{"t", "toggle rule on/off"},
 		{"d", "delete rule (asks to confirm)"},
 	},
@@ -54,12 +55,15 @@ var tabBindings = map[string][]binding{
 		{"c (on Watch tab)", "open chart for selected symbol"},
 		{"[ / ]", "change interval (1m → 1w)"},
 		{"+ / -", "zoom in / out"},
+		{"f", "fit candles to the window width"},
 		{"m", "candlestick / line"},
 		{"i", "indicator menu"},
 		{"esc", "close chart"},
 	},
 	"Macro": {
-		{"", "read-only: rates, FX, futures, DeFi, calendar"},
+		{"j/k, arrows", "scroll"},
+		{"pgup / pgdn", "scroll by a page"},
+		{"g / G", "top / bottom"},
 	},
 	"News": {
 		{"j/k, arrows", "navigate"},
@@ -77,7 +81,9 @@ var tabBindings = map[string][]binding{
 		{"O (on Watch tab)", "load chain for selected symbol"},
 	},
 	"Correl": {
-		{"", "read-only: correlation of watchlist symbols"},
+		{"h/l or [ / ]", "scroll the visible symbol window"},
+		{"g / G", "first / last symbols"},
+		{"b", "cycle resampling bucket (30s → 15m)"},
 	},
 }
 
@@ -144,10 +150,7 @@ func writeSection(sb *strings.Builder, title string, bindings []binding) {
 	sb.WriteString("\n")
 	for _, b := range bindings {
 		sb.WriteString("  ")
-		key := b.key
-		for len(key) < keyColWidth {
-			key += " "
-		}
+		key := b.key + format.Spaces(keyColWidth-len([]rune(b.key)))
 		sb.WriteString(theme.StyleSymbol.Render(key))
 		sb.WriteString(theme.StyleVal.Render(b.desc))
 		sb.WriteString("\n")

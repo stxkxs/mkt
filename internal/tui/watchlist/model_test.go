@@ -1,6 +1,8 @@
 package watchlist
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -86,4 +88,94 @@ func equal(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+var (
+	sweepWidths  = []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 20, 40, 80, 120, 200}
+	sweepHeights = []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 20, 40, 60}
+)
+
+func bigModel(n int) Model {
+	syms := make([]string, n)
+	for i := range syms {
+		syms[i] = fmt.Sprintf("SYM%03d", i)
+	}
+	m := New([]Group{{Name: "Big", Symbols: syms}}, market.NewCache(60))
+	for i, s := range syms {
+		m.UpdateQuote(provider.Quote{Symbol: s, Price: float64(i + 1), ChangePct: float64(i%7) - 3})
+	}
+	return m
+}
+
+// A content area shorter than the header rows made maxRows negative,
+// and the "< 1 means unlimited" branch then painted the whole list
+// straight through the bottom of the frame.
+func TestShortFrameDoesNotPaintWholeList(t *testing.T) {
+	m := bigModel(120)
+	for _, h := range []int{0, 1, 2, 3} {
+		m.SetSize(100, h)
+		rows := strings.Count(m.View(), "\n")
+		if rows > 6 {
+			t.Errorf("height %d rendered %d rows for 120 symbols", h, rows)
+		}
+	}
+}
+
+func TestVisibleRowsNeverExceedsFrame(t *testing.T) {
+	m := bigModel(120)
+	for _, h := range sweepHeights {
+		m.SetSize(100, h)
+		if got := m.visibleRows(); got > 120 {
+			t.Errorf("height %d: visibleRows = %d", h, got)
+		}
+		if got := m.visibleRows(); got < 1 {
+			t.Errorf("height %d: visibleRows = %d, want at least 1", h, got)
+		}
+	}
+}
+
+func TestCursorStaysVisibleInShortFrame(t *testing.T) {
+	m := bigModel(120)
+	m.SetSize(100, 12)
+	for range 119 {
+		m = press(m, "j")
+	}
+	out := m.View()
+	if !strings.Contains(out, "SYM119") {
+		t.Error("cursor row SYM119 not rendered")
+	}
+	if strings.Contains(out, "SYM000") {
+		t.Error("top of list still rendered after scrolling to the bottom")
+	}
+}
+
+func TestViewSurvivesEverySize(t *testing.T) {
+	keys := []string{"j", "k", "g", "G", "s", "[", "]", "/", "a", "enter", "esc"}
+	for _, w := range sweepWidths {
+		for _, h := range sweepHeights {
+			for _, k := range keys {
+				m := bigModel(30)
+				m.SetSize(w, h)
+				m = press(m, k)
+				_ = m.View()
+				m, _ = m.Update(tea.MouseClickMsg{X: 1, Y: h})
+				m, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+				_ = m.View()
+			}
+		}
+	}
+}
+
+func TestEmptyGroupSurvivesEverySize(t *testing.T) {
+	for _, w := range sweepWidths {
+		for _, h := range sweepHeights {
+			m := New(nil, market.NewCache(60))
+			m.SetSize(w, h)
+			m = press(m, "j")
+			m = press(m, "G")
+			_ = m.View()
+			m = press(m, "/")
+			_ = m.View()
+		}
+	}
 }

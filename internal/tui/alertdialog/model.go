@@ -69,6 +69,17 @@ func (m Model) Active() bool {
 	return m.active
 }
 
+// condition returns the selected condition, and whether there was one.
+// alert.AllConditions is never empty in practice, but every read of the
+// slice goes through here so a future empty set degrades to a closed
+// dialog instead of an index panic.
+func (m Model) condition() (alert.Condition, bool) {
+	if m.condIdx < 0 || m.condIdx >= len(m.conditions) {
+		return "", false
+	}
+	return m.conditions[m.condIdx], true
+}
+
 // SetSize updates dimensions.
 func (m *Model) SetSize(w, h int) {
 	m.width = w
@@ -88,9 +99,13 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.active = false
 			return m, nil
 		case "enter":
+			cond, ok := m.condition()
+			if !ok {
+				m.active = false
+				return m, nil
+			}
 			switch m.step {
 			case stepCondition:
-				cond := m.conditions[m.condIdx]
 				if cond == alert.CondMACDCross {
 					// Skip value step for MACD cross
 					m.valueInput = "0"
@@ -105,7 +120,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				if err != nil {
 					return m, nil
 				}
-				cond := m.conditions[m.condIdx]
 				period := 0
 				if alert.IsIndicatorCondition(cond) {
 					switch {
@@ -126,7 +140,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return m, nil
 		case "left", "h":
-			if m.step == stepCondition {
+			if m.step == stepCondition && len(m.conditions) > 0 {
 				if m.condIdx > 0 {
 					m.condIdx--
 				} else {
@@ -134,7 +148,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				}
 			}
 		case "right", "l":
-			if m.step == stepCondition {
+			if m.step == stepCondition && len(m.conditions) > 0 {
 				m.condIdx = (m.condIdx + 1) % len(m.conditions)
 			}
 		case "backspace":
@@ -160,7 +174,10 @@ func (m Model) View() string {
 		return ""
 	}
 
-	cond := m.conditions[m.condIdx]
+	cond, ok := m.condition()
+	if !ok {
+		return ""
+	}
 	condStr := fmt.Sprintf("◄ %s ►", cond)
 
 	var lines []string

@@ -2,6 +2,7 @@ package portfolio
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -14,14 +15,29 @@ import (
 )
 
 var (
-	styleTotal = lipgloss.NewStyle().Foreground(theme.ColorYellow).Bold(true)
-	styleLabel = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
+	styleTotal   = lipgloss.NewStyle().Foreground(theme.ColorYellow).Bold(true)
+	styleLabel   = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
+	styleUnknown = lipgloss.NewStyle().Foreground(theme.ColorOrange)
 )
 
 // RebuildStyles refreshes local styles from current theme colors.
 func RebuildStyles() {
 	styleTotal = lipgloss.NewStyle().Foreground(theme.ColorYellow).Bold(true)
 	styleLabel = lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
+	styleUnknown = lipgloss.NewStyle().Foreground(theme.ColorOrange)
+}
+
+// DefaultBenchmark is the symbol sampled alongside each equity mark to
+// compute Beta. It only produces a series when the symbol is in the
+// watchlist — that is what the tab subscribes quotes through.
+const DefaultBenchmark = "SPY"
+
+// betaSample pairs one equity mark with the benchmark price at the same
+// instant. Beta needs two return series sampled on the same clock, and
+// this is the only place both numbers are known at once.
+type betaSample struct {
+	equity float64
+	bench  float64
 }
 
 // Model is the portfolio view.
@@ -36,6 +52,12 @@ type Model struct {
 	// Equity history per portfolio name, populated by dashboard at
 	// startup and appended to on EquityMarkMsg.
 	equity map[string][]portfolio.EquityMark
+
+	// Benchmark price sampled alongside each equity mark, per portfolio.
+	// Only this session's marks have one — a persisted curve carries no
+	// benchmark — so Beta is reported over however many pairs exist.
+	beta      map[string][]betaSample
+	benchmark string
 }
 
 // New creates a portfolio model.
@@ -44,7 +66,15 @@ func New(portfolios []portfolio.Portfolio) Model {
 		portfolios: portfolios,
 		quotes:     make(map[string]provider.Quote),
 		equity:     make(map[string][]portfolio.EquityMark),
+		beta:       make(map[string][]betaSample),
+		benchmark:  DefaultBenchmark,
 	}
+}
+
+// SetBenchmark selects the symbol whose price is sampled next to each
+// equity mark for Beta. Pass "" to drop the Beta readout entirely.
+func (m *Model) SetBenchmark(sym string) {
+	m.benchmark = sym
 }
 
 // LoadEquityHistory seeds the model with previously persisted marks.
@@ -58,12 +88,44 @@ func (m *Model) LoadEquityHistory(byName map[string][]portfolio.EquityMark) {
 	}
 }
 
-// AppendEquityMark records a new mark for its portfolio.
+// AppendEquityMark records a new mark for its portfolio and, when the
+// benchmark has a live quote, snapshots its price alongside so Beta has
+// a series sampled on the same clock as the equity curve. Marks taken
+// while the benchmark is unquoted are simply not paired, rather than
+// padded with a guess.
 func (m *Model) AppendEquityMark(mark portfolio.EquityMark) {
 	if m.equity == nil {
 		m.equity = make(map[string][]portfolio.EquityMark)
 	}
 	m.equity[mark.PortfolioName] = append(m.equity[mark.PortfolioName], mark)
+
+	if m.benchmark == "" {
+		return
+	}
+	q, ok := m.quotes[m.benchmark]
+	if !ok || q.Price <= 0 {
+		return
+	}
+	if m.beta == nil {
+		m.beta = make(map[string][]betaSample)
+	}
+	m.beta[mark.PortfolioName] = append(m.beta[mark.PortfolioName],
+		betaSample{equity: mark.Value, bench: q.Price})
+}
+
+// betaOf computes the portfolio's beta against the benchmark over the
+// paired samples collected this session. NaN when there are too few.
+func (m Model) betaOf(name string) float64 {
+	pairs := m.beta[name]
+	if len(pairs) < 3 {
+		return math.NaN()
+	}
+	eq := make([]float64, len(pairs))
+	bm := make([]float64, len(pairs))
+	for i, p := range pairs {
+		eq[i], bm[i] = p.equity, p.bench
+	}
+	return portfolio.Beta(portfolio.Returns(eq), portfolio.Returns(bm))
 }
 
 // SetSize updates dimensions.
@@ -125,32 +187,63 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		}
 	case tea.MouseClickMsg:
-		holdings := m.activePortfolio().Holdings
-		if len(holdings) == 0 {
+		p := m.activePortfolio()
+		if len(p.Holdings) == 0 {
 			return m, nil
 		}
-		row := msg.Y - 3 // local header: portfolio name + column header + separator
+		row := msg.Y - headerLines
 		if row < 0 {
 			return m, nil
 		}
-		start := portfolioViewportStart(m.cursor, len(holdings), m.height)
-		idx := start + row
-		if idx >= 0 && idx < len(holdings) {
+		summary := portfolio.Evaluate(p.Holdings, m.quotes)
+		idx := m.viewportStart(p, summary) + row
+		if idx >= 0 && idx < len(summary.Positions) {
 			m.cursor = idx
 		}
 	}
 	return m, nil
 }
 
-// portfolioViewportStart returns the first visible holding index.
-// Mirrors the offset calculation in View so click handling stays consistent.
-func portfolioViewportStart(cursor, total, height int) int {
-	return format.ViewportStart(cursor, total, height-6)
+// headerLines is the portfolio name row, the column header and the
+// separator above the first holding.
+const headerLines = 3
+
+// footerLines counts the rows of the totals block under the table. It is
+// state-dependent — coverage, metrics, realized P&L and dividends each
+// appear only when they have something to say — and the row budget has
+// to match it exactly or the last holdings scroll off the bottom.
+func (m Model) footerLines(p portfolio.Portfolio, s portfolio.Summary) int {
+	n := 2 // blank separator + totals row
+	if !s.FullyPriced() {
+		n++
+	}
+	if len(m.equity[p.Name]) >= 2 {
+		n++
+	}
+	if len(p.Transactions) > 0 {
+		n++
+		if portfolio.Dividends(p.Transactions) > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// visibleRows is how many holdings fit between the header and the
+// totals block.
+func (m Model) visibleRows(p portfolio.Portfolio, s portfolio.Summary) int {
+	return format.VisibleRows(m.height, headerLines+m.footerLines(p, s), len(s.Positions))
+}
+
+// viewportStart returns the first visible holding index. Shared by View
+// and the click handler so the two agree on what is on screen.
+func (m Model) viewportStart(p portfolio.Portfolio, s portfolio.Summary) int {
+	return format.ViewportStart(m.cursor, len(s.Positions), m.visibleRows(p, s))
 }
 
 // View renders the portfolio.
 func (m Model) View() string {
-	if m.width == 0 {
+	if m.width <= 0 {
 		return ""
 	}
 
@@ -167,16 +260,10 @@ func (m Model) View() string {
 		navHint = theme.StyleDim.Render(fmt.Sprintf("  [/]: switch  (%d/%d)", m.activeIdx+1, len(m.portfolios)))
 	}
 
-	// Equity curve sparkline + max drawdown (if we have history)
+	// Equity curve sparkline (the numeric risk stats live in the footer)
 	curveHint := ""
 	if marks := m.equity[p.Name]; len(marks) >= 2 {
-		values := make([]float64, len(marks))
-		for i, mk := range marks {
-			values[i] = mk.Value
-		}
-		spark := sparkline(values, 24)
-		dd := portfolio.MaxDrawdown(values) * 100
-		curveHint = "  " + theme.StyleDim.Render(spark) + theme.StyleDim.Render(fmt.Sprintf("  MaxDD: %.2f%%", dd))
+		curveHint = "  " + theme.StyleDim.Render(sparkline(portfolio.MarkValues(marks), 24))
 	}
 	sb.WriteString(styleLabel.Render(fmt.Sprintf("  %s", p.Name)) + curveHint + navHint + "\n")
 
@@ -190,50 +277,19 @@ func (m Model) View() string {
 		"SYMBOL", "NAME", "QTY", "COST", "PRICE", "VALUE", "P&L")
 	sb.WriteString(theme.StyleHeader.Render(header))
 	sb.WriteString("\n")
-	sb.WriteString(theme.StyleBorderChar.Render(strings.Repeat("─", m.width)))
+	sb.WriteString(theme.StyleBorderChar.Render(format.Repeat("─", m.width)))
 	sb.WriteString("\n")
 
 	summary := portfolio.Evaluate(p.Holdings, m.quotes)
 
-	// Compute visible window (3 for portfolio name + header + separator, 3 for total/blank/summary)
-	maxRows := m.height - 6
-	if maxRows < 1 || maxRows >= len(summary.Positions) {
-		maxRows = len(summary.Positions)
-	}
-	startIdx := portfolioViewportStart(m.cursor, len(summary.Positions), m.height)
-	endIdx := startIdx + maxRows
+	startIdx := m.viewportStart(p, summary)
+	endIdx := startIdx + m.visibleRows(p, summary)
 	if endIdx > len(summary.Positions) {
 		endIdx = len(summary.Positions)
 	}
 
 	for i := startIdx; i < endIdx; i++ {
-		pos := summary.Positions[i]
-		cursor := "  "
-		if i == m.cursor {
-			cursor = theme.StyleCursorGutter.Render("▎") + " "
-		}
-
-		pnlStyle := theme.StyleUp
-		sign := "+"
-		if pos.PnL < 0 {
-			pnlStyle = theme.StyleDown
-			sign = ""
-		}
-
-		name := format.Truncate(pos.Name, 22)
-
-		row := fmt.Sprintf("%s%s %s %s %s %s %s %s",
-			cursor,
-			theme.StyleSymbol.Render(fmt.Sprintf("%-6s", pos.Symbol)),
-			theme.StyleDim.Render(fmt.Sprintf("%-22s", name)),
-			theme.StyleVal.Render(fmt.Sprintf("%10.4f", pos.Quantity)),
-			theme.StyleVal.Render(fmt.Sprintf("%10.2f", pos.CostBasis)),
-			theme.StyleVal.Render(fmt.Sprintf("%12.2f", pos.CurrentPrice)),
-			theme.StyleVal.Render(fmt.Sprintf("%12.2f", pos.MarketValue)),
-			pnlStyle.Render(fmt.Sprintf("%s%.2f (%s%.1f%%)", sign, pos.PnL, sign, pos.PnLPct)),
-		)
-		sb.WriteString(row)
-		sb.WriteString("\n")
+		m.renderPosition(&sb, summary.Positions[i], i == m.cursor)
 	}
 
 	// Total row
@@ -250,6 +306,28 @@ func (m Model) View() string {
 		totalPnlStyle.Bold(true).Render(fmt.Sprintf("P&L: %s$%.2f (%s%.1f%%)",
 			totalSign, summary.TotalPnL, totalSign, summary.TotalPnLPct)),
 	))
+
+	// Coverage: the totals above cover priced holdings only, so say so
+	// rather than letting a fabricated break-even row pass for a real
+	// position folded into the total.
+	if !summary.FullyPriced() {
+		sb.WriteString(fmt.Sprintf("  %s\n", styleUnknown.Render(fmt.Sprintf(
+			"%d of %d holdings not quoted (%s) — totals cover %.0f%% of cost basis",
+			len(summary.Unpriced), len(summary.Positions),
+			format.Truncate(strings.Join(summary.Unpriced, ", "), 40),
+			summary.Coverage()*100,
+		))))
+	}
+
+	// Risk metrics over the recorded equity curve.
+	if marks := m.equity[p.Name]; len(marks) >= 2 {
+		st := portfolio.StatsFromMarks(marks, 0)
+		sb.WriteString(fmt.Sprintf("  %s\n", theme.StyleDim.Render(fmt.Sprintf(
+			"Sharpe %s   Sortino %s   Vol %s   MaxDD %.2f%%   %s   (%d marks)",
+			ratio(st.Sharpe), ratio(st.Sortino), pct(st.Volatility*100),
+			st.MaxDrawdown*100, m.betaLabel(p.Name), st.Marks,
+		))))
+	}
 
 	if len(p.Transactions) > 0 {
 		realized := portfolio.RealizedByMethod(p.Transactions, p.TaxMethod)
@@ -277,4 +355,71 @@ func (m Model) View() string {
 	}
 
 	return sb.String()
+}
+
+// renderPosition writes one holding row. An unpriced holding shows a
+// dash for price and value and is marked "not quoted": its P&L is zero
+// only because there was no quote, and rendering that as a break-even
+// row is indistinguishable from a position that really has not moved.
+func (m Model) renderPosition(sb *strings.Builder, pos portfolio.Position, selected bool) {
+	cursor := "  "
+	if selected {
+		cursor = theme.StyleCursorGutter.Render("▎") + " "
+	}
+
+	name := format.Truncate(pos.Name, 22)
+	head := fmt.Sprintf("%s%s %s %s %s",
+		cursor,
+		theme.StyleSymbol.Render(fmt.Sprintf("%-6s", pos.Symbol)),
+		theme.StyleDim.Render(fmt.Sprintf("%-22s", name)),
+		theme.StyleVal.Render(fmt.Sprintf("%10.4f", pos.Quantity)),
+		theme.StyleVal.Render(fmt.Sprintf("%10.2f", pos.CostBasis)),
+	)
+
+	if !pos.Priced {
+		sb.WriteString(fmt.Sprintf("%s %s %s %s\n", head,
+			theme.StyleNeutral.Render(fmt.Sprintf("%12s", "—")),
+			theme.StyleNeutral.Render(fmt.Sprintf("%12s", "—")),
+			styleUnknown.Render("not quoted"),
+		))
+		return
+	}
+
+	pnlStyle := theme.StyleUp
+	sign := "+"
+	if pos.PnL < 0 {
+		pnlStyle = theme.StyleDown
+		sign = ""
+	}
+	sb.WriteString(fmt.Sprintf("%s %s %s %s\n", head,
+		theme.StyleVal.Render(fmt.Sprintf("%12.2f", pos.CurrentPrice)),
+		theme.StyleVal.Render(fmt.Sprintf("%12.2f", pos.MarketValue)),
+		pnlStyle.Render(fmt.Sprintf("%s%.2f (%s%.1f%%)", sign, pos.PnL, sign, pos.PnLPct)),
+	))
+}
+
+// betaLabel renders the Beta readout, naming the benchmark so an
+// unavailable one is self-explanatory.
+func (m Model) betaLabel(name string) string {
+	if m.benchmark == "" {
+		return "Beta —"
+	}
+	return fmt.Sprintf("Beta(%s) %s", m.benchmark, ratio(m.betaOf(name)))
+}
+
+// ratio formats a risk ratio, showing an em dash for the undefined case
+// so "no downside observed yet" never reads as zero.
+func ratio(v float64) string {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return "—"
+	}
+	return fmt.Sprintf("%.2f", v)
+}
+
+// pct formats a percentage the same way.
+func pct(v float64) string {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return "—"
+	}
+	return fmt.Sprintf("%.2f%%", v)
 }

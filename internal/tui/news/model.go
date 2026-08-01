@@ -142,7 +142,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		// Local header: section header + hint + blank = 3 rows. Each
 		// headline occupies 2 rows.
-		row := msg.Y - 3
+		row := msg.Y - newsHeaderLines
 		if row < 0 {
 			return m, nil
 		}
@@ -158,23 +158,30 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 // newsViewportStart mirrors the offset calculation in View so the click
 // handler agrees with what's actually rendered.
 func newsViewportStart(cursor, total, height int) int {
-	maxItems := (height - 3) / 2
-	if maxItems < 1 {
-		maxItems = 1
-	}
-	return format.ViewportStart(cursor, total, maxItems)
+	return format.ViewportStart(cursor, total, newsVisibleItems(total, height))
 }
+
+// newsVisibleItems is how many headlines fit below the 3 header rows.
+// Each headline occupies 2 rows (source/time, then the title).
+func newsVisibleItems(total, height int) int {
+	return format.VisibleRows((height-newsHeaderLines)/2, 0, total)
+}
+
+// newsHeaderLines is the section header row plus the blank row above the
+// first item. The hint now shares the header row instead of wrapping onto
+// its own, so this is 2 rows, not 3.
+const newsHeaderLines = 2
 
 // View renders the news feed.
 func (m Model) View() string {
-	if m.width == 0 {
+	if m.width <= 0 {
 		return ""
 	}
 
 	vis := m.visible()
 	var sb strings.Builder
-	sb.WriteString(theme.SectionHeader("News Feed ["+m.filter.String()+"]", m.width))
-	sb.WriteString(theme.StyleDim.Render("  j/k:nav  enter:open  g/G:top/bottom  f:filter"))
+	sb.WriteString(theme.SectionHeaderHint("News Feed ["+m.filter.String()+"]",
+		"j/k:nav  enter:open  g/G:top/bottom  f:filter", m.width))
 	sb.WriteString("\n\n")
 
 	if len(vis) == 0 {
@@ -186,15 +193,7 @@ func (m Model) View() string {
 		return sb.String()
 	}
 
-	// Each headline = 2 lines, so maxItems = (height - 3) / 2
-	maxItems := (m.height - 3) / 2
-	if maxItems < 1 {
-		maxItems = 1
-	}
-	if maxItems > len(vis) {
-		maxItems = len(vis)
-	}
-
+	maxItems := newsVisibleItems(len(vis), m.height)
 	startIdx := newsViewportStart(m.cursor, len(vis), m.height)
 	endIdx := startIdx + maxItems
 	if endIdx > len(vis) {
