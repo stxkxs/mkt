@@ -4,12 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.2.0 — 2026-08-01
 
 A remediation pass across the whole tree: every leaf and mid-layer package was
 audited and fixed, then those fixes were wired through the CLI and the TUI root.
-110 files changed. Several behaviours changed in ways an existing user will
+173 files changed. Several behaviours changed in ways an existing user will
 notice — read **Behavioral changes** first.
+
+The minor version bumps rather than the patch: config writes can now refuse,
+alerts fire on different occasions, and portfolio totals are computed from a
+different set of positions. Nothing here requires a config migration — an
+existing `config.yaml` loads unchanged — but the numbers and the notifications
+it produces are not the ones v0.1.0 produced.
 
 ### Behavioral changes
 
