@@ -174,12 +174,19 @@ func parseTime(s string) time.Time {
 	return time.Time{}
 }
 
-// TimeAgo returns a human-readable relative time string.
-func TimeAgo(t time.Time) string {
+// TimeAgo renders t as an age relative to now: "just now" under a minute,
+// then whole minutes, hours and days. A zero t renders as the empty string,
+// because a feed that omits or misformats its timestamp has no age to show.
+// A t ahead of now reads as "just now" — clock skew between mkt and a feed
+// publisher is not information the reader can act on.
+//
+// now is a parameter rather than a time.Now() call so a caller rendering a
+// frame dates every row against one instant.
+func TimeAgo(t, now time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
-	d := time.Since(t)
+	d := now.Sub(t)
 	switch {
 	case d < time.Minute:
 		return "just now"

@@ -3,6 +3,7 @@ package news
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -200,6 +201,9 @@ func (m Model) View() string {
 		endIdx = len(vis)
 	}
 
+	// One instant for the whole frame, so two headlines a second apart do
+	// not date themselves against two different clocks.
+	now := time.Now()
 	for i := startIdx; i < endIdx; i++ {
 		h := vis[i]
 
@@ -212,7 +216,7 @@ func (m Model) View() string {
 		meta := fmt.Sprintf("%s%s  %s",
 			cursor,
 			styleSource.Render(h.Source),
-			styleTime.Render(inews.TimeAgo(h.PubTime)),
+			styleTime.Render(inews.TimeAgo(h.PubTime, now)),
 		)
 		sb.WriteString(meta)
 		sb.WriteString("\n")

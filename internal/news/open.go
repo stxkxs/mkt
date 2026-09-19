@@ -28,8 +28,15 @@ func OpenURL(url string) error {
 	}
 	switch runtime.GOOS {
 	case "linux":
-		return exec.Command("xdg-open", url).Start()
+		return spawn("xdg-open", url)
 	default:
-		return exec.Command("open", "--", url).Start()
+		return spawn("open", "--", url)
 	}
+}
+
+// spawn runs the platform's URL handler. It is a variable so a test can
+// assert what reaches argv, and that a refused URL reaches it not at all,
+// without starting a process.
+var spawn = func(name string, args ...string) error {
+	return exec.Command(name, args...).Start()
 }
