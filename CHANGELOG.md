@@ -87,6 +87,10 @@ These change what `mkt` does with an unchanged config.
   `--cooldown`, `--atr`, `--atr-mult`, `--long`, `--addr`, `--host-key` — are
   documented. The YAML key is `time` where the CSV importer's column is
   `date`, which the docs now say.
+- **`schema_version` in `config.yaml`.** A file written before the field
+  existed loads completely unchanged; the next save adds it and changes
+  nothing else. It gives the next format change a way to tell an old file
+  from a new one, which nothing previously recorded.
 - **Build gates**: a coverage floor, a `go mod tidy` check, and `funlen` /
   `gocyclo` as a ratchet set just above the current ceiling with the
   functions already past it named as explicit debt. Every correctness linter
@@ -99,6 +103,21 @@ These change what `mkt` does with an unchanged config.
   rather than six parallel switches that had to be edited in lockstep. A tab
   missing from the async fan-out silently rendered "Loading…" forever with no
   compile error; that membership is now declared once and gated by a test.
+- `Portfolio` carries `Evaluate` and `Realized` methods that close over its
+  own `TaxMethod`. The field belonged to the aggregate while the API made
+  every caller re-supply it alongside the aggregate's own transactions, so
+  pairing one portfolio's transactions with another's tax method was
+  expressible. The free functions remain for the importer and the backtester,
+  which hold loose slices with no `Portfolio` around them.
+- The legacy `watchlist:` to `watchlists:` merge moved into the config
+  package's normalization. It ran in the CLI wiring, so `mkt config validate`,
+  the MCP server and the dashboard each carried their own copy of the
+  precedence rule.
+- The correlation matrix is memoized against a cache generation counter
+  rather than rebuilt on every frame. The tab reads the shared cache directly
+  and so has no message to key off; `Cache.Generation` advances whenever the
+  cache accepts data and never otherwise. An unchanged frame allocates
+  nothing.
 - `format.Truncate` measures display cells rather than runes, and the
   indivisible unit is the grapheme cluster. A base character followed by a
   variation selector renders two cells across two runes that each measure
@@ -125,6 +144,14 @@ These change what `mkt` does with an unchanged config.
   the stream for the life of the process — and did so before the liveness
   probe was armed and before the reconnect counter and status flip ran, so it
   reached no metric and no status bar. Bounded at 15s.
+- **`mkt_observer_backlog_quotes` read zero when an observer was most
+  wedged.** The delivery loop takes an observer's whole queue in one step and
+  empties it, then delivers item by item, so the queue length — which is what
+  the backlog reported — was zero for as long as that took. A consumer parked
+  inside its callback holding hundreds of undelivered quotes registered as
+  idle. The backlog now counts the batch in flight as well as the queue,
+  which is the quantity an operator needs; the queue length remains what the
+  per-observer cap bounds.
 - **The heatmap drill-down re-ranked its tiles on every frame** while the
   cursor was a position in that order, so tiles moved under the reader and
   the highlight landed on a different symbol with no keypress. The order is
@@ -163,6 +190,12 @@ These change what `mkt` does with an unchanged config.
 - The Pushover notifier redacts its error like the other two. Nothing leaks
   today, since its endpoint is a constant and the token rides in the form
   body, but the three paths were not identical.
+- Three tests in `internal/news` could not fail: the concurrency cap passed
+  with the semaphore removed, the deduplication test did not pin the URL as
+  the identity despite its name, and `OpenURL`'s disabled-path test asserted
+  a nil error, which the enabled path also returns once the handler process
+  starts. `TimeAgo` takes the instant to measure against instead of reading
+  the wall clock, which is why it was both untested and untestable.
 - Roughly twenty-five comments trade a bug's biography for the invariant that
   outlives it. Five were user-facing, including one in `mkt daemon --help`.
 
