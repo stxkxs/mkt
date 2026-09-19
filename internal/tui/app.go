@@ -118,6 +118,25 @@ type App struct {
 	symbolInfo  symbolinfo.Model
 	help        helpview.Model
 
+	// tabs binds each Tab to the model behind it and declares where that
+	// tab departs from the common path. The size, key, mouse and view
+	// paths all route through it rather than enumerating tabs of their
+	// own. See bindSurfaces.
+	tabs []tabEntry
+
+	// themeTargets are the surfaces that rebuild cached styles on a
+	// theme change; asyncTargets are the surfaces that may have a load in
+	// flight and so are offered every message no case claimed. The two
+	// memberships are different sets, and both span more than the tabs.
+	themeTargets []tabModel
+	asyncTargets []tabModel
+
+	// panelSized, fullScreenSized and overlaySized are the sizing
+	// policies a new terminal size is applied through. See resize.
+	panelSized      []tabModel
+	fullScreenSized []tabModel
+	overlaySized    []tabModel
+
 	// alertEngine is kept so the router can tell whether the alerts tab
 	// actually has a rule to delete before mirroring its confirm prompt.
 	alertEngine *alert.Engine
@@ -155,6 +174,7 @@ func NewApp(groups []watchlist.Group, cache *market.Cache, histProvider chart.Hi
 		help:        helpview.New(),
 		alertEngine: alertEngine,
 	}
+	a.bindSurfaces()
 	a.SetWatchlistGroups(groups)
 	a.statusbar.SetThemeName(theme.CurrentName)
 	return a
@@ -337,15 +357,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.width = msg.Width
 		a.height = msg.Height
 		a.ready = true
-		contentW, contentH := a.contentSize(msg.Width, msg.Height)
-		a.watchlist.SetSize(contentW, contentH)
-		a.statusbar.SetWidth(msg.Width)
-		a.detail.SetSize(contentW, contentH)
-		a.chart.SetSize(msg.Width, msg.Height-2)
-		a.compare.SetSize(msg.Width, msg.Height-2)
-		a.alertDialog.SetSize(msg.Width, msg.Height)
-		a.symbolInfo.SetSize(msg.Width, msg.Height)
-		a.help.SetSize(msg.Width, msg.Height)
+		a.resize(msg.Width, msg.Height)
 		return a, nil
 
 	case SpinnerTickMsg:
@@ -428,85 +440,47 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// handleThemeChanged rebuilds every cached-style view. statusbar has no
-// Update of its own, so the root drives its rebuild; every other view
-// handles the message itself.
-func (a *App) handleThemeChanged(msg theme.ChangedMsg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-	// statusbar has no Update, so its restyle can only be driven from
-	// here. Every other cached-style view handles the message itself;
-	// macro in particular does, so calling it here too rebuilt twice.
-	statusbar.RebuildStyles()
-	var cmd tea.Cmd
-	a.watchlist, cmd = a.watchlist.Update(msg)
-	cmds = append(cmds, cmd)
-	a.chart, cmd = a.chart.Update(msg)
-	cmds = append(cmds, cmd)
-	a.compare, cmd = a.compare.Update(msg)
-	cmds = append(cmds, cmd)
-	a.portfolio, cmd = a.portfolio.Update(msg)
-	cmds = append(cmds, cmd)
-	a.alerts, cmd = a.alerts.Update(msg)
-	cmds = append(cmds, cmd)
-	a.news, cmd = a.news.Update(msg)
-	cmds = append(cmds, cmd)
-	a.heatmap, cmd = a.heatmap.Update(msg)
-	cmds = append(cmds, cmd)
-	a.macro, cmd = a.macro.Update(msg)
-	cmds = append(cmds, cmd)
-	a.detail, cmd = a.detail.Update(msg)
-	cmds = append(cmds, cmd)
-	a.alertDialog, cmd = a.alertDialog.Update(msg)
-	cmds = append(cmds, cmd)
-	a.symbolInfo, cmd = a.symbolInfo.Update(msg)
-	cmds = append(cmds, cmd)
-	a.options, cmd = a.options.Update(msg)
-	cmds = append(cmds, cmd)
-	a.correl, cmd = a.correl.Update(msg)
-	cmds = append(cmds, cmd)
-	return a, tea.Batch(cmds...)
+// resize applies a terminal size to the surfaces that hold one, each
+// through the policy its sizing list declares. A tab is sized by View
+// before it renders, so only what renders outside that path is listed.
+func (a *App) resize(w, h int) {
+	contentW, contentH := a.contentSize(w, h)
+	a.statusbar.SetWidth(w)
+	for _, s := range a.panelSized {
+		s.SetSize(contentW, contentH)
+	}
+	for _, s := range a.fullScreenSized {
+		s.SetSize(w, h-2)
+	}
+	for _, s := range a.overlaySized {
+		s.SetSize(w, h)
+	}
 }
 
-// routeAsyncResult offers a message no case claimed to every model that
+// handleThemeChanged restyles every surface that caches styles built from
+// the palette. statusbar has no Update of its own, so the root rebuilds it
+// directly; every other surface handles the message in its own Update and
+// must not also be rebuilt from here, or one theme change restyles it
+// twice.
+func (a *App) handleThemeChanged(msg theme.ChangedMsg) (tea.Model, tea.Cmd) {
+	statusbar.RebuildStyles()
+	return a, tea.Batch(fanOut(a.themeTargets, msg)...)
+}
+
+// routeAsyncResult offers a message no case claimed to every surface that
 // may have a load in flight.
+//
+// Async results arrive as message types the sub-models keep private, so a
+// model with a load in flight has to be offered every message it might be
+// waiting on. Routing is unconditional rather than gated on the model
+// being visible: a fetch started with 'c' or 'O' has to land even if the
+// user tabbed away or pressed esc while it was in flight, and order-book
+// frames stream in from a goroutine that outlives any one tab. Stale
+// results are each model's own problem — the chart views carry a request
+// sequence and drop anything older — so the router does not try to
+// second-guess which one is still wanted.
 func (a *App) routeAsyncResult(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-	// Async results arrive as message types the sub-models keep
-	// private, so a model with a load in flight has to be offered
-	// every message it might be waiting on. Routing is unconditional
-	// rather than gated on the model being visible: a fetch started
-	// with 'c' or 'O' has to land even if the user tabbed away or
-	// pressed esc while it was in flight, and order-book frames
-	// stream in from a goroutine that outlives any one tab. Stale
-	// results are each model's own problem — the chart views carry a
-	// request sequence and drop anything older — so the router does
-	// not try to second-guess which one is still wanted. A model left out
-	// of this fan-out sits on "Loading…" forever.
-	var cmd tea.Cmd
-	a.chart, cmd = a.chart.Update(msg)
-	if cmd != nil {
-		cmds = append(cmds, cmd)
-	}
-	a.compare, cmd = a.compare.Update(msg)
-	if cmd != nil {
-		cmds = append(cmds, cmd)
-	}
-	a.symbolInfo, cmd = a.symbolInfo.Update(msg)
-	if cmd != nil {
-		cmds = append(cmds, cmd)
-	}
-	a.options, cmd = a.options.Update(msg)
-	if cmd != nil {
-		cmds = append(cmds, cmd)
-	}
-	a.detail, cmd = a.detail.Update(msg)
-	if cmd != nil {
-		cmds = append(cmds, cmd)
-
-		return a, tea.Batch(cmds...)
-	}
-
-	return a, tea.Batch(cmds...)
+	return a, tea.Batch(fanOut(a.asyncTargets, msg)...)
 }
 
 // handleKey routes one key press. Overlays are consulted in the order
@@ -855,30 +829,12 @@ func (a *App) watchlistShortcut(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 }
 
 // forwardKeyToActiveTab routes a key press to the model backing the
-// active tab. Kept as one table so the normal path and the modal path
-// (a tab holding a confirm prompt) cannot drift apart.
+// active tab. Every tab takes keys, so the only branch is the alerts
+// tab's confirm prompt, which the root has to mirror.
 func (a *App) forwardKeyToActiveTab(msg tea.KeyPressMsg) tea.Cmd {
-	var cmd tea.Cmd
-	switch a.activeTab {
-	case TabWatchlist:
-		a.watchlist, cmd = a.watchlist.Update(msg)
-	case TabPortfolio:
-		a.portfolio, cmd = a.portfolio.Update(msg)
-	case TabAlerts:
-		a.alerts, cmd = a.alerts.Update(msg)
+	cmd := a.tabs[a.activeTab].model.Update(msg)
+	if a.activeTab == TabAlerts {
 		a.armAlertConfirm(msg)
-	case TabChart:
-		a.chart, cmd = a.chart.Update(msg)
-	case TabMacro:
-		a.macro, cmd = a.macro.Update(msg)
-	case TabNews:
-		a.news, cmd = a.news.Update(msg)
-	case TabHeatmap:
-		a.heatmap, cmd = a.heatmap.Update(msg)
-	case TabOptions:
-		a.options, cmd = a.options.Update(msg)
-	case TabCorrel:
-		a.correl, cmd = a.correl.Update(msg)
 	}
 	return cmd
 }
@@ -909,31 +865,16 @@ func (a *App) modalActive() bool {
 }
 
 // forwardMouseToActiveTab routes a mouse message to the model backing the
-// active tab and returns its command. Only the tabs that consume mouse
-// input are listed; the full-screen chart/compare overlays are handled by
-// the caller before this point. Shared by the click and wheel handlers so
-// the tab dispatch isn't written twice.
+// active tab and returns its command. A tab that declares noMouse is
+// skipped; the full-screen chart and compare surfaces are claimed by the
+// caller before this point. Shared by the click and wheel handlers so the
+// tab dispatch isn't written twice.
 func (a *App) forwardMouseToActiveTab(msg tea.Msg) tea.Cmd {
-	var cmd tea.Cmd
-	switch a.activeTab {
-	case TabWatchlist:
-		a.watchlist, cmd = a.watchlist.Update(msg)
-	case TabPortfolio:
-		a.portfolio, cmd = a.portfolio.Update(msg)
-	case TabAlerts:
-		a.alerts, cmd = a.alerts.Update(msg)
-	case TabMacro:
-		a.macro, cmd = a.macro.Update(msg)
-	case TabNews:
-		a.news, cmd = a.news.Update(msg)
-	case TabHeatmap:
-		a.heatmap, cmd = a.heatmap.Update(msg)
-	case TabOptions:
-		a.options, cmd = a.options.Update(msg)
-	case TabCorrel:
-		a.correl, cmd = a.correl.Update(msg)
+	entry := a.tabs[a.activeTab]
+	if entry.noMouse {
+		return nil
 	}
-	return cmd
+	return entry.model.Update(msg)
 }
 
 func (a *App) View() tea.View {
@@ -971,34 +912,15 @@ func (a *App) View() tea.View {
 	}
 
 	contentW, contentH := a.contentSize(a.width, a.height)
+	// A tab is sized here, immediately before it renders, so its view is
+	// built against the frame it is about to be drawn into.
+	entry := a.tabs[a.activeTab]
 	var content string
-	switch a.activeTab {
-	case TabWatchlist:
-		a.watchlist.SetSize(contentW, contentH)
-		content = a.watchlist.View()
-	case TabPortfolio:
-		a.portfolio.SetSize(contentW, contentH)
-		content = a.portfolio.View()
-	case TabAlerts:
-		a.alerts.SetSize(contentW, contentH)
-		content = a.alerts.View()
-	case TabChart:
-		content = theme.StyleDim.Render(format.Truncate("  Select a symbol from Watchlist and press 'c' for chart", contentW))
-	case TabMacro:
-		a.macro.SetSize(contentW, contentH)
-		content = a.macro.View()
-	case TabNews:
-		a.news.SetSize(contentW, contentH)
-		content = a.news.View()
-	case TabHeatmap:
-		a.heatmap.SetSize(contentW, contentH)
-		content = a.heatmap.View()
-	case TabOptions:
-		a.options.SetSize(contentW, contentH)
-		content = a.options.View()
-	case TabCorrel:
-		a.correl.SetSize(contentW, contentH)
-		content = a.correl.View()
+	if entry.signpost != nil {
+		content = entry.signpost(contentW)
+	} else {
+		entry.model.SetSize(contentW, contentH)
+		content = entry.model.View()
 	}
 
 	panel := a.renderContentPanel(tabNames[a.activeTab], content, contentH)

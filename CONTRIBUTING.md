@@ -29,11 +29,16 @@ See the architecture section in `README.md` and `CLAUDE.md`. Briefly:
 
 ## Adding a new tab
 
-1. Create `internal/tui/<name>/model.go` with `Model`, `New`, `Update`, `View`.
-2. In `Update`, handle `theme.ChangedMsg` by calling your local `RebuildStyles()`.
-3. Register the tab in `internal/tui/keys.go` (constant + name) and `internal/tui/app.go` — the field, sizing in the `tea.WindowSizeMsg` case, key and mouse forwarding, the `View` switch, and the fan-out in `handleThemeChanged`.
-4. If the tab fetches anything, add it to `routeAsyncResult` as well: results arrive as message types the sub-model keeps private, so a tab missing from that fan-out never receives them and sits on "Loading…" forever.
-5. Add its keys to `tabBindings` in `internal/tui/help/model.go`, or the tab ships with an empty help card.
+1. Create `internal/tui/<name>/model.go` with `New` and a `Model` carrying the shape the root binds: `SetSize(w, h int)`, `Update(tea.Msg) (Model, tea.Cmd)`, `View() string`. `Update` returns your own concrete type — `internal/tui/tabs.go` adapts it, so the package keeps value semantics.
+2. In `Update`, handle `theme.ChangedMsg` by calling your local `RebuildStyles()`. Every tab is in the theme fan-out.
+3. Name the tab in `internal/tui/keys.go`: a `Tab` constant and a `tabNames` entry. The digit key that selects it follows from its position.
+4. Add the typed field to `App` in `internal/tui/app.go` and construct it in `NewApp`. The field is what code needing concrete access reaches for (`a.watchlist.CurrentPrice`, `a.alerts.TriggeredCount`).
+5. Add one `tabEntry` to `bindSurfaces` in `internal/tui/tabs.go` — `bind(&a.<name>)`, plus `fetches: true` if the tab loads anything. Sizing, key and mouse forwarding, the theme fan-out and rendering all read that entry. `TestEveryTabIsBound` fails if a named tab has no entry.
+6. Add its keys to `tabBindings` in `internal/tui/help/model.go`, or the tab ships with an empty help card.
+
+`fetches: true` is the one step with no compile error behind it: results arrive as message types the tab's own package keeps private, so the root offers unclaimed messages to the fetching surfaces and nothing else. A fetching tab left unmarked renders "Loading…" for the rest of the session.
+
+A tab that departs from the common path says so in its entry rather than by being left out of a switch: `signpost` renders in place of the model's view for a tab whose model owns the whole frame (Chart, reached with `c` from the watchlist), and `noMouse` withholds clicks and wheel events from a tab with no content under the pointer.
 
 ## Adding a provider
 
