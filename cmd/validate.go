@@ -67,8 +67,8 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	}
 
 	// A file that exists but does not parse is the headline failure. Report
-	// it and stop: everything below would be describing the defaults, which
-	// is exactly the lie this command used to tell.
+	// it and stop: a degraded load holds the defaults, so everything below
+	// would describe a config the user does not have.
 	if res.Degraded {
 		fmt.Fprintf(errOut, "✗ %s does not parse%s\n", tildePath(res.Path), lineSuffix(res.Line))
 		if detail := parseDetail(res.Err); detail != "" {

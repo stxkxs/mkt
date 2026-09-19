@@ -75,11 +75,14 @@ var (
 
 // ChangedMsg is broadcast when the active theme changes.
 //
-// There is exactly one restyle mechanism: a view that caches lipgloss
-// styles in package-level vars handles ChangedMsg in its Update and
-// calls its own RebuildStyles. Views that read the theme's exported
-// colors at render time need neither, and deliberately do not define an
+// A view that caches lipgloss styles in package-level vars handles
+// ChangedMsg in its Update and calls its own RebuildStyles. Views that read
+// the theme's exported colors at render time need neither, and define no
 // empty RebuildStyles stub.
+//
+// statusbar is the one exception: it exposes no Update, so the root model
+// calls statusbar.RebuildStyles directly. A view with both an Update case
+// and a direct call from the root rebuilds its styles twice per change.
 type ChangedMsg struct {
 	Name string
 }
@@ -107,9 +110,9 @@ func SectionHeader(title string, width int) string {
 // hint on the same row: "  ── Title ─────────  j/k:nav".
 //
 // The rule absorbs whatever width is left after the title and the hint,
-// so the header occupies exactly one row of `width` cells. Callers that
-// appended their own hint after SectionHeader used to overrun the frame
-// — the rule had already padded to full width — and orphan the hint onto
+// so the header occupies exactly one row of `width` cells. A caller that
+// appends its own hint after SectionHeader overruns the frame — the rule
+// has already padded to full width — and orphans the hint onto
 // the next line; pass it here instead. Too narrow for both drops the
 // hint, then truncates the title.
 func SectionHeaderHint(title, hint string, width int) string {

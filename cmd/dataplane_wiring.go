@@ -29,6 +29,14 @@ type (
 		LoadUnroutableSymbols(symbols []string)
 	}
 
+	// macroProviderSetter receives which optional macro pollers are switched
+	// on, so the Macro tab can reserve each section's rows before the first
+	// poll returns. Its scroll offset is an absolute row, so a section that
+	// appears later shifts every row below it under a reader mid-scroll.
+	macroProviderSetter interface {
+		SetMacroProviders(futures, defi bool)
+	}
+
 	// contextSetter receives the process-lifetime context so per-session
 	// streams (the crypto detail view's level-2 book) stop when the data
 	// plane is cancelled instead of leaking a goroutine per visit.
@@ -48,6 +56,9 @@ type (
 func (b *backend) applyWiring(ctx context.Context, model any) {
 	if s, ok := model.(contextSetter); ok {
 		s.SetContext(ctx)
+	}
+	if s, ok := model.(macroProviderSetter); ok {
+		s.SetMacroProviders(b.futuresOn, b.defiOn)
 	}
 	if b.degraded {
 		if l, ok := model.(configBannerLoader); ok {

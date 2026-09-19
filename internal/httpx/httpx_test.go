@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 func testClient() *http.Client { return &http.Client{Timeout: 5 * time.Second} }
@@ -69,5 +71,56 @@ func TestGet_CapsBody(t *testing.T) {
 	}
 	if len(body) > MaxResponseBytes {
 		t.Fatalf("body not capped: %d > %d", len(body), MaxResponseBytes)
+	}
+}
+
+// An upstream error body is relayed verbatim into StatusError.Error, which
+// the Options and Symbol Info tabs render into a Bubbletea frame and the
+// MCP server returns as tool output. Unlike the XML feed paths, nothing
+// parses this body first, so a control character here reaches a terminal.
+func TestStatusErrorBodyIsSanitized(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("slow down\x1b[2J\x1b[H\x1b[31mSELL EVERYTHING\x1b[0m\u202egnitset"))
+	}))
+	defer srv.Close()
+
+	_, err := Get(context.Background(), srv.Client(), srv.URL, nil)
+	if err == nil {
+		t.Fatal("429 should yield an error")
+	}
+	var se *StatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("want *StatusError, got %T", err)
+	}
+	for _, r := range se.Error() {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			t.Fatalf("U+%04X survived into the rendered error: %q", r, se.Error())
+		}
+	}
+	if !strings.Contains(se.Body, "slow down") {
+		t.Fatalf("sanitizing dropped the diagnostic text: %q", se.Body)
+	}
+}
+
+// A body far past the snippet cap must not flood a terminal row or a log
+// line, and truncation must not split a multi-byte rune.
+func TestStatusErrorBodyIsBounded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(strings.Repeat("日", 5000)))
+	}))
+	defer srv.Close()
+
+	_, err := Get(context.Background(), srv.Client(), srv.URL, nil)
+	var se *StatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("want *StatusError, got %T", err)
+	}
+	if n := utf8.RuneCountInString(se.Body); n > errorSnippetRunes+1 {
+		t.Fatalf("snippet is %d runes, want <= %d", n, errorSnippetRunes+1)
+	}
+	if !utf8.ValidString(se.Body) {
+		t.Fatalf("truncation split a rune: %q", se.Body)
 	}
 }

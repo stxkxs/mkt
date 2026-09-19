@@ -53,8 +53,8 @@ func (p *Provider) Name() string { return "fred" }
 
 // Supports implements provider.HistoryProvider. Returns true iff the
 // symbol carries the FRED: prefix, in any case — config files and CLI
-// arguments are hand-written, and a lowercase "fred:dgs10" used to match
-// no provider at all and silently route nowhere.
+// arguments are hand-written, and a case-sensitive match would leave
+// "fred:dgs10" claimed by no provider and silently routed nowhere.
 func (p *Provider) Supports(s string) bool {
 	return symbol.IsFRED(s)
 }

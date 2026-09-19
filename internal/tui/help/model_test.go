@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 var (
@@ -48,6 +49,21 @@ func TestViewSurvivesEverySize(t *testing.T) {
 				m.SetSize(w, h)
 				m.Open(tab)
 				_ = m.View()
+			}
+		}
+	}
+}
+
+// SetSize feeds the model a frame width; a card that ignores it is
+// composited at x=0 and runs off the right edge of a narrow terminal.
+func TestHelpCardFitsNarrowTerminal(t *testing.T) {
+	for _, w := range []int{30, 40, 58, 100} {
+		m := New()
+		m.SetSize(w, 24)
+		m.Open("Watch")
+		for _, line := range strings.Split(m.View(), "\n") {
+			if got := lipgloss.Width(line); got > w {
+				t.Fatalf("width %d: rendered line is %d cells: %q", w, got, line)
 			}
 		}
 	}

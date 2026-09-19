@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 const sampleAtom = `<?xml version="1.0" encoding="UTF-8"?>
@@ -116,5 +117,49 @@ func TestFetchEDGARMalformedXML(t *testing.T) {
 	got := FetchEDGAR(context.Background(), []string{"AAPL"}, 0)
 	if len(got) != 0 {
 		t.Errorf("expected empty on malformed XML, got %d", len(got))
+	}
+}
+
+// A filing title is attacker-influenceable free text that mkt renders into
+// a terminal frame. encoding/xml rejects a document carrying ESC, raw or as
+// a character entity, so an ANSI sequence cannot arrive by this route at
+// all. U+202E is well-formed XML and does arrive: it renders the text that
+// follows it right-to-left, so a stored title and a displayed title stop
+// agreeing. Sanitizing at parse time covers that and does not rely on the
+// decoder staying strict.
+var hostileAtom = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+	"<feed xmlns=\"http://www.w3.org/2005/Atom\">\n" +
+	"  <entry>\n" +
+	"    <title>8-K \u202Ednuf tsevni</title>\n" +
+	"    <link rel=\"alternate\" href=\"https://www.sec.gov/Archives/8K-1.html\"/>\n" +
+	"    <updated>2024-08-02T16:30:42-04:00</updated>\n" +
+	"    <category term=\"8-K\u200b\"/>\n" +
+	"  </entry>\n" +
+	"</feed>"
+
+func TestFetchEDGARStripsFormattingCharacters(t *testing.T) {
+	srv := newAtomServer(t, hostileAtom, http.StatusOK)
+	defer srv.Close()
+
+	prev := EDGARBaseURL
+	EDGARBaseURL = srv.URL
+	defer func() { EDGARBaseURL = prev }()
+
+	items := FetchEDGAR(context.Background(), []string{"AAPL"}, 0)
+	if len(items) != 1 {
+		t.Fatalf("got %d headlines, want 1", len(items))
+	}
+	for _, field := range []string{items[0].Title, items[0].Category, items[0].Source} {
+		for _, r := range field {
+			if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+				t.Fatalf("U+%04X reached a rendered field: %q", r, field)
+			}
+		}
+	}
+	if !strings.Contains(items[0].Title, "8-K") {
+		t.Fatalf("sanitizing dropped the readable text: %q", items[0].Title)
+	}
+	if items[0].Category != "8-K" {
+		t.Fatalf("category: got %q want 8-K", items[0].Category)
 	}
 }

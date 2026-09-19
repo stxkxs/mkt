@@ -20,9 +20,9 @@ all configured notifiers (desktop, webhook, ntfy, Pushover, history)
 without showing a TUI. Useful on a VPS / always-on machine. Stops on
 SIGTERM or SIGINT.
 
-The daemon runs the same data plane as the dashboard, so it also keeps
-the portfolio equity curve, news, macro, futures and calendar histories
-up to date — previously those only advanced while a TUI was open.`,
+The daemon runs the same data plane as the dashboard, so the portfolio
+equity curve, news, macro, futures and calendar histories all advance with
+no TUI attached.`,
 		RunE: runDaemon,
 	}
 	daemonCmd.Flags().Bool("force", false,
@@ -36,8 +36,8 @@ up to date — previously those only advanced while a TUI was open.`,
 // are the same calls `mkt` and `mkt serve` make, and broadcast.Send with no
 // attached senders is a no-op, so every poller, the equity marker and the
 // history seeding all run exactly as they do under the dashboard. Keeping one
-// implementation is the point — a hand-copied daemon is how it ended up
-// producing no equity marks, no news and no calendar at all.
+// implementation is the point: a second, hand-copied data plane is how a
+// daemon ends up producing no equity marks, no news and no calendar.
 func runDaemon(cmd *cobra.Command, args []string) error {
 	b, cleanup, err := setupBackend(optsFromFlags(cmd, false))
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/stxkxs/mkt/internal/httpx"
+	"github.com/stxkxs/mkt/internal/textsafe"
 )
 
 // DefaultEDGARBase is the SEC EDGAR Atom-feed endpoint base.
@@ -41,13 +42,18 @@ type atomLink struct {
 
 // FetchEDGAR pulls recent SEC filings for each ticker concurrently and
 // returns them sorted by PubTime descending, capped to limit. limit <= 0
-// is treated as unlimited. Tickers are queried in parallel.
+// is treated as unlimited.
+//
+// Tickers are queried concurrently, capped at fetchConcurrency and paced by
+// the shared feedGate: the ticker list comes from config with no length
+// bound, and SEC EDGAR blocks clients that exceed its published rate.
 func FetchEDGAR(ctx context.Context, tickers []string, limit int) []Headline {
 	if len(tickers) == 0 {
 		return nil
 	}
 	var mu sync.Mutex
 	var all []Headline
+	sem := make(chan struct{}, fetchConcurrency)
 	var wg sync.WaitGroup
 	for _, t := range tickers {
 		t = strings.TrimSpace(t)
@@ -57,6 +63,12 @@ func FetchEDGAR(ctx context.Context, tickers []string, limit int) []Headline {
 		wg.Add(1)
 		go func(ticker string) {
 			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
 			items := fetchEDGARTicker(ctx, ticker)
 			mu.Lock()
 			all = append(all, items...)
@@ -73,6 +85,11 @@ func FetchEDGAR(ctx context.Context, tickers []string, limit int) []Headline {
 }
 
 func fetchEDGARTicker(ctx context.Context, ticker string) []Headline {
+	// SEC blocks clients that exceed its published rate; the gate is shared
+	// with the RSS fan-out so the two cannot compound.
+	if err := feedGate.Wait(ctx); err != nil {
+		return nil
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, feedTimeout)
 	defer cancel()
 
@@ -92,11 +109,11 @@ func fetchEDGARTicker(ctx context.Context, ticker string) []Headline {
 
 	var out []Headline
 	for _, e := range feed.Entries {
-		title := strings.TrimSpace(e.Title)
+		title := textsafe.Clean(e.Title)
 		if title == "" {
 			continue
 		}
-		category := strings.TrimSpace(e.Category.Term)
+		category := textsafe.Clean(e.Category.Term)
 		// Many entries lead with the filing type — keep what we know.
 		if category == "" {
 			category = "Filing"

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/ssh"
+	"charm.land/ssh"
 	"github.com/stxkxs/mkt/internal/config"
 	gossh "golang.org/x/crypto/ssh"
 )

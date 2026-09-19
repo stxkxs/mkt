@@ -29,7 +29,9 @@ const observerBacklogMax = 1 << 20
 // There are two delivery paths and they have different guarantees:
 //
 //   - the observer path (AddObserver) is reliable — every quote reaches every
-//     observer, in arrival order, and is never dropped;
+//     observer, in arrival order. A wedged observer's backlog grows until
+//     observerBacklogMax, past which the oldest quote is dropped and counted
+//     by ObserverDrops; a consumer that keeps up never reaches that valve;
 //   - the dispatch path (the onQuote passed to Start) is best-effort — quotes
 //     are dropped when the consumer falls behind, so the UI never applies
 //     back-pressure to the providers. Drops counts them.
@@ -64,10 +66,10 @@ func NewHub(cache *Cache, providers ...provider.QuoteProvider) *Hub {
 //
 // Symbols are canonicalized (symbol.Canonical) before routing and deduplicated,
 // so "btc", "BTCUSDT" and "BTC-USD" subscribe once, to Coinbase. A symbol no
-// provider Supports is returned in the caller's original spelling — a typo like
-// "APPL" used to be discarded in silence, which made it indistinguishable from a
-// symbol that simply had not ticked yet. Callers should surface the result;
-// Unroutable returns the same list later.
+// provider Supports is returned in the caller's original spelling, which is
+// what makes a typo like "APPL" distinguishable from a symbol that has not
+// ticked yet. Callers should surface the result; Unroutable returns the same
+// list later.
 //
 // onQuote is called for each quote received (used to send to the TUI) on its own
 // goroutine, so a slow onQuote cannot stall providers. It is best-effort: see

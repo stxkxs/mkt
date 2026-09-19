@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/stxkxs/mkt/internal/ndjson"
 	"sync"
 	"time"
 )
@@ -19,10 +21,17 @@ type EquityMark struct {
 // EquityFile reads and appends portfolio equity marks as NDJSON. It is
 // concurrency-safe; multiple goroutines may call Append.
 type EquityFile struct {
-	mu   sync.Mutex
-	path string
-	max  int // when LoadAll returns more than max, the most recent are kept; 0 = unlimited
+	mu     sync.Mutex
+	path   string
+	max    int // when LoadAll returns more than max, the most recent are kept; 0 = unlimited
+	writes int // appends since the last compaction check
 }
+
+// compactEvery bounds how often Append checks whether the file needs
+// trimming. LoadAll already keeps only the newest max lines, so compacting
+// to the same bound changes nothing a reader can observe — it only stops
+// the file growing for the lifetime of a daemon.
+const compactEvery = 64
 
 // NewEquityFile constructs an EquityFile at path. max bounds the number
 // of entries returned by LoadAll (most recent retained); 0 disables it.
@@ -94,6 +103,14 @@ func (e *EquityFile) Append(m EquityMark) error {
 	}
 	if _, err := f.Write(append(b, '\n')); err != nil {
 		return fmt.Errorf("equity: write %s: %w", e.path, err)
+	}
+
+	e.writes++
+	if e.max > 0 && e.writes >= compactEvery {
+		e.writes = 0
+		// Best-effort: a failed trim leaves a longer file, which the max
+		// bound on LoadAll still renders harmless.
+		_ = ndjson.Compact(e.path, e.max)
 	}
 	return nil
 }

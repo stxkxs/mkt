@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/stxkxs/mkt/internal/mcp"
 	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider"
 )
@@ -382,4 +383,85 @@ func liveClientForTest(t *testing.T, base, token string) *liveQuoteClient {
 		t.Fatalf("liveClientFromFlags(%q) = nil", base)
 	}
 	return c
+}
+
+// The README publishes default-deny as a guarantee: mkt://config is off
+// without --expose-config, and get_portfolio plus mkt://portfolios are off
+// without --expose-portfolio. Nothing else in the suite reaches this
+// filter, so inverting one condition would ship holdings and cost basis to
+// every connected agent with every gate still green.
+func TestFilterMCPSurfacesDefaultDeny(t *testing.T) {
+	tools := []mcp.Tool{
+		{Name: "get_quote"},
+		{Name: "query_history"},
+		{Name: "get_alerts"},
+		{Name: "get_portfolio"},
+	}
+	resources := []mcp.Resource{
+		{URI: "mkt://watchlists"},
+		{URI: "mkt://config"},
+		{URI: "mkt://portfolios"},
+	}
+
+	for _, tc := range []struct {
+		name            string
+		exposeConfig    bool
+		exposePortfolio bool
+		wantTools       []string
+		wantResources   []string
+	}{
+		{
+			name:          "neither flag",
+			wantTools:     []string{"get_quote", "query_history", "get_alerts"},
+			wantResources: []string{"mkt://watchlists"},
+		},
+		{
+			name:          "config only",
+			exposeConfig:  true,
+			wantTools:     []string{"get_quote", "query_history", "get_alerts"},
+			wantResources: []string{"mkt://watchlists", "mkt://config"},
+		},
+		{
+			name:            "portfolio only",
+			exposePortfolio: true,
+			wantTools:       []string{"get_quote", "query_history", "get_alerts", "get_portfolio"},
+			wantResources:   []string{"mkt://watchlists", "mkt://portfolios"},
+		},
+		{
+			name:            "both flags",
+			exposeConfig:    true,
+			exposePortfolio: true,
+			wantTools:       []string{"get_quote", "query_history", "get_alerts", "get_portfolio"},
+			wantResources:   []string{"mkt://watchlists", "mkt://config", "mkt://portfolios"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gotTools, gotRes := filterMCPSurfaces(tools, resources, tc.exposeConfig, tc.exposePortfolio)
+
+			var names []string
+			for _, x := range gotTools {
+				names = append(names, x.Name)
+			}
+			if !slices.Equal(names, tc.wantTools) {
+				t.Errorf("tools: got %v, want %v", names, tc.wantTools)
+			}
+
+			var uris []string
+			for _, r := range gotRes {
+				uris = append(uris, r.URI)
+			}
+			if !slices.Equal(uris, tc.wantResources) {
+				t.Errorf("resources: got %v, want %v", uris, tc.wantResources)
+			}
+		})
+	}
+
+	// Filtering must not disturb the caller's slices: an in-place filter
+	// leaves a denied tool reachable through the original header.
+	if len(tools) != 4 || tools[3].Name != "get_portfolio" {
+		t.Fatalf("input tools were mutated: %v", tools)
+	}
+	if len(resources) != 3 || resources[2].URI != "mkt://portfolios" {
+		t.Fatalf("input resources were mutated: %v", resources)
+	}
 }

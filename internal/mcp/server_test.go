@@ -34,10 +34,16 @@ func TestInitialize(t *testing.T) {
 		t.Errorf("protocolVersion = %v, want %s", result["protocolVersion"], ProtocolVersion)
 	}
 	caps := result["capabilities"].(map[string]any)
-	for _, k := range []string{"tools", "resources", "prompts", "logging"} {
+	for _, k := range []string{"tools", "resources", "prompts"} {
 		if _, ok := caps[k]; !ok {
 			t.Errorf("missing capability %q", k)
 		}
+	}
+	// A capability the handshake advertises and the dispatcher does not
+	// serve is a manifest that disagrees with the server; the client has no
+	// way to find that out except by calling and trusting the reply.
+	if _, ok := caps["logging"]; ok {
+		t.Error("logging is advertised but not served")
 	}
 	info := result["serverInfo"].(map[string]any)
 	if info["name"] != "test" || info["version"] != "1.0" {
@@ -179,11 +185,17 @@ func TestUnknownNotificationSuppressed(t *testing.T) {
 	}
 }
 
-func TestLoggingSetLevelAck(t *testing.T) {
+// An unserved method must say so rather than return a success the caller
+// cannot rely on.
+func TestLoggingSetLevelIsNotServed(t *testing.T) {
 	srv := New("test", "1.0")
 	got := runOne(t, srv, `{"jsonrpc":"2.0","id":11,"method":"logging/setLevel","params":{"level":"info"}}`)
-	if _, ok := got["result"]; !ok {
-		t.Errorf("setLevel should return ack, got %+v", got)
+	errObj, ok := got["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("setLevel should report method-not-found, got %+v", got)
+	}
+	if code := int(errObj["code"].(float64)); code != errMethodNotFound {
+		t.Errorf("code = %d, want %d", code, errMethodNotFound)
 	}
 }
 
@@ -761,5 +773,38 @@ func TestPromptsListEmitsArgumentsArray(t *testing.T) {
 	p := got["result"].(map[string]any)["prompts"].([]any)[0].(map[string]any)
 	if args, ok := p["arguments"].([]any); !ok || args == nil {
 		t.Errorf("arguments must be [] not null: %+v", p)
+	}
+}
+
+// A caller decides whether a tool is safe to invoke from its annotations,
+// before it calls. A server whose tools carry none forces the caller to
+// guess, and the guess is wrong the moment a mutating tool is added.
+func TestToolsListCarriesAnnotations(t *testing.T) {
+	srv := New("test", "1.0").WithTools(Tool{
+		Name:        "read_thing",
+		Description: "reads a thing",
+		InputSchema: map[string]any{"type": "object"},
+		Annotations: ReadOnlyTool(),
+		Handler:     func(context.Context, map[string]any) (any, error) { return nil, nil },
+	})
+
+	got := runOne(t, srv, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
+	tools := got["result"].(map[string]any)["tools"].([]any)
+	ann, ok := tools[0].(map[string]any)["annotations"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool carries no annotations: %+v", tools[0])
+	}
+	if ann["readOnlyHint"] != true || ann["destructiveHint"] != false {
+		t.Errorf("annotations = %+v", ann)
+	}
+}
+
+// initialize is the only message a client reads before listing anything, so
+// it is the only place to say how the tools relate.
+func TestInitializeReturnsInstructions(t *testing.T) {
+	srv := New("test", "1.0").WithInstructions("use get_quote for prices")
+	got := runOne(t, srv, `{"jsonrpc":"2.0","id":3,"method":"initialize"}`)
+	if instr, _ := got["result"].(map[string]any)["instructions"].(string); instr == "" {
+		t.Fatalf("initialize returned no instructions: %+v", got["result"])
 	}
 }

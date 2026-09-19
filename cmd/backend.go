@@ -60,6 +60,12 @@ type backend struct {
 	configLine int
 	writable   bool // config writes permitted (not degraded, or --force)
 
+	// futuresOn / defiOn mirror the optional macro pollers started by
+	// startDataPlane, so the Macro tab reserves space only for sections
+	// that will actually receive data.
+	futuresOn bool
+	defiOn    bool
+
 	// unroutable holds the symbols no provider claimed, filled in by
 	// startDataPlane and seeded into every session's model.
 	unroutable []string
@@ -261,39 +267,7 @@ func setupBackend(opts backendOpts) (*backend, func(), error) {
 
 	hub := market.NewHub(cache, coinbaseQP, yahooQP)
 
-	// Convert config portfolios. Materialize folds any optional
-	// transactions on top of the snapshot holdings; with no transactions
-	// the snapshot passes through unchanged.
-	var portfolios []portfolio.Portfolio
-	for _, cp := range cfg.Portfolios {
-		var holdings []portfolio.Holding
-		for _, h := range cp.Holdings {
-			holdings = append(holdings, portfolio.Holding{
-				Symbol:    h.Symbol,
-				Name:      h.Name,
-				Quantity:  h.Quantity,
-				CostBasis: h.CostBasis,
-			})
-		}
-		var txs []portfolio.Transaction
-		for _, t := range cp.Transactions {
-			txs = append(txs, portfolio.Transaction{
-				Type:     portfolio.TxType(t.Type),
-				Symbol:   t.Symbol,
-				Quantity: t.Quantity,
-				Price:    t.Price,
-				Time:     config.ParseTime(t.Time),
-				Fee:      t.Fee,
-				Note:     t.Note,
-			})
-		}
-		portfolios = append(portfolios, portfolio.Portfolio{
-			Name:         cp.Name,
-			Holdings:     portfolio.Materialize(holdings, txs),
-			Transactions: txs,
-			TaxMethod:    portfolio.TaxMethod(cp.TaxMethod),
-		})
-	}
+	portfolios := portfoliosFromConfig(cfg.Portfolios)
 
 	// Broadcaster fans every data-plane message out to all attached
 	// programs; the alert engine's notifier callback rides the same path.
@@ -350,6 +324,8 @@ func setupBackend(opts backendOpts) (*backend, func(), error) {
 		bc:           bc,
 		opts:         opts,
 		equityFile:   equityFile,
+		futuresOn:    cfg.Providers.BinanceOn(),
+		defiOn:       cfg.Providers.DeFiLlamaOn(),
 		degraded:     res.Degraded,
 		configErr:    res.Err,
 		configPath:   res.Path,
@@ -458,6 +434,9 @@ func reportDegradedConfig(res *config.LoadResult, force bool) {
 // plane behind it is shared.
 func (b *backend) buildApp(ctx context.Context) *tui.App {
 	app := tui.NewApp(b.groups, b.cache, b.histProvider, b.portfolios, b.alertEngine, b.yahooProv, b.coinbaseProv)
+	// Under serve every session shares this process, so controls backed by
+	// package-level state are withheld from guests.
+	app.SetShared(b.opts.serveMode)
 	if len(b.pastTriggers) > 0 {
 		app.LoadPastAlerts(b.pastTriggers)
 	}

@@ -48,9 +48,9 @@ type historyEntry struct {
 // historyCache is a small, bounded, TTL'd cache of fetched candle series
 // keyed by symbol and interval.
 //
-// Every [ or ] press used to fire a fresh network request; the upstream
+// Without it every [ or ] press fires a fresh network request; the upstream
 // endpoints are unauthenticated and rate limited, so a burst of key
-// presses could earn the whole process a cooldown. With the cache a
+// presses can earn the whole process a cooldown. With the cache a
 // burst costs at most one request per interval.
 //
 // Cached slices are shared with callers and must be treated as

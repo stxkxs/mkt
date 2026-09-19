@@ -26,8 +26,8 @@ const (
 //
 // Each series is computed over the FULL fetched history and only then
 // narrowed to the visible window. That ordering is the whole point:
-// computing over the visible slice — which is what the chart used to do
-// — reseeds every moving average, RSI and MACD from whatever happens to
+// computing over the visible slice instead
+// reseeds every moving average, RSI and MACD from whatever happens to
 // be on screen, so an "SMA(20)" at a given date changed value every time
 // the user pressed + or -. The displayed number was simply wrong.
 //

@@ -436,10 +436,10 @@ func historyProvider(cfg *config.Config) *market.MultiHistoryProvider {
 // This is the single canonical conversion: it carries the transaction log
 // and the tax method across, and folds any transactions onto the snapshot
 // holdings with Materialize (with no transactions the snapshot passes
-// through unchanged). Re-deriving it per call site is how the MCP server
-// ended up silently dropping every transaction, every tax method, and the
-// materialization — reporting a P&L from stale snapshot holdings that an
-// agent then treated as authoritative.
+// through unchanged). Re-deriving it per call site drops the transaction
+// log, the tax method and the materialization, and reports a P&L from stale
+// snapshot holdings — silently, because the result is still a valid
+// Portfolio.
 func portfoliosFromConfig(cps []config.Portfolio) []portfolio.Portfolio {
 	out := make([]portfolio.Portfolio, 0, len(cps))
 	for _, cp := range cps {

@@ -23,7 +23,6 @@ import (
 var wsReconnects = observe.NewCounter("mkt_provider_coinbase_ws_reconnects_total")
 
 const (
-	wsURL        = "wss://advanced-trade-ws.coinbase.com"
 	reconnectMin = 1 * time.Second
 	reconnectMax = 30 * time.Second
 	// reconnectJitter randomizes up to ±this fraction of the current
@@ -48,9 +47,24 @@ const (
 	maxCandlesPerRequest = 300
 )
 
+// wsURL is the Coinbase Advanced Trade streaming endpoint; a var so tests
+// can point it at an httptest server.
+var wsURL = "wss://advanced-trade-ws.coinbase.com"
+
 // restURL is the Coinbase Exchange REST base; a var so tests can point it
 // at an httptest server.
 var restURL = "https://api.exchange.coinbase.com"
+
+// dialTimeout bounds the WebSocket upgrade. http.DefaultTransport caps the
+// TCP connect and the TLS handshake but sets no deadline on the wait for
+// the 101 response, and websocket.Dial derives one only from a non-zero
+// HTTPClient.Timeout. Without this bound a peer that completes TLS and then
+// says nothing parks the dial on the process-lifetime context — and it does
+// so before keepAlive is armed and before the reconnect counter and the
+// status flip run, so the stall reaches no metric and no status bar.
+//
+// A var so tests can shorten it; treat it as a constant elsewhere.
+var dialTimeout = 15 * time.Second
 
 // Provider implements QuoteProvider and HistoryProvider for Coinbase.
 type Provider struct {
@@ -124,8 +138,8 @@ func productIDs(symbols []string) []string {
 }
 
 // backoff is the reconnect delay state for a single stream. It exists
-// because the delay used to be a bare local that only ever doubled: after
-// a couple of early blips it pinned at reconnectMax for the lifetime of
+// because a delay that only ever doubles pins at reconnectMax after
+// a couple of early blips and stays there for the lifetime of
 // the process, so a connection that had been healthy for hours still
 // waited 30s to come back. observe folds each finished session into the
 // state and resets the delay when the session was genuinely healthy.
@@ -169,7 +183,9 @@ func jittered(d time.Duration) time.Duration {
 // never got that far — so Subscribe can tell a real session from a
 // dial-then-drop flap when deciding whether to reset the backoff.
 func (p *Provider) connect(ctx context.Context, productIDs []string, out chan<- provider.Quote) (time.Time, error) {
-	ws, _, err := websocket.Dial(ctx, wsURL, nil)
+	dialCtx, dialCancel := context.WithTimeout(ctx, dialTimeout)
+	ws, _, err := websocket.Dial(dialCtx, wsURL, nil)
+	dialCancel()
 	if err != nil {
 		return time.Time{}, fmt.Errorf("dial: %w", err)
 	}

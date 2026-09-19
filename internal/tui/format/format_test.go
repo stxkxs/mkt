@@ -1,6 +1,12 @@
 package format
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+
+	"charm.land/lipgloss/v2"
+)
 
 func TestTruncate(t *testing.T) {
 	tests := []struct {
@@ -146,6 +152,99 @@ func TestDayRangeDegenerate(t *testing.T) {
 		}
 		if idx >= len([]rune(track)) && idx != -1 {
 			t.Errorf("DayRange(width=%d) marker %d out of track", w, idx)
+		}
+	}
+}
+
+// Truncate budgets terminal columns. A CJK glyph occupies two cells, so
+// counting runes spends twice the width the caller reserved and the row
+// overruns its frame.
+func TestTruncateCountsDisplayCells(t *testing.T) {
+	// Five double-width runes = 10 cells. A 6-cell budget fits two of them
+	// plus the ellipsis.
+	got := Truncate("日本語です", 6)
+	if w := lipgloss.Width(got); w > 6 {
+		t.Fatalf("Truncate(%q, 6) = %q, %d cells wide", "日本語です", got, w)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("truncated value lost its ellipsis: %q", got)
+	}
+
+	// An ASCII string that already fits is returned unchanged.
+	if got := Truncate("abc", 6); got != "abc" {
+		t.Fatalf("fitting string was modified: %q", got)
+	}
+
+	// A string exactly at the budget is not truncated.
+	if got := Truncate("日本語", 6); got != "日本語" {
+		t.Fatalf("exact-fit string was truncated: %q", got)
+	}
+}
+
+func TestTruncateNeverExceedsBudget(t *testing.T) {
+	for _, s := range []string{"abcdef", "日本語です", "aあbいc", "🙂🙂🙂", ""} {
+		for max := range 12 {
+			got := Truncate(s, max)
+			if w := lipgloss.Width(got); w > max {
+				t.Errorf("Truncate(%q, %d) = %q is %d cells", s, max, got, w)
+			}
+		}
+	}
+}
+
+// The three precision ladders are rendered into every row of every tab. A
+// boundary that shifts by one magnitude is invisible in review and wrong in
+// every cell, so both sides of each threshold are pinned.
+func TestFormatPriceLadder(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"99.999", "99.9990"},
+		{"100", "100.00"},
+		{"0.999", "0.999000"},
+		{"1", "1.0000"},
+		{"0.00999", "0.00999000"},
+		{"0.01", "0.010000"},
+	} {
+		var f float64
+		fmt.Sscanf(tc.in, "%g", &f)
+		if got := FormatPrice(f); got != tc.want {
+			t.Errorf("FormatPrice(%s) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestFormatAxisPriceLadder(t *testing.T) {
+	for _, tc := range []struct {
+		in   float64
+		want string
+	}{
+		{9999.9, "9999.9"},
+		{10000, "10000"},
+		{99.9, "99.90"},
+		{100, "100.0"},
+		{0.99, "0.9900"},
+		{1, "1.00"},
+	} {
+		if got := FormatAxisPrice(tc.in); got != tc.want {
+			t.Errorf("FormatAxisPrice(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestFormatVolumeLadder(t *testing.T) {
+	for _, tc := range []struct {
+		in   float64
+		want string
+	}{
+		{999, "999"},
+		{1000, "1.0K"},
+		{999999, "1000.0K"},
+		{1e6, "1.0M"},
+		{999999999, "1000.0M"},
+		{1e9, "1.0B"},
+		{0, "0"},
+	} {
+		if got := FormatVolume(tc.in); got != tc.want {
+			t.Errorf("FormatVolume(%v) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

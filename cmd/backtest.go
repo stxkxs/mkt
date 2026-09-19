@@ -90,8 +90,8 @@ produced.`,
 // recorded hours behaves like seven hours, not like the 3ms it takes. And
 // fires are attributed by rule index rather than by (symbol, condition,
 // value), which every compound rule shares — they all have an empty
-// Condition, so a file with several compounds used to pile every fire onto
-// whichever one happened to be first in the slice.
+// Condition, so attributing by value would pile every fire from a file of
+// several compounds onto whichever one came first in the slice.
 func runBacktest(ctx context.Context, rules []alert.Rule, replayPath string, cooldown time.Duration, out, errOut io.Writer) error {
 	if ctx == nil {
 		ctx = context.Background()

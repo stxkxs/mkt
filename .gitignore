@@ -14,9 +14,7 @@ Thumbs.db
 
 # Go
 vendor/
-
-# Config (user-specific)
-# ~/.config/mkt/config.yaml
+cover.out
 
 # Claude Code session state
 .claude/
