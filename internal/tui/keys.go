@@ -32,27 +32,16 @@ func isQuit(msg tea.KeyPressMsg) bool {
 }
 
 // isTabSwitch returns the target tab if the key is a tab switch, or -1.
+// The digits select by position — "1" is the leftmost tab — so the
+// binding is derived from the tab set rather than being a second list of
+// it that has to be kept in step. Tabs past the ninth have no digit.
 func isTabSwitch(msg tea.KeyPressMsg) Tab {
-	switch msg.String() {
-	case "1":
-		return TabWatchlist
-	case "2":
-		return TabPortfolio
-	case "3":
-		return TabAlerts
-	case "4":
-		return TabChart
-	case "5":
-		return TabMacro
-	case "6":
-		return TabNews
-	case "7":
-		return TabHeatmap
-	case "8":
-		return TabOptions
-	case "9":
-		return TabCorrel
-	default:
+	s := msg.String()
+	if len(s) != 1 || s[0] < '1' || s[0] > '9' {
 		return -1
 	}
+	if i := int(s[0] - '1'); i < len(tabNames) {
+		return Tab(i)
+	}
+	return -1
 }
