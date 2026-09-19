@@ -242,3 +242,79 @@ func TestCacheConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Generation is the only signal a consumer reading the cache directly has
+// that new data landed, so every accepted write has to move it and nothing
+// else may.
+func TestGenerationAdvancesOnAcceptedWritesOnly(t *testing.T) {
+	c := NewCache(4)
+	base := time.Unix(1_700_000_000, 0).UTC()
+
+	start := c.Generation()
+
+	c.Push(provider.Quote{Symbol: "AAA", Price: 1, Timestamp: base})
+	afterPush := c.Generation()
+	if afterPush == start {
+		t.Fatal("Generation did not move after a push")
+	}
+
+	if !c.Seed("BBB", []float64{1, 2, 3}) {
+		t.Fatal("Seed(BBB) reported no seed on a fresh symbol")
+	}
+	afterSeed := c.Generation()
+	if afterSeed == afterPush {
+		t.Fatal("Generation did not move after a backfill")
+	}
+
+	// A refused backfill leaves the rings as they were.
+	if c.Seed("BBB", []float64{9, 9}) {
+		t.Fatal("Seed(BBB) seeded twice")
+	}
+	if c.Seed("CCC", nil) {
+		t.Fatal("Seed(CCC) seeded an empty series")
+	}
+	if got := c.Generation(); got != afterSeed {
+		t.Errorf("Generation = %d after refused seeds, want %d", got, afterSeed)
+	}
+
+	// Reads never move it.
+	c.Prices("AAA")
+	c.Series("AAA")
+	c.Latest("AAA")
+	c.LatestQuote("AAA")
+	c.Symbols()
+	c.Seeded("BBB")
+	if got := c.Generation(); got != afterSeed {
+		t.Errorf("Generation = %d after reads, want %d", got, afterSeed)
+	}
+}
+
+// Generation is read off the hot path and written under the lock the write
+// path already holds, so concurrent pushes must account for every write.
+func TestGenerationCountsConcurrentWrites(t *testing.T) {
+	c := NewCache(8)
+	const writers, each = 8, 200
+
+	start := c.Generation()
+	var wg sync.WaitGroup
+	for w := range writers {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			sym := fmt.Sprintf("S%d", w)
+			for i := range each {
+				c.Push(provider.Quote{Symbol: sym, Price: float64(i)})
+			}
+		}(w)
+	}
+	go func() {
+		for range 1000 {
+			_ = c.Generation()
+		}
+	}()
+	wg.Wait()
+
+	if got, want := c.Generation()-start, uint64(writers*each); got != want {
+		t.Errorf("Generation advanced by %d, want %d", got, want)
+	}
+}
