@@ -92,6 +92,34 @@ type Watchlist struct {
 	Symbols []string `mapstructure:"symbols" yaml:"symbols"`
 }
 
+// DefaultWatchlistName is the group the flat `watchlist:` list is presented
+// under.
+const DefaultWatchlistName = "Default"
+
+// WatchlistGroups resolves the two watchlist spellings a config file can
+// carry into the one ordered list every reader works from.
+//
+// `watchlist:` is a flat list of symbols and `watchlists:` is a list of
+// named groups; a file may hold both, and this is the only place that
+// decides what that means. The flat list leads, under DefaultWatchlistName,
+// and the named groups follow in file order. A config with neither yields a
+// single empty group, so a caller always has one to render into.
+//
+// Callers that want the symbol set rather than the grouping still go
+// through here, so a group can never be watched by one surface and missed
+// by another.
+func (c *Config) WatchlistGroups() []Watchlist {
+	groups := make([]Watchlist, 0, len(c.Watchlists)+1)
+	if len(c.Watchlist) > 0 {
+		groups = append(groups, Watchlist{Name: DefaultWatchlistName, Symbols: c.Watchlist})
+	}
+	groups = append(groups, c.Watchlists...)
+	if len(groups) == 0 {
+		groups = append(groups, Watchlist{Name: DefaultWatchlistName})
+	}
+	return groups
+}
+
 // ServeConfig configures `mkt serve`, the Wish SSH dashboard. Access is
 // gated by a public-key allowlist: connections are refused unless the
 // client key appears in AuthorizedKeys or AuthorizedKeysFile. The command
@@ -130,8 +158,21 @@ type NewsFeed struct {
 	URL  string `mapstructure:"url" yaml:"url"`
 }
 
+// SchemaVersion is the config format this build writes. Every save records
+// it as `schema_version`, so a file states which normalization its writer
+// applied instead of leaving a reader to infer it from the keys present.
+//
+// A non-additive format change gets the next number and a branch in
+// Config.normalize; an additive one does not need either.
+const SchemaVersion = 1
+
 // Config is the application configuration.
 type Config struct {
+	// SchemaVersion is the format the file on disk declares. Zero means the
+	// file carries no `schema_version` — it predates the field. Such a file
+	// loads identically to one declaring SchemaVersion: the value records
+	// what a writer meant, and no read path branches on it.
+	SchemaVersion int               `mapstructure:"schema_version,omitempty" yaml:"schema_version,omitempty"`
 	Watchlist     []string          `mapstructure:"watchlist" yaml:"watchlist"`
 	Watchlists    []Watchlist       `mapstructure:"watchlists,omitempty" yaml:"watchlists,omitempty"`
 	Portfolios    []Portfolio       `mapstructure:"portfolios" yaml:"portfolios"`
@@ -257,6 +298,7 @@ func LoadWithResult() (*LoadResult, error) {
 			// config.yaml the user can see and edit. We deliberately do NOT
 			// inject these sections into a config that already exists — an
 			// upgrader keeps their file exactly as-is.
+			v.SetDefault("schema_version", SchemaVersion)
 			v.SetDefault("watchlists", DefaultWatchlists)
 			v.SetDefault("alerts", DefaultAlerts)
 			v.SetDefault("edgar_tickers", DefaultEDGARTickers)
@@ -388,6 +430,7 @@ func Save(cfg *Config) error {
 func encodeConfig(cfg *Config) ([]byte, map[string]any, error) {
 	v := viper.New()
 
+	v.Set("schema_version", SchemaVersion)
 	v.Set("watchlist", cfg.Watchlist)
 	if len(cfg.Watchlists) > 0 {
 		v.Set("watchlists", cfg.Watchlists)

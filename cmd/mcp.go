@@ -288,9 +288,11 @@ func runMCP(cmd *cobra.Command, args []string) error {
 			Description: "All configured watchlist symbols (deduplicated union of every group).",
 			MimeType:    "application/json",
 			Handler: func(ctx context.Context) (string, error) {
-				syms := append([]string{}, cfg.Watchlist...)
-				for _, w := range cfg.Watchlists {
-					syms = append(syms, w.Symbols...)
+				// Non-nil so a config that watches nothing marshals as
+				// [] rather than null.
+				syms := []string{}
+				for _, g := range cfg.WatchlistGroups() {
+					syms = append(syms, g.Symbols...)
 				}
 				seen := map[string]struct{}{}
 				out := syms[:0]
@@ -555,7 +557,7 @@ func summarizePortfolio(ctx context.Context, live *liveQuoteClient, hist history
 	}
 
 	quotes, errs := fetchQuotes(ctx, live, hist, symbols)
-	sum := portfolio.Evaluate(pf.Holdings, quotes)
+	sum := pf.Evaluate(quotes)
 
 	res := portfolioResult{
 		Name:         pf.Name,

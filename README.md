@@ -342,7 +342,8 @@ MKT_CONFIG_DIR=/path/to/dir mkt          # config, backups, alert + equity histo
 The shape, trimmed (`mkt config show` prints the real thing):
 
 ```yaml
-watchlist:            # legacy flat list, still honored — appears as group "Default"
+schema_version: 1     # the config format this file was written against
+watchlist:            # flat list — appears as group "Default", ahead of watchlists
   - BTC-USD
   - AAPL
 watchlists:           # named groups, cycled with [ / ] on the Watch tab
@@ -370,7 +371,13 @@ sparkline_len: 60
 theme: tokyonight
 ```
 
-`mkt config validate` checks the file for anything the dashboard would otherwise silently ignore: a file that does not parse, malformed durations, unknown themes, unknown alert conditions, bad tax methods, malformed transactions, non-canonical symbol spellings, and symbols that route to no provider. It exits non-zero on any finding. `--check-symbols` additionally asks each provider for one bar per configured symbol, which is the only way to catch a typo like `APPL` — it routes cleanly to Yahoo and is shaped exactly like a real ticker.
+A file may carry both watchlist spellings. `watchlist:` is one flat list of symbols and `watchlists:` is a list of named groups; the flat list leads, under the name **Default**, and the named groups follow in file order. Every surface — the Watch tab, the heatmap, `mkt config validate`, the MCP server — resolves them the same way, so a group cannot be watched on one and missing on another.
+
+`schema_version` records the config format a write was made against. A file written before the field existed carries no `schema_version` and loads exactly as one that declares it: the value says what a writer meant, and nothing branches on it. The next save adds the field and changes nothing else. A `schema_version` higher than the running build writes is reported by `mkt config validate`, because that build models settings this one would rebuild the file without.
+
+Going back to a build that predates the field costs the field itself: it models no `schema_version`, so its write-safety diff reports the key as a section it cannot preserve and refuses the write, or drops it under `--yes` after warning. Everything else in the file survives, and the next save on a build that knows the field puts it back.
+
+`mkt config validate` checks the file for anything the dashboard would otherwise silently ignore: a file that does not parse, malformed durations, unknown themes, unknown alert conditions, bad tax methods, malformed transactions, non-canonical symbol spellings, a `schema_version` from a newer build, and symbols that route to no provider. It exits non-zero on any finding. `--check-symbols` additionally asks each provider for one bar per configured symbol, which is the only way to catch a typo like `APPL` — it routes cleanly to Yahoo and is shaped exactly like a real ticker.
 
 ### Config write safety
 
