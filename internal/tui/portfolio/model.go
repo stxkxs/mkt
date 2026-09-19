@@ -199,7 +199,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if row < 0 {
 			return m, nil
 		}
-		summary := portfolio.Evaluate(p.Holdings, m.quotes)
+		summary := p.Evaluate(m.quotes)
 		idx := m.viewportStart(p, summary) + row
 		if idx >= 0 && idx < len(summary.Positions) {
 			m.cursor = idx
@@ -469,7 +469,7 @@ func (m Model) View() string {
 	sb.WriteString(theme.StyleBorderChar.Render(format.Repeat("─", m.width)))
 	sb.WriteString("\n")
 
-	summary := portfolio.Evaluate(p.Holdings, m.quotes)
+	summary := p.Evaluate(m.quotes)
 
 	startIdx := m.viewportStart(p, summary)
 	endIdx := startIdx + m.visibleRows(p, summary)
@@ -519,7 +519,7 @@ func (m Model) View() string {
 	}
 
 	if len(p.Transactions) > 0 {
-		realized := portfolio.RealizedByMethod(p.Transactions, p.TaxMethod)
+		realized := p.Realized()
 		realizedStyle := theme.StyleUp
 		realizedSign := "+"
 		if realized < 0 {

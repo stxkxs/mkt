@@ -234,24 +234,12 @@ func setupBackend(opts backendOpts) (*backend, func(), error) {
 	// Apply theme from config before creating any TUI components.
 	theme.Apply(cfg.Theme)
 
-	// Build watchlist groups, preserving backward compat with the legacy
-	// top-level `watchlist:` field.
-	var groups []watchlistview.Group
-	if len(cfg.Watchlists) > 0 {
-		for _, w := range cfg.Watchlists {
-			groups = append(groups, watchlistview.Group{Name: w.Name, Symbols: w.Symbols})
-		}
-	}
-	if len(cfg.Watchlist) > 0 {
-		legacy := watchlistview.Group{Name: "Default", Symbols: cfg.Watchlist}
-		if len(groups) == 0 {
-			groups = []watchlistview.Group{legacy}
-		} else {
-			groups = append([]watchlistview.Group{legacy}, groups...)
-		}
-	}
-	if len(groups) == 0 {
-		groups = []watchlistview.Group{{Name: "Default"}}
+	// The config package owns how `watchlist:` and `watchlists:` combine, so
+	// the tab shows the same groups every other reader resolves.
+	resolved := cfg.WatchlistGroups()
+	groups := make([]watchlistview.Group, 0, len(resolved))
+	for _, w := range resolved {
+		groups = append(groups, watchlistview.Group{Name: w.Name, Symbols: w.Symbols})
 	}
 	// Every symbol the data plane must price: the watchlist union plus every
 	// portfolio holding and transaction. Holdings are not implicitly watched
@@ -569,7 +557,7 @@ func (b *backend) startDataPlane(ctx context.Context) {
 			}
 		}
 		for _, pf := range b.portfolios {
-			sum := portfolio.Evaluate(pf.Holdings, quoteSnap)
+			sum := pf.Evaluate(quoteSnap)
 			if sum.TotalValue == 0 {
 				continue
 			}

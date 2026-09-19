@@ -34,11 +34,11 @@ const symbolCheckTimeout = 60 * time.Second
 
 // validateCommand builds `mkt config validate`.
 //
-// This is the command that was supposed to catch a config.yaml broken by a
-// single bad indent and instead printed "Config OK: 163 watchlist symbols,
-// 12 portfolios" — the *defaults*, because a file that does not parse still
-// yields a usable Config. It now reports the parse failure with its line
-// number and exits non-zero, so the reassurance can never be false again.
+// A file that does not parse still yields a usable Config, because Load
+// falls back to the defaults so the dashboard starts. This command must
+// therefore read LoadWithResult rather than Load: reporting on a degraded
+// load would describe the defaults while naming the user's file, which is
+// reassurance about settings they do not have.
 func validateCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "validate",
@@ -46,8 +46,9 @@ func validateCommand() *cobra.Command {
 		Long: `Check ~/.config/mkt/config.yaml for anything the dashboard would
 otherwise silently ignore or replace with defaults: a file that does not
 parse at all, malformed durations, unknown themes, unknown alert
-conditions, bad tax methods, malformed transactions, and symbols that
-route to no provider. Exits non-zero if any issues are found.
+conditions, bad tax methods, malformed transactions, a schema_version
+from a newer build, and symbols that route to no provider. Exits
+non-zero if any issues are found.
 
 With --check-symbols it additionally asks each provider for one bar per
 configured symbol, which catches a typo like APPL that is shaped like a
@@ -109,9 +110,9 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%d issue(s) found in %s", len(issues), tildePath(res.Path))
 	}
 
-	symbols := len(cfg.Watchlist)
-	for _, w := range cfg.Watchlists {
-		symbols += len(w.Symbols)
+	var symbols int
+	for _, g := range cfg.WatchlistGroups() {
+		symbols += len(g.Symbols)
 	}
 	fmt.Fprintf(out, "Config OK: %d watchlist symbols, %d portfolios, %d alerts (%s)\n",
 		symbols, len(cfg.Portfolios), len(cfg.Alerts), tildePath(res.Path))
@@ -123,6 +124,19 @@ func runValidate(cmd *cobra.Command, args []string) error {
 // Returns one human-readable message per problem.
 func validateConfig(cfg *config.Config) []string {
 	var issues []string
+
+	// Zero is the absent field, which reads the same as the version this
+	// build writes. Anything above it was written by a build that models
+	// settings this one does not, and a save here rebuilds the file without
+	// them.
+	switch {
+	case cfg.SchemaVersion < 0:
+		issues = append(issues, fmt.Sprintf("schema_version: %d must not be negative", cfg.SchemaVersion))
+	case cfg.SchemaVersion > config.SchemaVersion:
+		issues = append(issues, fmt.Sprintf(
+			"schema_version: %d comes from a newer mkt than this one, which writes %d — settings that version added are not read here and a write drops them",
+			cfg.SchemaVersion, config.SchemaVersion))
+	}
 
 	if d, err := time.ParseDuration(cfg.PollInterval); err != nil {
 		issues = append(issues, fmt.Sprintf("poll_interval: %q is not a valid duration (e.g. 15s, 1m)", cfg.PollInterval))
@@ -390,11 +404,8 @@ func configSymbols(cfg *config.Config) []string {
 		seen[s] = true
 		out = append(out, s)
 	}
-	for _, s := range cfg.Watchlist {
-		add(s)
-	}
-	for _, w := range cfg.Watchlists {
-		for _, s := range w.Symbols {
+	for _, g := range cfg.WatchlistGroups() {
+		for _, s := range g.Symbols {
 			add(s)
 		}
 	}

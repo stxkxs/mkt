@@ -11,7 +11,7 @@ import (
 type TaxMethod string
 
 const (
-	TaxAverage TaxMethod = "" // default; matches portfolio.Realized
+	TaxAverage TaxMethod = "" // default; settles the log the way Realized does
 	TaxFIFO    TaxMethod = "fifo"
 	TaxLIFO    TaxMethod = "lifo"
 	TaxHIFO    TaxMethod = "hifo"

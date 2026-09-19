@@ -1,5 +1,7 @@
 package portfolio
 
+import "github.com/stxkxs/mkt/internal/provider"
+
 // Holding represents a single portfolio position.
 type Holding struct {
 	Symbol    string
@@ -9,8 +11,10 @@ type Holding struct {
 }
 
 // Portfolio is a named collection of holdings, optionally accompanied by
-// the transaction log that produced them. Transactions enable realized
-// P&L (P1) and tax-lot accounting (P2) without re-reading config.
+// the transaction log that produced them. Holdings answer what is held;
+// the log answers at what cost and what has already been realized, so
+// realized P&L and tax-lot accounting need no second read of config.
+// TaxMethod governs how Realized consumes that log.
 type Portfolio struct {
 	Name         string
 	Holdings     []Holding
@@ -71,4 +75,22 @@ func (s Summary) Coverage() float64 {
 		return 1
 	}
 	return s.TotalCost / total
+}
+
+// Evaluate prices the portfolio's own holdings against quotes and returns
+// the same Summary as the package-level Evaluate over a loose slice. Prefer
+// it wherever a whole Portfolio is in hand: the aggregate supplies its own
+// holdings, so no call site can pair one portfolio's positions with
+// another's.
+func (p Portfolio) Evaluate(quotes map[string]provider.Quote) Summary {
+	return Evaluate(p.Holdings, quotes)
+}
+
+// Realized returns cumulative realized P&L over the portfolio's own
+// transaction log, settled under its own TaxMethod. The pairing is the
+// point: TaxMethod describes how this log is to be consumed, and a log
+// settled under some other portfolio's method is not a number anyone can
+// act on.
+func (p Portfolio) Realized() float64 {
+	return RealizedByMethod(p.Transactions, p.TaxMethod)
 }
