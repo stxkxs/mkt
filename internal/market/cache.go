@@ -2,6 +2,7 @@ package market
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/stxkxs/mkt/internal/provider"
@@ -26,6 +27,7 @@ type Cache struct {
 	last     map[string]provider.Quote
 	seeded   map[string]bool
 	ringSize int
+	gen      atomic.Uint64
 }
 
 // NewCache creates a new quote cache.
@@ -54,7 +56,22 @@ func (c *Cache) Push(q provider.Quote) {
 	}
 	r.push(q.Price, q.Timestamp)
 	c.last[q.Symbol] = q
+	c.gen.Add(1)
 }
+
+// Generation returns a counter that advances every time the cache accepts
+// data, and never otherwise. It exists so a consumer holding a value derived
+// from the whole cache can decide whether to recompute without diffing the
+// rings or being handed the quote that landed: the hub's fan-out to the TUI is
+// lossy, so a surface that reads the cache directly has no message to key off
+// and this is the signal it keys off instead.
+//
+// The number carries no meaning beyond inequality — compare two readings,
+// never interpret one. Read it before reading the data derived from it. In
+// that order a write landing mid-read costs one redundant recompute on the
+// next read; the reverse order stores a result taken before the write under
+// the counter value that follows the write, and pins it there.
+func (c *Cache) Generation() uint64 { return c.gen.Load() }
 
 // Prices returns the recent prices for a symbol, oldest first.
 func (c *Cache) Prices(symbol string) []float64 {
@@ -163,6 +180,7 @@ func (c *Cache) seed(symbol string, prices []float64, times []time.Time) bool {
 		r.push(p, liveTimes[i])
 	}
 	c.data[symbol] = r
+	c.gen.Add(1)
 	return true
 }
 

@@ -49,11 +49,12 @@ type Model struct {
 	bucketI int
 	width   int
 	height  int
+	memo    *matrixMemo
 }
 
 // New constructs a Model with the watchlist symbols + price cache.
 func New(symbols []string, cache *market.Cache) Model {
-	return Model{symbols: symbols, cache: cache}
+	return Model{symbols: symbols, cache: cache, memo: &matrixMemo{}}
 }
 
 // SetSize updates dimensions.
@@ -155,10 +156,26 @@ func (m Model) samples(syms []string) [][]portfolio.Sample {
 	return out
 }
 
-// matrixFor computes the correlation matrix for a set of symbols: log
-// returns of each series after resampling them onto a shared bucket grid.
+// matrixFor returns the correlation matrix for a set of symbols: log returns
+// of each series after resampling them onto a shared bucket grid.
+//
+// The value is memoized on everything it depends on — the window, the
+// resampling bucket, and the cache's generation, which is the only signal
+// that new prices have landed for a tab that reads the cache rather than
+// receiving forwarded quotes. The generation is read before the series are,
+// which is the order Cache.Generation requires. A Model built by hand rather
+// than by New carries no memo and simply computes.
 func (m Model) matrixFor(syms []string) [][]float64 {
-	return portfolio.CorrelationMatrixSeries(syms, m.samples(syms), m.Bucket())
+	if m.memo == nil {
+		return portfolio.CorrelationMatrixSeries(syms, m.samples(syms), m.Bucket())
+	}
+	gen, bucket := m.cache.Generation(), m.Bucket()
+	if m.memo.fresh(syms, bucket, gen) {
+		return m.memo.matrix
+	}
+	matrix := portfolio.CorrelationMatrixSeries(syms, m.samples(syms), bucket)
+	m.memo.store(syms, bucket, gen, matrix)
+	return matrix
 }
 
 // View renders the correlation matrix as a colored grid. Top-left
