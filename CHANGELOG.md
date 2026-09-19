@@ -4,6 +4,201 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.0 — 2026-09-19
+
+A quality pass across security, systems, TUI layout and the build gates,
+driven by an audit against the ten production-bar dimensions. Nine
+vulnerabilities reachable from called code are closed, the terminal UI fits
+any frame instead of wrapping, and `/metrics` carries the signals the
+operating docs describe.
+
+**The minimum Go version is now 1.26.8.** That is not a preference:
+`charm.land/wish/v2` v2.0.4 declares it, and the toolchain bump is also what
+closes six of the nine advisories. An existing `config.yaml` loads unchanged.
+
+### Behavioral changes
+
+These change what `mkt` does with an unchanged config.
+
+- **Desktop notifications shell out to a platform helper** — `osascript` on
+  macOS, `notify-send` on Linux, a PowerShell toast on Windows — instead of
+  running in-process. On a machine without the helper the notifier returns an
+  error the log records rather than delivering silently; every other
+  destination (webhook, ntfy, Pushover, history) is unaffected. This drops ten
+  requirements from `go.mod` — among them an ICNS encoder, an image resizer, a
+  BMP encoder, an ICO encoder and a systray shim — for a call that passed no
+  icon.
+- **Tables shed columns on a narrow terminal.** The Watch, Portfolio, Alerts
+  and Options tables needed 78, 93, 53 and 77 columns and consulted their
+  width nowhere, so a narrower frame word-wrapped each row onto two screen
+  lines. They now drop their least load-bearing column as width falls and
+  print a "too narrow" line below the floor. The tab bar windows around the
+  active tab and carries an `n/9` marker rather than listing all nine.
+- **Theme switching is withheld under `mkt serve`.** The palette lives in
+  process-wide state, so a guest pressing `T` restyled every other session —
+  and wrote those variables while the others rendered from them. Guests keep
+  the host's theme, and the help card and status bar no longer advertise the
+  key. A local dashboard is unaffected.
+- **Read routes on the HTTP API answer non-GET with 405** and an `Allow`
+  header. `/quotes`, `/quotes/{symbol}`, `/alerts` and `/metrics` previously
+  answered any verb with 200 and a body.
+- **`/quotes/{symbol}` canonicalizes its path segment**, so `/quotes/btc` and
+  `/quotes/BTCUSDT` resolve like every other symbol entry point instead of
+  returning 404 for anything but the canonical spelling.
+- **The MCP server no longer advertises a `logging` capability.** It was
+  declared in the handshake and acknowledged without a logger behind it, so a
+  client that set a level received a success it could not rely on;
+  `logging/setLevel` now returns method-not-found.
+- **The alert history and equity-curve files are compacted.** Both are read
+  with a keep-newest-N bound and were written with a plain append, so a
+  long-running `mkt daemon` grew them without limit and re-read the whole
+  file at startup to discard all but the tail.
+- **News and EDGAR fetches are paced** at four concurrent requests behind a
+  shared 4 req/s limiter. Both lists come from config with no length bound,
+  and SEC blocks clients that exceed its published rate.
+
+### Added
+
+- **`/healthz` and `/readyz`** on the read API. `/metrics` answers 200 from
+  the moment the listener binds, so it cannot serve as a readiness signal;
+  `/readyz` reports 503 until a provider has delivered a quote, and
+  `/healthz` stays up regardless so an upstream outage is not a restart loop.
+- **Gauges and histograms in `internal/observe`**, and the duration series
+  that were missing entirely: `mkt_http_fetch_duration_seconds`,
+  `mkt_http_post_duration_seconds` and `mkt_api_request_duration_seconds`.
+  Fetch duration is recorded at the `internal/httpx` chokepoint, so one
+  series covers every provider.
+- **`mkt_observer_drops_total` and `mkt_observer_backlog_quotes`** — the two
+  numbers the hub's own documentation calls the "observer is wedged" signal,
+  which previously reached no metric and surfaced only in a five-minute log
+  line under `mkt serve`. A rising backlog is the earliest warning that alert
+  evaluation is falling behind.
+- **A `# HELP` line on every series.** Thirteen of nineteen carried only a
+  `# TYPE`, leaving an operator to infer meaning from the name.
+- **An Operating section in the README** — where each surface logs, what each
+  `/metrics` series means for an on-call reader, the failure modes for a
+  dropped stream or a config that stops parsing, and a systemd unit for
+  `mkt daemon`.
+- **MCP tool annotations and handshake instructions.** Every tool declares
+  `readOnlyHint` and `destructiveHint`, so a caller can tell a read from a
+  write before invoking, and `initialize` returns guidance on when to prefer
+  each tool and what a portfolio's coverage figure means.
+- **The `transactions[]` schema and six previously undocumented flags** —
+  `--cooldown`, `--atr`, `--atr-mult`, `--long`, `--addr`, `--host-key` — are
+  documented. The YAML key is `time` where the CSV importer's column is
+  `date`, which the docs now say.
+- **Build gates**: a coverage floor, a `go mod tidy` check, and `funlen` /
+  `gocyclo` as a ratchet set just above the current ceiling with the
+  functions already past it named as explicit debt. Every correctness linter
+  passes on a 400-line router, which is why the existing set could not see
+  them.
+
+### Changed
+
+- The nine tabs route through one declared contract (`internal/tui/tabs.go`)
+  rather than six parallel switches that had to be edited in lockstep. A tab
+  missing from the async fan-out silently rendered "Loading…" forever with no
+  compile error; that membership is now declared once and gated by a test.
+- `format.Truncate` measures display cells rather than runes, and the
+  indivisible unit is the grapheme cluster. A base character followed by a
+  variation selector renders two cells across two runes that each measure
+  one, so free text overran every surface budgeted through it.
+- `setupBackend` calls the canonical config→portfolio conversion instead of
+  inlining a copy, so the dashboard, serve and daemon paths cannot drift from
+  MCP on the transaction log, the tax method or the materialization.
+- The three notifiers share one `httpx.Post` rather than each hand-rolling
+  the request, status check and body drain.
+- `goreleaser` no longer runs `go mod tidy` before a release build, which
+  could rewrite `go.mod` so the tagged binaries resolved a dependency set no
+  CI job had built or scanned.
+- `observe.Snapshot` and `observe.SortedNames` are removed. Both lost their
+  last caller when exposition moved to `observe.Text`, and `Snapshot`
+  reported counters alone, which stopped being the whole registry once gauges
+  existed. `api.Server.WithDrops` is removed with the closure seam it
+  belonged to.
+
+### Fixed
+
+- **The Coinbase WebSocket upgrade had no deadline.** `http.Transport` caps
+  the TCP connect and the TLS handshake but sets no bound on the wait for the
+  101 response, so a peer that completed TLS and then said nothing stalled
+  the stream for the life of the process — and did so before the liveness
+  probe was armed and before the reconnect counter and status flip ran, so it
+  reached no metric and no status bar. Bounded at 15s.
+- **The heatmap drill-down re-ranked its tiles on every frame** while the
+  cursor was a position in that order, so tiles moved under the reader and
+  the highlight landed on a different symbol with no keypress. The order is
+  fixed when the drill-down opens; prices keep updating in place.
+- **The Macro tab's optional sections appeared when their poller landed**,
+  shifting every row below them under a reader who had already scrolled.
+  Enabled providers reserve their rows from the first frame; disabled ones
+  draw nothing.
+- **The dashboard repainted ten times a second forever.** The spinner tick
+  re-armed unconditionally, but its only reader is the pre-ready branch of
+  the root view, so after the first window-size message it animated a glyph
+  that was no longer on screen — on every attached SSH session.
+- **Overlays ignored the frame.** The symbol-info and new-alert panels passed
+  fixed widths and were composited at a fixed origin, so on a narrow terminal
+  they ran off the right edge. `RenderPanel` also padded content lines but
+  never cut them, so one long line widened the whole panel.
+- A tab or newline in config free text broke a table row: a tab measures zero
+  cells and the terminal expands it, and a newline split one data row into
+  two screen rows. Both displace the rows below, which desynchronizes the
+  click hit-test — it maps a screen row straight to a data-row index, so a
+  click selected the wrong symbol.
+- Portfolio's `SYMBOL` column padded to six cells but never truncated, and
+  the shipped default portfolios hold `LINK-USD` and `AVAX-USD`. Its P&L
+  column had no declared width at all, which is what pushed a priced row past
+  its own header.
+- An alert threshold rendered fifteen cells into a twelve-cell field for a
+  `volume_above` rule with a large value.
+- Data handed to the Macro tab is rendered whether or not the provider flag
+  was set, so a wiring gap cannot present as an empty panel with the data in
+  hand.
+- The correlation matrix's labels were cut by rune into a fixed grid, and its
+  legend was fixed at 59 cells — wider than the matrix it describes.
+- Chart and comparison history fetches take the process context, so a fetch
+  started by a session that has since disconnected stops instead of running
+  out its retries against the upstream provider.
+- The Pushover notifier redacts its error like the other two. Nothing leaks
+  today, since its endpoint is a constant and the token rides in the form
+  body, but the three paths were not identical.
+- Roughly twenty-five comments trade a bug's biography for the invariant that
+  outlives it. Five were user-facing, including one in `mkt daemon --help`.
+
+### Security
+
+- **Nine vulnerabilities reachable from called code are closed**, and
+  `govulncheck` reports zero. Three were pre-auth denial of service against
+  `ssh.NewServerConn`, reachable from `mkt serve`; one was an `encoding/xml`
+  recursion bug reachable from remote RSS bodies. `golang.org/x/crypto` moves
+  to v0.57.0 and the toolchain to go1.26.8.
+- **Upstream text is sanitized before it reaches a terminal or an agent.** An
+  HTTP error body is relayed into `StatusError` and rendered into a Bubbletea
+  frame and MCP tool output without being parsed first, so an ANSI escape in
+  it could reposition the cursor, repaint the screen or hide rows. RSS and
+  EDGAR titles are sanitized at parse time for the same reason — `encoding/xml`
+  rejects ESC, but a bidirectional override is well-formed XML and renders
+  text in an order other than the one stored.
+- **The MCP default-deny is covered by tests.** `mkt://config` is off without
+  `--expose-config`, and `get_portfolio` and `mkt://portfolios` are off
+  without `--expose-portfolio`; the README publishes that as a guarantee and
+  nothing exercised it, so inverting one condition would have shipped
+  holdings and cost basis to any connected agent with every gate green.
+- Notification helpers receive their arguments as argv elements, never shell
+  words. Two of the three interpret their own argument as a program, so the
+  interpolated title and message are escaped for that language — and those
+  values are attacker-influenced, since `/webhook/tradingview` injects remote
+  payloads into the notifier fan-out and the validator at that boundary
+  rejects control characters but passes quotes and backslashes.
+- `Cmd.WaitDelay` bounds the notification helper call rather than only the
+  process. Standard error is captured through a pipe, so a helper that leaves
+  a child holding the write end blocks the wait forever even after the
+  deadline kills it — which would park the single notifier pump for the life
+  of the process, filling its queue and dropping every later alert.
+
+---
+
 ## v0.2.0 — 2026-08-01
 
 A remediation pass across the whole tree: every leaf and mid-layer package was
