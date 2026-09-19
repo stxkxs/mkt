@@ -151,3 +151,65 @@ func TestViewSurvivesEverySize(t *testing.T) {
 		}
 	}
 }
+
+// Reserving a section's rows must not become a way to withhold data. A
+// caller that delivers futures or TVL without having declared the provider
+// still gets them rendered; only an empty section depends on the flag.
+func TestSectionsRenderWhateverDataArrives(t *testing.T) {
+	m := New()
+	m.SetSize(100, 80)
+	m.UpdateQuotes([]provider.Quote{{Symbol: "^VIX", Price: 15.2, ChangePct: -3.1}})
+	m.UpdateFutures([]binance.FuturesSnapshot{
+		{Symbol: "BTCUSDT", MarkPrice: 62010, FundingRate: 0.0001, OpenInterest: 1.2e9},
+	})
+	m.UpdateDeFi([]defillama.TVLSnapshot{
+		{Chain: "Ethereum", TVL: 5e10, Change1d: 1.2, Change7d: -0.4},
+	})
+
+	out := plain(m.View())
+	if !strings.Contains(out, "BTCUSDT") {
+		t.Errorf("futures data delivered but not rendered:\n%s", out)
+	}
+	if !strings.Contains(out, "Ethereum") {
+		t.Errorf("DeFi data delivered but not rendered:\n%s", out)
+	}
+}
+
+// An enabled provider holds its rows from the first frame, so the poller
+// landing cannot shift every row below it under a reader mid-scroll.
+func TestEnabledSectionsReserveTheirRowsBeforeData(t *testing.T) {
+	m := New()
+	m.SetSize(100, 80)
+	m.UpdateQuotes([]provider.Quote{{Symbol: "^VIX", Price: 15.2, ChangePct: -3.1}})
+	m.SetProviders(true, true)
+
+	before := len(m.contentLines())
+	if !strings.Contains(plain(m.View()), "Crypto Futures") {
+		t.Fatal("enabled futures section is absent before its first poll")
+	}
+
+	m.UpdateFutures([]binance.FuturesSnapshot{
+		{Symbol: "BTCUSDT", MarkPrice: 62010, FundingRate: 0.0001, OpenInterest: 1.2e9},
+	})
+	after := len(m.contentLines())
+	if after != before {
+		t.Errorf("row count moved when the poller landed: %d -> %d", before, after)
+	}
+}
+
+// A provider switched off in config draws nothing, rather than a
+// placeholder promising data that will never arrive.
+func TestDisabledSectionsAreOmitted(t *testing.T) {
+	m := New()
+	m.SetSize(100, 80)
+	m.UpdateQuotes([]provider.Quote{{Symbol: "^VIX", Price: 15.2, ChangePct: -3.1}})
+	m.SetProviders(false, false)
+
+	out := plain(m.View())
+	if strings.Contains(out, "Crypto Futures") {
+		t.Error("futures section drawn for a disabled provider")
+	}
+	if strings.Contains(out, "DeFi TVL") {
+		t.Error("DeFi section drawn for a disabled provider")
+	}
+}

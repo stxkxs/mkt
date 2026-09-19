@@ -65,11 +65,12 @@ type Model struct {
 	width    int
 	height   int
 	scroll   int // first visible content row
-	// Sections for providers that are switched off are omitted entirely.
-	// Sections for providers that are on are drawn from the first frame,
-	// empty until their poller lands: scroll is an absolute row offset, so
-	// a section that appears later pushes every row below it down under a
-	// reader who has already scrolled.
+	// A section is drawn when its provider is on, so its rows are reserved
+	// from the first frame rather than appearing when the poller lands:
+	// scroll is an absolute row offset, so a section that shows up later
+	// pushes every row below it down under a reader who has already
+	// scrolled. A section with data is drawn whether or not the flag was
+	// set, so data delivered by Update* is never withheld.
 	futuresOn bool
 	defiOn    bool
 }
@@ -284,7 +285,7 @@ func (m Model) contentLines() []string {
 	}
 
 	// Crypto Futures (Binance)
-	if m.futuresOn {
+	if m.futuresOn || len(m.futures) > 0 {
 		sb.WriteString("\n")
 		sb.WriteString(theme.SectionHeader("Crypto Futures", m.width))
 		sb.WriteString("\n")
@@ -359,7 +360,7 @@ func (m Model) contentLines() []string {
 	}
 
 	// DeFi TVL (top 8 chains)
-	if m.defiOn {
+	if m.defiOn || len(m.defi) > 0 {
 		sb.WriteString("\n")
 		sb.WriteString(theme.SectionHeader("DeFi TVL (top 8 chains)", m.width))
 		sb.WriteString("\n")
