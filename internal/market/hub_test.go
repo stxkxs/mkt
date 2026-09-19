@@ -378,8 +378,13 @@ func TestObserverBacklogOverflowDropsOldestAndCounts(t *testing.T) {
 	for _, p := range []float64{2, 3, 4, 5, 6} {
 		o.push(provider.Quote{Price: p})
 	}
-	if got := o.pending(); got != 3 {
-		t.Fatalf("pending = %d, want the queue capped at 3", got)
+	if got := o.queued(); got != 3 {
+		t.Fatalf("queued = %d, want the queue capped at 3", got)
+	}
+	// The quote taken for delivery is outstanding work, not queue memory,
+	// so it counts toward the backlog but not toward the cap.
+	if got := o.pending(); got != 4 {
+		t.Fatalf("pending = %d, want 3 queued plus the one in flight", got)
 	}
 	if got := drops.Load(); got != 2 {
 		t.Fatalf("drops = %d, want 2 (oldest evicted)", got)
@@ -419,5 +424,56 @@ func TestIsShutdownFiltersContextErrors(t *testing.T) {
 		if got := isShutdown(c.err); got != c.want {
 			t.Errorf("isShutdown(%v) = %v, want %v", c.err, got, c.want)
 		}
+	}
+}
+
+// A wedged observer holds its whole batch outside the queue: run takes the
+// queue in one go and nils it, so the queue length reports zero precisely
+// when the observer is holding the most. mkt_observer_backlog_quotes is the
+// "this consumer is wedged" signal, and a signal that reads zero when it
+// matters is worse than none.
+func TestObserverBacklogCountsTheBatchInFlight(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const emit = 64
+	cache := NewCache(emit * 2)
+	p := &fakeProvider{name: "a", sym: "AAA", emit: emit, started: make(chan struct{})}
+	hub := NewHub(cache, p)
+
+	entered := make(chan struct{}, 1)
+	wedge := make(chan struct{})
+	hub.AddObserver(func(q provider.Quote) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-wedge
+	})
+	hub.Start(ctx, []string{"AAA"}, nil)
+
+	// Wait until the observer is parked inside fn, which is when it is
+	// holding a batch and its queue may well be empty.
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		close(wedge)
+		t.Fatal("observer never entered fn")
+	}
+
+	// Let every quote reach it, so the whole emission is either queued or
+	// in the batch it took.
+	deadline := time.Now().Add(5 * time.Second)
+	var got int
+	for time.Now().Before(deadline) {
+		if got = hub.ObserverBacklog(); got >= emit-1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(wedge)
+
+	if got < emit-1 {
+		t.Errorf("ObserverBacklog = %d, want at least %d — the batch in flight is not counted", got, emit-1)
 	}
 }
