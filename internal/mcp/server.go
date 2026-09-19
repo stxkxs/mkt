@@ -18,11 +18,27 @@ import (
 const ProtocolVersion = "2025-03-26"
 
 // Tool is one callable in the MCP server.
+//
+// Annotations carries the MCP tool hints (readOnlyHint, destructiveHint,
+// openWorldHint). They are what lets a caller tell a read from a write
+// before it calls, so a server that mutates anything has to populate them.
 type Tool struct {
 	Name        string                                                      `json:"name"`
 	Description string                                                      `json:"description"`
 	InputSchema map[string]any                                              `json:"inputSchema"`
+	Annotations map[string]any                                              `json:"annotations,omitempty"`
 	Handler     func(ctx context.Context, args map[string]any) (any, error) `json:"-"`
+}
+
+// ReadOnlyTool is the annotation set for a tool that reads and never
+// mutates, against data this process does not own.
+func ReadOnlyTool() map[string]any {
+	return map[string]any{
+		"readOnlyHint":    true,
+		"destructiveHint": false,
+		"idempotentHint":  true,
+		"openWorldHint":   true,
+	}
 }
 
 // Resource is an addressable piece of content the client can read.
@@ -67,8 +83,9 @@ type Server struct {
 	prompts     map[string]Prompt
 	promptOrder []string
 
-	name    string
-	version string
+	name         string
+	version      string
+	instructions string
 }
 
 // New constructs an empty Server. Use the With… registration helpers to
@@ -81,6 +98,14 @@ func New(name, version string) *Server {
 		name:      name,
 		version:   version,
 	}
+}
+
+// WithInstructions sets the guidance returned by initialize. A client reads
+// it once, before any tools/list, so it is the only place to say how the
+// tools relate to each other and what their results do not mean.
+func (s *Server) WithInstructions(text string) *Server {
+	s.instructions = text
+	return s
 }
 
 // WithTools registers the given tools. tools/list reports them in
@@ -346,16 +371,7 @@ func normalizeID(raw json.RawMessage) (json.RawMessage, bool) {
 func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 	switch rq.Method {
 	case "initialize":
-		return resp{JSONRPC: "2.0", ID: rq.ID, Result: map[string]any{
-			"protocolVersion": ProtocolVersion,
-			"capabilities": map[string]any{
-				"tools":     map[string]any{"listChanged": false},
-				"resources": map[string]any{"listChanged": false, "subscribe": false},
-				"prompts":   map[string]any{"listChanged": false},
-				"logging":   map[string]any{},
-			},
-			"serverInfo": map[string]any{"name": s.name, "version": s.version},
-		}}, false
+		return resp{JSONRPC: "2.0", ID: rq.ID, Result: s.initializeResult()}, false
 
 	case "notifications/initialized", "notifications/cancelled", "notifications/progress":
 		// Notification-only methods: silent even if a confused client
@@ -369,11 +385,15 @@ func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 		tools := make([]map[string]any, 0, len(s.toolOrder))
 		for _, name := range s.toolOrder {
 			t := s.tools[name]
-			tools = append(tools, map[string]any{
+			entry := map[string]any{
 				"name":        t.Name,
 				"description": t.Description,
 				"inputSchema": t.InputSchema,
-			})
+			}
+			if len(t.Annotations) > 0 {
+				entry["annotations"] = t.Annotations
+			}
+			tools = append(tools, entry)
 		}
 		return resp{JSONRPC: "2.0", ID: rq.ID, Result: map[string]any{"tools": tools}}, false
 
@@ -477,12 +497,26 @@ func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 			}},
 		}}, false
 
-	case "logging/setLevel":
-		// We accept and ack but don't actually wire a logger to MCP yet.
-		return resp{JSONRPC: "2.0", ID: rq.ID, Result: map[string]any{}}, false
 	}
 
 	return errReply(rq.ID, errMethodNotFound, fmt.Sprintf("method %q not found", rq.Method)), false
+}
+
+// initializeResult is the handshake payload. Capabilities name only what
+// dispatch actually serves: a capability the client is told about and the
+// server does not implement is a claim it has no way to check except by
+// calling and trusting the reply.
+func (s *Server) initializeResult() map[string]any {
+	return map[string]any{
+		"protocolVersion": ProtocolVersion,
+		"capabilities": map[string]any{
+			"tools":     map[string]any{"listChanged": false},
+			"resources": map[string]any{"listChanged": false, "subscribe": false},
+			"prompts":   map[string]any{"listChanged": false},
+		},
+		"serverInfo":   map[string]any{"name": s.name, "version": s.version},
+		"instructions": s.instructions,
+	}
 }
 
 // callTool invokes a tool handler, turning a panic or a missing handler

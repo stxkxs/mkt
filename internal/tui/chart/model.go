@@ -96,6 +96,7 @@ type HistoryProvider interface {
 
 // Model is the full-screen chart view.
 type Model struct {
+	ctx         context.Context
 	symbol      string
 	data        []provider.OHLCV
 	mode        ChartMode
@@ -161,6 +162,20 @@ func (m *Model) SetSymbol(sym string) tea.Cmd {
 	m.loading = true
 	m.errMsg = ""
 	return m.fetchHistory()
+}
+
+// SetContext supplies the process-lifetime context that bounds history
+// fetches. Without it a fetch started by a session that has since hung up
+// runs to completion against the upstream provider, retries included.
+func (m *Model) SetContext(ctx context.Context) {
+	m.ctx = ctx
+}
+
+func (m Model) parentContext() context.Context {
+	if m.ctx != nil {
+		return m.ctx
+	}
+	return context.Background()
 }
 
 // SetSize updates dimensions. While the zoom is auto-fitted the visible
@@ -310,8 +325,8 @@ func (m Model) servedIntervalFor(sym string, req provider.Interval) provider.Int
 // interval.
 //
 // Any request already in flight is cancelled and its answer discarded:
-// pressing ] three times quickly used to leave whichever response landed
-// last on screen, which could put 1h data under a "4h" label. Every
+// pressing ] three times quickly would otherwise leave whichever response
+// landed last on screen, which can put 1h data under a "4h" label. Every
 // request carries a sequence number and Update accepts only the newest.
 // A fresh series is served straight from the cache so a burst of
 // interval switches costs at most one request per interval.
@@ -339,7 +354,7 @@ func (m *Model) fetchHistory() tea.Cmd {
 	}
 
 	m.loading = true
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(m.parentContext())
 	m.cancel = cancel
 	cache := m.cache
 	return func() tea.Msg {

@@ -3,6 +3,8 @@ package format
 import (
 	"fmt"
 	"strings"
+
+	"charm.land/lipgloss/v2"
 )
 
 // FormatPrice formats a price with appropriate precision.
@@ -218,16 +220,35 @@ func resample(prices []float64, n int) []float64 {
 }
 
 // Truncate shortens s to at most max display cells, appending "…" when
-// anything was cut. Rune-safe: never splits a multibyte character.
+// anything was cut. Never splits a multibyte character.
+//
+// Width is measured in cells, not runes: a CJK glyph or an emoji occupies
+// two columns, so a rune count budgets half the space the terminal actually
+// spends and the caller's row overruns its frame. Every caller here is
+// budgeting terminal columns.
 func Truncate(s string, max int) string {
 	if max <= 0 {
 		return ""
 	}
-	runes := []rune(s)
-	if len(runes) <= max {
+	if lipgloss.Width(s) <= max {
 		return s
 	}
-	return string(runes[:max-1]) + "…"
+	// Reserve one cell for the ellipsis, then take runes while they fit.
+	budget := max - 1
+	if budget <= 0 {
+		return "…"
+	}
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		w := lipgloss.Width(string(r))
+		if used+w > budget {
+			break
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	return b.String() + "…"
 }
 
 // Repeat returns s repeated n times, clamping a negative count to zero.

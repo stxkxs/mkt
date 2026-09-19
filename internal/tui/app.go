@@ -94,6 +94,13 @@ type App struct {
 	ready       bool
 	spinnerTick int
 
+	// shared is set when several sessions run against one process, as
+	// under mkt serve. The theme lives in package-level vars in
+	// internal/tui/theme, so a guest pressing T would restyle every other
+	// session — and would write those vars from its own goroutine while
+	// the others render from them. Guests keep the host's theme.
+	shared bool
+
 	watchlist   watchlist.Model
 	detail      detail.Model
 	chart       chart.Model
@@ -208,12 +215,35 @@ func canonicalAll(symbols []string) []string {
 	return out
 }
 
-// SetContext supplies the process context to the sub-models that own
-// background streams — today the detail panel's level-2 order book — so
-// they are torn down when the app exits instead of leaking a socket per
-// session. Call before Run.
+// SetContext supplies the process context to the sub-models that reach the
+// network: the detail panel's level-2 order-book stream and the two chart
+// views' history fetches. Without it their work outlives the session that
+// started it — under mkt serve a guest that hangs up mid-fetch keeps
+// requesting from the upstream provider, retries included. Call before Run.
 func (a *App) SetContext(ctx context.Context) {
 	a.detail.SetContext(ctx)
+	a.chart.SetContext(ctx)
+	a.compare.SetContext(ctx)
+}
+
+// SetShared marks this model as one of several attached to a single
+// process, which withholds the controls that would mutate process-wide
+// state out from under the other sessions.
+func (a *App) SetShared(shared bool) {
+	a.shared = shared
+	a.help.SetShared(shared)
+	if shared {
+		// The status bar's theme segment doubles as the hint for T. With
+		// the key withheld it would name a control the session does not
+		// have.
+		a.statusbar.SetThemeName("")
+	}
+}
+
+// SetMacroProviders tells the Macro tab which optional sections will ever
+// receive data, so their rows are reserved from the first frame.
+func (a *App) SetMacroProviders(futures, defi bool) {
+	a.macro.SetProviders(futures, defi)
 }
 
 // SetBenchmark selects the symbol the portfolio tab samples alongside
@@ -286,15 +316,22 @@ func (a *App) LoadNotes(notes map[string]string) {
 	a.detail.SetNotes(notes)
 }
 
-func (a *App) Init() tea.Cmd {
-	return tea.Every(100*time.Millisecond, func(t time.Time) tea.Msg {
+// spinnerInterval paces the pre-ready spinner. It is the only animation in
+// the dashboard, and it runs only until the first WindowSizeMsg arrives.
+const spinnerInterval = 100 * time.Millisecond
+
+// spinnerTickCmd schedules the next spinner frame.
+func spinnerTickCmd() tea.Cmd {
+	return tea.Every(spinnerInterval, func(time.Time) tea.Msg {
 		return SpinnerTickMsg{}
 	})
 }
 
-func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
+func (a *App) Init() tea.Cmd {
+	return spinnerTickCmd()
+}
 
+func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
@@ -312,281 +349,28 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case SpinnerTickMsg:
+		// The spinner is drawn only by the !a.ready branch of View. Once
+		// the first WindowSizeMsg has landed nothing reads spinnerTick, so
+		// re-arming would repaint every frame at spinnerInterval for the
+		// life of the process — on every attached SSH session — to animate
+		// a glyph that is no longer on screen.
+		if a.ready {
+			return a, nil
+		}
 		a.spinnerTick++
-		return a, tea.Every(100*time.Millisecond, func(t time.Time) tea.Msg {
-			return SpinnerTickMsg{}
-		})
+		return a, spinnerTickCmd()
 
 	case tea.KeyPressMsg:
-		// Palette guard: consume all keys while open.
-		if a.palette.Active() {
-			var res paletteview.Result
-			a.palette, res = a.palette.Update(msg)
-			switch res.Action {
-			case paletteview.ActionJumpTab:
-				for i, n := range tabNames {
-					if n == res.Arg {
-						a.activeTab = Tab(i)
-						break
-					}
-				}
-			case paletteview.ActionSetTheme:
-				theme.Apply(res.Arg)
-				a.statusbar.SetThemeName(theme.CurrentName)
-				return a, func() tea.Msg { return theme.ChangedMsg{Name: theme.CurrentName} }
-			case paletteview.ActionQuit:
-				return a, tea.Quit
-			}
-			return a, nil
-		}
-
-		// Search mode guard: route all keys to watchlist while searching
-		if a.activeTab == TabWatchlist && a.watchlist.Searching() {
-			var cmd tea.Cmd
-			a.watchlist, cmd = a.watchlist.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			a.statusbar.SetSearchQuery(a.watchlist.SearchQuery())
-			return a, tea.Batch(cmds...)
-		}
-
-		// Help overlay guard: any key closes.
-		if a.help.Active() {
-			a.help, _ = a.help.Update(msg)
-			return a, nil
-		}
-
-		// Open palette
-		if msg.String() == ":" {
-			a.palette.Open()
-			return a, nil
-		}
-
-		// Alert dialog guard
-		if a.alertDialog.Active() {
-			var cmd tea.Cmd
-			a.alertDialog, cmd = a.alertDialog.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			return a, tea.Batch(cmds...)
-		}
-
-		// Symbol info overlay guard
-		if a.symbolInfo.Active() {
-			var cmd tea.Cmd
-			a.symbolInfo, cmd = a.symbolInfo.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			return a, tea.Batch(cmds...)
-		}
-
-		// A tab holding a confirm prompt sees the key before the global
-		// bindings do. The alerts tab prompts "y: confirm, any other
-		// key: cancel", so without this 'q' at the prompt quit mkt
-		// instead of cancelling the delete.
-		if a.activeTab != TabAlerts {
-			a.alertsConfirming = false
-		}
-		if a.alertsConfirming {
-			a.alertsConfirming = false
-			var cmd tea.Cmd
-			a.alerts, cmd = a.alerts.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			return a, tea.Batch(cmds...)
-		}
-
-		if isQuit(msg) {
-			return a, tea.Quit
-		}
-
-		// If detail panel is active, route to it
-		if a.detail.Active() {
-			var cmd tea.Cmd
-			a.detail, cmd = a.detail.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			return a, tea.Batch(cmds...)
-		}
-
-		// If chart is active, route to it
-		if a.chart.Active() {
-			var cmd tea.Cmd
-			a.chart, cmd = a.chart.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			return a, tea.Batch(cmds...)
-		}
-
-		// If compare chart is active, route to it
-		if a.compare.Active() {
-			var cmd tea.Cmd
-			a.compare, cmd = a.compare.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			return a, tea.Batch(cmds...)
-		}
-
-		// Theme switching: Apply updates global colors; broadcast ChangedMsg
-		// so each sub-model can rebuild its cached styles in its own Update.
-		if msg.String() == "T" {
-			name := theme.NextTheme()
-			theme.Apply(name)
-			a.statusbar.SetThemeName(name)
-			return a, func() tea.Msg { return theme.ChangedMsg{Name: name} }
-		}
-
-		// Keybinding reference for the active tab
-		if msg.String() == "?" {
-			a.help.Open(tabNames[a.activeTab])
-			return a, nil
-		}
-
-		// Tab switching
-		if tab := isTabSwitch(msg); tab >= 0 {
-			a.activeTab = tab
-			return a, nil
-		}
-		switch msg.String() {
-		case "tab", "right":
-			a.activeTab = (a.activeTab + 1) % Tab(len(tabNames))
-			return a, nil
-		case "shift+tab", "left":
-			a.activeTab = (a.activeTab - 1 + Tab(len(tabNames))) % Tab(len(tabNames))
-			return a, nil
-		}
-
-		// Watchlist shortcuts open other views, so they are handled
-		// before the key reaches the watchlist model itself.
-		if a.activeTab == TabWatchlist {
-			if cmd, handled := a.watchlistShortcut(msg); handled {
-				return a, cmd
-			}
-		}
-		if cmd := a.forwardKeyToActiveTab(msg); cmd != nil {
-			cmds = append(cmds, cmd)
-		}
+		return a.handleKey(msg)
 
 	case tea.MouseClickMsg:
-		// The full-screen chart views own every row of the frame and draw
-		// no tab bar, so they have to claim the click before the tab
-		// hit-test does — otherwise a click on the chart's top row
-		// switches a tab the user cannot see.
-		if a.chart.Active() {
-			var cmd tea.Cmd
-			a.chart, cmd = a.chart.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			return a, tea.Batch(cmds...)
-		}
-		if a.compare.Active() {
-			var cmd tea.Cmd
-			a.compare, cmd = a.compare.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			return a, tea.Batch(cmds...)
-		}
-		// A centered modal is modal for the mouse as well: the key path
-		// above returns before tab switching, so a click must not do what
-		// the same modal refuses to let a key do.
-		if a.modalActive() {
-			return a, nil
-		}
-		if msg.Y < tabBarHeight {
-			tab := a.tabAtX(msg.X)
-			if tab >= 0 {
-				// The detail panel is drawn over the content area while
-				// the tab bar stays visible, so a click on a tab has to
-				// close it — otherwise the tab the user picked stays
-				// hidden behind the panel.
-				a.detail.SetActive(false)
-				a.activeTab = tab
-			}
-			return a, nil
-		}
-		// The detail panel covers the content area. Without this the
-		// click would move the selection on the watchlist behind it,
-		// invisibly, and the user would find a different row selected on
-		// closing the panel.
-		if a.detail.Active() {
-			var cmd tea.Cmd
-			a.detail, cmd = a.detail.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			return a, tea.Batch(cmds...)
-		}
-		adjusted := tea.MouseClickMsg(a.toContentCoords(tea.Mouse(msg)))
-		if cmd := a.forwardMouseToActiveTab(adjusted); cmd != nil {
-			cmds = append(cmds, cmd)
-		}
+		return a.handleMouseClick(msg)
 
 	case tea.MouseMotionMsg:
-		// Only the full-screen chart views consume motion (for the hover
-		// crosshair). Other tabs ignore it to keep the tab bar coordinate
-		// math simple.
-		if a.chart.Active() {
-			var cmd tea.Cmd
-			a.chart, cmd = a.chart.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			return a, tea.Batch(cmds...)
-		}
-		if a.compare.Active() {
-			var cmd tea.Cmd
-			a.compare, cmd = a.compare.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			return a, tea.Batch(cmds...)
-		}
-		return a, nil
+		return a.handleMouseMotion(msg)
 
 	case tea.MouseWheelMsg:
-		if a.chart.Active() {
-			var cmd tea.Cmd
-			a.chart, cmd = a.chart.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			return a, tea.Batch(cmds...)
-		}
-		if a.compare.Active() {
-			var cmd tea.Cmd
-			a.compare, cmd = a.compare.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			return a, tea.Batch(cmds...)
-		}
-		if a.modalActive() {
-			return a, nil
-		}
-		// Same reasoning as the click path: the panel is on top, so the
-		// wheel must not scroll the tab hidden underneath it.
-		if a.detail.Active() {
-			var cmd tea.Cmd
-			a.detail, cmd = a.detail.Update(msg)
-			if cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-			return a, tea.Batch(cmds...)
-		}
-		adjusted := tea.MouseWheelMsg(a.toContentCoords(tea.Mouse(msg)))
-		if cmd := a.forwardMouseToActiveTab(adjusted); cmd != nil {
-			cmds = append(cmds, cmd)
-		}
-
+		return a.handleMouseWheel(msg)
 	case QuoteUpdateMsg:
 		a.watchlist.UpdateQuote(msg.Quote)
 		a.detail.UpdateQuote(msg.Quote)
@@ -637,71 +421,385 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case theme.ChangedMsg:
-		statusbar.RebuildStyles()
-		macroview.RebuildStyles()
-		var cmd tea.Cmd
-		a.watchlist, cmd = a.watchlist.Update(msg)
-		cmds = append(cmds, cmd)
-		a.chart, cmd = a.chart.Update(msg)
-		cmds = append(cmds, cmd)
-		a.compare, cmd = a.compare.Update(msg)
-		cmds = append(cmds, cmd)
-		a.portfolio, cmd = a.portfolio.Update(msg)
-		cmds = append(cmds, cmd)
-		a.alerts, cmd = a.alerts.Update(msg)
-		cmds = append(cmds, cmd)
-		a.news, cmd = a.news.Update(msg)
-		cmds = append(cmds, cmd)
-		a.heatmap, cmd = a.heatmap.Update(msg)
-		cmds = append(cmds, cmd)
-		a.macro, cmd = a.macro.Update(msg)
-		cmds = append(cmds, cmd)
-		a.detail, cmd = a.detail.Update(msg)
-		cmds = append(cmds, cmd)
-		a.alertDialog, cmd = a.alertDialog.Update(msg)
-		cmds = append(cmds, cmd)
-		a.symbolInfo, cmd = a.symbolInfo.Update(msg)
-		cmds = append(cmds, cmd)
-		a.options, cmd = a.options.Update(msg)
-		cmds = append(cmds, cmd)
-		a.correl, cmd = a.correl.Update(msg)
-		cmds = append(cmds, cmd)
-		return a, tea.Batch(cmds...)
+		return a.handleThemeChanged(msg)
 
 	default:
-		// Async results arrive as message types the sub-models keep
-		// private, so a model with a load in flight has to be offered
-		// every message it might be waiting on. Routing is unconditional
-		// rather than gated on the model being visible: a fetch started
-		// with 'c' or 'O' has to land even if the user tabbed away or
-		// pressed esc while it was in flight, and order-book frames
-		// stream in from a goroutine that outlives any one tab. Stale
-		// results are each model's own problem — the chart views carry a
-		// request sequence and drop anything older — so the router does
-		// not try to second-guess which one is still wanted. Dropping
-		// them here instead is what left the Options tab on "Loading…"
-		// forever and the detail panel's order book permanently empty.
+		return a.routeAsyncResult(msg)
+	}
+}
+
+// handleThemeChanged rebuilds every cached-style view. statusbar has no
+// Update of its own, so the root drives its rebuild; every other view
+// handles the message itself.
+func (a *App) handleThemeChanged(msg theme.ChangedMsg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	// statusbar has no Update, so its restyle can only be driven from
+	// here. Every other cached-style view handles the message itself;
+	// macro in particular does, so calling it here too rebuilt twice.
+	statusbar.RebuildStyles()
+	var cmd tea.Cmd
+	a.watchlist, cmd = a.watchlist.Update(msg)
+	cmds = append(cmds, cmd)
+	a.chart, cmd = a.chart.Update(msg)
+	cmds = append(cmds, cmd)
+	a.compare, cmd = a.compare.Update(msg)
+	cmds = append(cmds, cmd)
+	a.portfolio, cmd = a.portfolio.Update(msg)
+	cmds = append(cmds, cmd)
+	a.alerts, cmd = a.alerts.Update(msg)
+	cmds = append(cmds, cmd)
+	a.news, cmd = a.news.Update(msg)
+	cmds = append(cmds, cmd)
+	a.heatmap, cmd = a.heatmap.Update(msg)
+	cmds = append(cmds, cmd)
+	a.macro, cmd = a.macro.Update(msg)
+	cmds = append(cmds, cmd)
+	a.detail, cmd = a.detail.Update(msg)
+	cmds = append(cmds, cmd)
+	a.alertDialog, cmd = a.alertDialog.Update(msg)
+	cmds = append(cmds, cmd)
+	a.symbolInfo, cmd = a.symbolInfo.Update(msg)
+	cmds = append(cmds, cmd)
+	a.options, cmd = a.options.Update(msg)
+	cmds = append(cmds, cmd)
+	a.correl, cmd = a.correl.Update(msg)
+	cmds = append(cmds, cmd)
+	return a, tea.Batch(cmds...)
+}
+
+// routeAsyncResult offers a message no case claimed to every model that
+// may have a load in flight.
+func (a *App) routeAsyncResult(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	// Async results arrive as message types the sub-models keep
+	// private, so a model with a load in flight has to be offered
+	// every message it might be waiting on. Routing is unconditional
+	// rather than gated on the model being visible: a fetch started
+	// with 'c' or 'O' has to land even if the user tabbed away or
+	// pressed esc while it was in flight, and order-book frames
+	// stream in from a goroutine that outlives any one tab. Stale
+	// results are each model's own problem — the chart views carry a
+	// request sequence and drop anything older — so the router does
+	// not try to second-guess which one is still wanted. A model left out
+	// of this fan-out sits on "Loading…" forever.
+	var cmd tea.Cmd
+	a.chart, cmd = a.chart.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	a.compare, cmd = a.compare.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	a.symbolInfo, cmd = a.symbolInfo.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	a.options, cmd = a.options.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	a.detail, cmd = a.detail.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+
+		return a, tea.Batch(cmds...)
+	}
+
+	return a, tea.Batch(cmds...)
+}
+
+// handleKey routes one key press. Overlays are consulted in the order
+// they stack on screen, each claiming every key while it is open, before
+// the key reaches global bindings and then the active tab.
+func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	// Palette guard: consume all keys while open.
+	if a.palette.Active() {
+		var res paletteview.Result
+		a.palette, res = a.palette.Update(msg)
+		switch res.Action {
+		case paletteview.ActionJumpTab:
+			for i, n := range tabNames {
+				if n == res.Arg {
+					a.activeTab = Tab(i)
+					break
+				}
+			}
+		case paletteview.ActionSetTheme:
+			if a.shared {
+				return a, nil
+			}
+			theme.Apply(res.Arg)
+			a.statusbar.SetThemeName(theme.CurrentName)
+			return a, func() tea.Msg { return theme.ChangedMsg{Name: theme.CurrentName} }
+		case paletteview.ActionQuit:
+			return a, tea.Quit
+		}
+		return a, nil
+	}
+
+	// Search mode guard: route all keys to watchlist while searching
+	if a.activeTab == TabWatchlist && a.watchlist.Searching() {
+		var cmd tea.Cmd
+		a.watchlist, cmd = a.watchlist.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		a.statusbar.SetSearchQuery(a.watchlist.SearchQuery())
+		return a, tea.Batch(cmds...)
+	}
+
+	// Help overlay guard: any key closes.
+	if a.help.Active() {
+		a.help, _ = a.help.Update(msg)
+		return a, nil
+	}
+
+	// Open palette
+	if msg.String() == ":" {
+		a.palette.Open()
+		return a, nil
+	}
+
+	// Alert dialog guard
+	if a.alertDialog.Active() {
+		var cmd tea.Cmd
+		a.alertDialog, cmd = a.alertDialog.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return a, tea.Batch(cmds...)
+	}
+
+	// Symbol info overlay guard
+	if a.symbolInfo.Active() {
+		var cmd tea.Cmd
+		a.symbolInfo, cmd = a.symbolInfo.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return a, tea.Batch(cmds...)
+	}
+
+	// A tab holding a confirm prompt sees the key before the global
+	// bindings do. The alerts tab prompts "y: confirm, any other
+	// key: cancel", so without this 'q' at the prompt quit mkt
+	// instead of cancelling the delete.
+	if a.activeTab != TabAlerts {
+		a.alertsConfirming = false
+	}
+	if a.alertsConfirming {
+		a.alertsConfirming = false
+		var cmd tea.Cmd
+		a.alerts, cmd = a.alerts.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return a, tea.Batch(cmds...)
+	}
+
+	if isQuit(msg) {
+		return a, tea.Quit
+	}
+
+	// If detail panel is active, route to it
+	if a.detail.Active() {
+		var cmd tea.Cmd
+		a.detail, cmd = a.detail.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return a, tea.Batch(cmds...)
+	}
+
+	// If chart is active, route to it
+	if a.chart.Active() {
 		var cmd tea.Cmd
 		a.chart, cmd = a.chart.Update(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+		return a, tea.Batch(cmds...)
+	}
+
+	// If compare chart is active, route to it
+	if a.compare.Active() {
+		var cmd tea.Cmd
 		a.compare, cmd = a.compare.Update(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
-		a.symbolInfo, cmd = a.symbolInfo.Update(msg)
+		return a, tea.Batch(cmds...)
+	}
+
+	// Theme switching: Apply updates global colors; broadcast ChangedMsg
+	// so each sub-model can rebuild its cached styles in its own Update.
+	// Withheld for a shared process — see App.shared.
+	if msg.String() == "T" && !a.shared {
+		name := theme.NextTheme()
+		theme.Apply(name)
+		a.statusbar.SetThemeName(name)
+		return a, func() tea.Msg { return theme.ChangedMsg{Name: name} }
+	}
+
+	// Keybinding reference for the active tab
+	if msg.String() == "?" {
+		a.help.Open(tabNames[a.activeTab])
+		return a, nil
+	}
+
+	// Tab switching
+	if tab := isTabSwitch(msg); tab >= 0 {
+		a.activeTab = tab
+		return a, nil
+	}
+	switch msg.String() {
+	case "tab", "right":
+		a.activeTab = (a.activeTab + 1) % Tab(len(tabNames))
+		return a, nil
+	case "shift+tab", "left":
+		a.activeTab = (a.activeTab - 1 + Tab(len(tabNames))) % Tab(len(tabNames))
+		return a, nil
+	}
+
+	// Watchlist shortcuts open other views, so they are handled
+	// before the key reaches the watchlist model itself.
+	if a.activeTab == TabWatchlist {
+		if cmd, handled := a.watchlistShortcut(msg); handled {
+			return a, cmd
+		}
+	}
+	if cmd := a.forwardKeyToActiveTab(msg); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+
+	return a, tea.Batch(cmds...)
+}
+
+// handleMouseClick routes one click, giving the full-screen views and the
+// overlays their chance to claim it before the tab bar and active tab.
+func (a *App) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	// The full-screen chart views own every row of the frame and draw
+	// no tab bar, so they have to claim the click before the tab
+	// hit-test does — otherwise a click on the chart's top row
+	// switches a tab the user cannot see.
+	if a.chart.Active() {
+		var cmd tea.Cmd
+		a.chart, cmd = a.chart.Update(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
-		a.options, cmd = a.options.Update(msg)
+		return a, tea.Batch(cmds...)
+	}
+	if a.compare.Active() {
+		var cmd tea.Cmd
+		a.compare, cmd = a.compare.Update(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+		return a, tea.Batch(cmds...)
+	}
+	// A centered modal is modal for the mouse as well: the key path
+	// above returns before tab switching, so a click must not do what
+	// the same modal refuses to let a key do.
+	if a.modalActive() {
+		return a, nil
+	}
+	if msg.Y < tabBarHeight {
+		tab := a.tabAtX(msg.X)
+		if tab >= 0 {
+			// The detail panel is drawn over the content area while
+			// the tab bar stays visible, so a click on a tab has to
+			// close it — otherwise the tab the user picked stays
+			// hidden behind the panel.
+			a.detail.SetActive(false)
+			a.activeTab = tab
+		}
+		return a, nil
+	}
+	// The detail panel covers the content area. Without this the
+	// click would move the selection on the watchlist behind it,
+	// invisibly, and the user would find a different row selected on
+	// closing the panel.
+	if a.detail.Active() {
+		var cmd tea.Cmd
 		a.detail, cmd = a.detail.Update(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+		return a, tea.Batch(cmds...)
+	}
+	adjusted := tea.MouseClickMsg(a.toContentCoords(tea.Mouse(msg)))
+	if cmd := a.forwardMouseToActiveTab(adjusted); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+
+	return a, tea.Batch(cmds...)
+}
+
+// handleMouseMotion routes pointer movement to whichever view owns the
+// frame.
+func (a *App) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	// Only the full-screen chart views consume motion (for the hover
+	// crosshair). Other tabs ignore it to keep the tab bar coordinate
+	// math simple.
+	if a.chart.Active() {
+		var cmd tea.Cmd
+		a.chart, cmd = a.chart.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return a, tea.Batch(cmds...)
+	}
+	if a.compare.Active() {
+		var cmd tea.Cmd
+		a.compare, cmd = a.compare.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return a, tea.Batch(cmds...)
+	}
+	return a, nil
+}
+
+// handleMouseWheel routes scrolling to whichever view owns the frame.
+func (a *App) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	if a.chart.Active() {
+		var cmd tea.Cmd
+		a.chart, cmd = a.chart.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return a, tea.Batch(cmds...)
+	}
+	if a.compare.Active() {
+		var cmd tea.Cmd
+		a.compare, cmd = a.compare.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return a, tea.Batch(cmds...)
+	}
+	if a.modalActive() {
+		return a, nil
+	}
+	// Same reasoning as the click path: the panel is on top, so the
+	// wheel must not scroll the tab hidden underneath it.
+	if a.detail.Active() {
+		var cmd tea.Cmd
+		a.detail, cmd = a.detail.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return a, tea.Batch(cmds...)
+	}
+	adjusted := tea.MouseWheelMsg(a.toContentCoords(tea.Mouse(msg)))
+	if cmd := a.forwardMouseToActiveTab(adjusted); cmd != nil {
+		cmds = append(cmds, cmd)
 	}
 
 	return a, tea.Batch(cmds...)
@@ -1044,9 +1142,9 @@ func (a *App) contentSize(totalW, totalH int) (int, int) {
 // tab content: past the tab bar, past any notice rows, and past the
 // panel's own border when one is drawn. Mouse coordinates are translated
 // by it, so the hit-test is derived from the same layout the renderer
-// uses instead of a second copy of the arithmetic. The missing border row
-// here is what made every click on Watch/Portfolio/Alerts select the row
-// below the one under the cursor.
+// uses instead of a second copy of the arithmetic. Omitting the border row
+// here offsets every click on Watch/Portfolio/Alerts by one, selecting the
+// row below the one under the cursor.
 func (a *App) contentOrigin() (int, int) {
 	x, y := 0, tabBarHeight+len(a.notices())
 	if a.usePanelBorders() {

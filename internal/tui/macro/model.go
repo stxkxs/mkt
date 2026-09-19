@@ -65,6 +65,13 @@ type Model struct {
 	width    int
 	height   int
 	scroll   int // first visible content row
+	// Sections for providers that are switched off are omitted entirely.
+	// Sections for providers that are on are drawn from the first frame,
+	// empty until their poller lands: scroll is an absolute row offset, so
+	// a section that appears later pushes every row below it down under a
+	// reader who has already scrolled.
+	futuresOn bool
+	defiOn    bool
 }
 
 // New creates a macro model.
@@ -85,6 +92,13 @@ func (m *Model) UpdateQuotes(quotes []provider.Quote) {
 	for _, q := range quotes {
 		m.quotes[q.Symbol] = q
 	}
+}
+
+// SetProviders declares which optional macro sections will ever receive
+// data, so their space can be reserved before the first poll returns.
+func (m *Model) SetProviders(futures, defi bool) {
+	m.futuresOn = futures
+	m.defiOn = defi
 }
 
 // UpdateDeFi replaces the DeFi TVL snapshot list.
@@ -270,10 +284,13 @@ func (m Model) contentLines() []string {
 	}
 
 	// Crypto Futures (Binance)
-	if len(m.futures) > 0 {
+	if m.futuresOn {
 		sb.WriteString("\n")
 		sb.WriteString(theme.SectionHeader("Crypto Futures", m.width))
 		sb.WriteString("\n")
+		if len(m.futures) == 0 {
+			sb.WriteString(theme.StyleDim.Render("    waiting for data…") + "\n")
+		}
 		for _, s := range m.futures {
 			// A snapshot with nothing in it means Binance refused or was
 			// unreachable. Rendering it as "0.00 funding +0.0000% OI 0" would
@@ -315,10 +332,13 @@ func (m Model) contentLines() []string {
 	}
 
 	// Upcoming economic events (next 30 days)
-	if len(m.upcoming) > 0 {
+	{
 		sb.WriteString("\n")
 		sb.WriteString(theme.SectionHeader("Upcoming Economic Events (30d)", m.width))
 		sb.WriteString("\n")
+		if len(m.upcoming) == 0 {
+			sb.WriteString(theme.StyleDim.Render("    waiting for data…") + "\n")
+		}
 		max := 8
 		if max > len(m.upcoming) {
 			max = len(m.upcoming)
@@ -339,10 +359,13 @@ func (m Model) contentLines() []string {
 	}
 
 	// DeFi TVL (top 8 chains)
-	if len(m.defi) > 0 {
+	if m.defiOn {
 		sb.WriteString("\n")
 		sb.WriteString(theme.SectionHeader("DeFi TVL (top 8 chains)", m.width))
 		sb.WriteString("\n")
+		if len(m.defi) == 0 {
+			sb.WriteString(theme.StyleDim.Render("    waiting for data…") + "\n")
+		}
 		max := 8
 		if max > len(m.defi) {
 			max = len(m.defi)

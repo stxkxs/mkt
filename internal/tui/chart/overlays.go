@@ -107,9 +107,9 @@ func drawPatternMarkers(p *panel, v viewport, scale vscale, chartW int) {
 // volumeBins computes the volume profile for the visible candles.
 //
 // Both the gutter histogram and the header's POC readout call this with
-// the same arguments. They used to bin differently — the header used one
-// bin per candle, which degenerates into "the typical price of the
-// single highest-volume candle" — and so pointed at different prices.
+// the same arguments, so they cannot point at different prices. Binning
+// per candle instead degenerates into "the typical price of the single
+// highest-volume candle".
 func volumeBins(candles []provider.OHLCV, height int) []indicator.VolumeBin {
 	if height < 1 {
 		return nil

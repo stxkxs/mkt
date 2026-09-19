@@ -31,13 +31,15 @@ See the architecture section in `README.md` and `CLAUDE.md`. Briefly:
 
 1. Create `internal/tui/<name>/model.go` with `Model`, `New`, `Update`, `View`.
 2. In `Update`, handle `theme.ChangedMsg` by calling your local `RebuildStyles()`.
-3. Register the tab in `internal/tui/keys.go` (constant + name) and `internal/tui/app.go` (field, wiring, routing, forwarding in the `theme.ChangedMsg` case).
+3. Register the tab in `internal/tui/keys.go` (constant + name) and `internal/tui/app.go` — the field, sizing in the `tea.WindowSizeMsg` case, key and mouse forwarding, the `View` switch, and the fan-out in `handleThemeChanged`.
+4. If the tab fetches anything, add it to `routeAsyncResult` as well: results arrive as message types the sub-model keeps private, so a tab missing from that fan-out never receives them and sits on "Loading…" forever.
+5. Add its keys to `tabBindings` in `internal/tui/help/model.go`, or the tab ships with an empty help card.
 
 ## Adding a provider
 
 1. Implement `provider.QuoteProvider` (and optionally `HistoryProvider`) in `internal/provider/<name>/`.
 2. `Supports(symbol)` is the routing hook — the hub picks the first supporting provider for each symbol.
-3. Wire it in `cmd/dashboard.go` when constructing the hub.
+3. Wire it in `cmd/backend.go`, the single point where the hub is constructed for `mkt`, `mkt serve` and `mkt daemon` alike.
 
 ## Tests
 

@@ -26,9 +26,9 @@ import (
 const maxHistoryLimit = 1000
 
 // portfolioFetchWorkers bounds the concurrent price lookups behind
-// get_portfolio. A portfolio with thirty positions used to take thirty
-// sequential round trips, which is well past the point where an MCP client
-// gives up on the call.
+// get_portfolio. Pricing serially would cost one round trip per position,
+// which for a thirty-position portfolio is well past the point where an MCP
+// client gives up on the call.
 const portfolioFetchWorkers = 6
 
 // liveProbeTimeout caps the attempt to reach a running mkt's read API. It is
@@ -113,8 +113,9 @@ Tools:
   get_quote(symbol)               — live price when a dashboard is listening,
                                     otherwise the last daily close (labelled)
   query_history(symbol, limit)    — daily OHLCV via the active history provider
-  get_alerts()                    — configured alert rules
-  get_portfolio(name)             — portfolio summary computed from config
+  get_alerts()                    — configured alert rules (destinations omitted)
+  get_portfolio(name)             — portfolio summary computed from config;
+                                    served only with --expose-portfolio
 
 If a dashboard is serving its read-only HTTP API (--listen / ` + EnvListen + `),
 get_quote and get_portfolio read live cached quotes from it and fall back to
@@ -140,13 +141,14 @@ func runMCP(cmd *cobra.Command, args []string) error {
 
 	// One canonical conversion, shared with the dashboard: it carries the
 	// transaction log, the tax method and the Materialize fold. Re-deriving
-	// it here is what used to make get_portfolio value stale snapshot
-	// holdings while the dashboard showed the materialized ones.
+	// it here would value stale snapshot holdings while the dashboard showed
+	// the materialized ones.
 	portfolios := portfoliosFromConfig(cfg.Portfolios)
 
 	tools := []mcp.Tool{
 		{
-			Name: "get_quote",
+			Name:        "get_quote",
+			Annotations: mcp.ReadOnlyTool(),
 			Description: "Fetch the price for a symbol. Returns source=\"live\" when a running mkt " +
 				"dashboard's HTTP API is reachable, and source=\"daily-close\" when it falls back to " +
 				"the most recent daily candle — which is a close, not a live price.",
@@ -165,7 +167,10 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		},
 		{
 			Name:        "query_history",
-			Description: "Fetch up to N most-recent daily OHLCV bars.",
+			Annotations: mcp.ReadOnlyTool(),
+			Description: "Fetch up to N most-recent daily OHLCV bars for a symbol, oldest " +
+				"first. Bars are daily closes: the newest one is the previous session " +
+				"until today's close is published. Caps at 1000 bars.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -206,7 +211,10 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		},
 		{
 			Name:        "get_alerts",
-			Description: "List configured alert rules.",
+			Annotations: mcp.ReadOnlyTool(),
+			Description: "List the configured alert rules and whether each is enabled. " +
+				"Notification destinations are omitted — the result says whether a rule " +
+				"has webhooks, never where they point.",
 			InputSchema: map[string]any{"type": "object"},
 			Handler: func(ctx context.Context, args map[string]any) (any, error) {
 				res := alertsResult{Count: len(cfg.Alerts), Rules: make([]alertRuleResult, 0, len(cfg.Alerts))}
@@ -354,14 +362,52 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		},
 	}
 
-	// Default-deny the sensitive surfaces. The config resource (even
-	// redacted) and the portfolio tool/resource (holdings, cost basis,
-	// P&L) are exposed only when the operator explicitly opts in, so a
-	// prompt-injected agent can't enumerate them by default.
 	exposeConfig, _ := cmd.Flags().GetBool("expose-config")
 	exposePortfolio, _ := cmd.Flags().GetBool("expose-portfolio")
+	filteredTools, filteredRes := filterMCPSurfaces(tools, resources, exposeConfig, exposePortfolio)
 
-	filteredRes := resources[:0]
+	srv := mcp.New("mkt", version).
+		WithInstructions(mcpInstructions).
+		WithTools(filteredTools...).
+		WithResources(filteredRes...).
+		WithPrompts(prompts...)
+	return srv.Serve(context.Background(), os.Stdin, os.Stdout)
+}
+
+// mcpInstructions is returned by initialize, before a client has listed
+// anything. It covers what the per-tool descriptions cannot: how the tools
+// relate, and what their results do not mean.
+const mcpInstructions = `mkt serves read-only market data from a local dashboard's cache and from
+public market APIs. Every tool is read-only; nothing here places orders or
+changes configuration.
+
+Choosing a tool:
+  - get_quote for "what is it trading at". Check the source field: "live" is
+    a streaming tick, "daily-close" is the previous session's close and is
+    stale intraday.
+  - query_history for trends, ranges and indicator input. Daily bars only.
+  - get_alerts for what the user is already watching for.
+  - get_portfolio for positions and P&L, when the operator has enabled it.
+
+Reading results:
+  - A portfolio summary reports coverage. Unpriced holdings are excluded
+    from totals rather than counted at break-even, so check the unpriced
+    count before treating a P&L as complete.
+  - Prices carry no currency conversion; a portfolio spanning currencies
+    sums raw numbers.
+  - Absent tools are not errors. get_portfolio and the config resource are
+    off unless the operator passed --expose-portfolio / --expose-config.`
+
+// filterMCPSurfaces applies default-deny to the sensitive surfaces. The
+// config resource (even redacted) and the portfolio tool and resource
+// (holdings, cost basis, P&L) are served only when the operator opts in, so
+// a prompt-injected agent cannot enumerate them by default.
+//
+// Both slices are copied rather than filtered in place: sharing the backing
+// array with the caller's slice would let a filtered-out tool stay
+// reachable through the original header.
+func filterMCPSurfaces(tools []mcp.Tool, resources []mcp.Resource, exposeConfig, exposePortfolio bool) ([]mcp.Tool, []mcp.Resource) {
+	outRes := make([]mcp.Resource, 0, len(resources))
 	for _, r := range resources {
 		if r.URI == "mkt://config" && !exposeConfig {
 			continue
@@ -369,26 +415,24 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		if r.URI == "mkt://portfolios" && !exposePortfolio {
 			continue
 		}
-		filteredRes = append(filteredRes, r)
+		outRes = append(outRes, r)
 	}
-	filteredTools := tools[:0]
+	outTools := make([]mcp.Tool, 0, len(tools))
 	for _, t := range tools {
 		if t.Name == "get_portfolio" && !exposePortfolio {
 			continue
 		}
-		filteredTools = append(filteredTools, t)
+		outTools = append(outTools, t)
 	}
-
-	srv := mcp.New("mkt", version).WithTools(filteredTools...).WithResources(filteredRes...).WithPrompts(prompts...)
-	return srv.Serve(context.Background(), os.Stdin, os.Stdout)
+	return outTools, outRes
 }
 
 // ───────────────────────────── quote sourcing ─────────────────────────────
 
 // quoteFor answers with the freshest price available, and says which one it
-// is. The old implementation asked the history provider for one daily bar
-// and labelled its close as the current price: on any weekday afternoon
-// that is yesterday's number, handed to an agent as today's.
+// is. Naming the source is the point: a daily bar's close is yesterday's
+// number on any weekday afternoon, so an agent must be able to tell it from
+// a live tick rather than reason about both as "the price".
 func quoteFor(ctx context.Context, live *liveQuoteClient, hist historyFetcher, sym string) (quoteResult, error) {
 	if live != nil {
 		if q, err := live.quote(ctx, sym); err == nil {
@@ -496,10 +540,9 @@ func (c *liveQuoteClient) quote(ctx context.Context, sym string) (quoteResult, e
 // summarizePortfolio prices every holding concurrently and reports how much
 // of the portfolio the resulting P&L actually covers.
 //
-// The previous implementation fetched serially and discarded every fetch
-// error, so a portfolio where half the symbols failed returned a confident
-// P&L computed from the other half — a number an agent would then reason
-// about as authoritative.
+// Coverage travels with the number: discarding fetch errors would let a
+// portfolio where half the symbols failed return a confident P&L computed
+// from the other half, which an agent would reason about as authoritative.
 func summarizePortfolio(ctx context.Context, live *liveQuoteClient, hist historyFetcher, pf portfolio.Portfolio) portfolioResult {
 	symbols := make([]string, 0, len(pf.Holdings))
 	seen := make(map[string]bool, len(pf.Holdings))

@@ -29,8 +29,8 @@ var (
 // few requests per second before the edge starts answering 429. The budget
 // below is deliberately conservative because every mkt process shares one
 // source IP with whatever else the user is running, and because a 429 storm
-// is self-sustaining: the fallback path used to turn one failed 50-symbol
-// batch into 50 chart requests, which earned more 429s, which triggered more
+// is self-sustaining: an unpaced fallback turns one failed 50-symbol
+// batch into 50 chart requests, which earns more 429s, which triggers more
 // fallbacks. Pacing is package-level (not per-Provider) because Yahoo limits
 // by client, and mkt creates several Providers (dashboard, MCP, daemon).
 const (

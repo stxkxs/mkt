@@ -48,7 +48,23 @@ jobs:
         run: go vet ./...
 
       - name: go test
-        run: go test ${{ matrix.race }} -count=1 ./...
+        run: go test ${{ matrix.race }} -count=1 -coverprofile=cover.out ./...
+
+      # A ratchet, not a target. 82% is what the tree carries; the gate
+      # stops a change from quietly trading coverage for features. Raise
+      # the floor when the number moves up, never lower it to go green.
+      - name: coverage floor
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          floor=80.0
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "total coverage: ${total}% (floor ${floor}%)"
+          awk -v t="$total" -v f="$floor" 'BEGIN { exit !(t < f) }' && {
+            echo "::error::coverage ${total}% is below the ${floor}% floor"
+            exit 1
+          }
+          exit 0
 
   # Compile every target .goreleaser.yaml publishes. Catches per-OS build
   # constraints that the three test legs above cannot reach (linux/arm64,
@@ -77,6 +93,26 @@ jobs:
       - name: go build
         run: go build ./...
 
+  # goreleaser builds the tagged binaries from the committed go.mod/go.sum
+  # with no tidy hook, so a stale module graph would ship unverified. This
+  # is the job that keeps the committed files honest.
+  tidy:
+    name: go mod tidy is clean
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go mod tidy
+        run: |
+          go mod tidy
+          git diff --exit-code --stat go.mod go.sum
+
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -92,7 +128,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
         with:
-          version: v2.11.4
+          version: v2.13.2
           args: --timeout=5m
 
   vuln:
@@ -112,5 +148,5 @@ jobs:
       # unreachable CVEs).
       - name: govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           govulncheck ./...

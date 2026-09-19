@@ -204,3 +204,49 @@ func TestLayoutTreemapDegenerate(t *testing.T) {
 		}
 	}
 }
+
+// Ranking the drilldown at render time reorders tiles on every arriving
+// quote. The cursor is a position in that order, so the highlight lands on
+// a different symbol with no keypress, and the reader's target moves.
+func TestDrilldownOrderIsStableAcrossQuotes(t *testing.T) {
+	m := New()
+	m.SetSectors([]Sector{{Name: "Tech", Symbols: []string{"AAA", "BBB", "CCC"}}})
+	m.SetSize(120, 40)
+	for sym, pct := range map[string]float64{"AAA": 1, "BBB": 2, "CCC": 3} {
+		m.UpdateQuote(provider.Quote{Symbol: sym, Price: 100, ChangePct: pct})
+	}
+
+	m.enterDrilldown(0)
+
+	opened := append([]string(nil), m.drilldownSymbols(m.sectors[0])...)
+	if opened[0] != "CCC" {
+		t.Fatalf("opening order should rank by change%%: %v", opened)
+	}
+
+	// Invert the ranking while the reader is looking at the grid.
+	m.UpdateQuote(provider.Quote{Symbol: "AAA", Price: 100, ChangePct: 99})
+	m.UpdateQuote(provider.Quote{Symbol: "CCC", Price: 100, ChangePct: -99})
+
+	after := m.drilldownSymbols(m.sectors[0])
+	for i := range opened {
+		if opened[i] != after[i] {
+			t.Fatalf("tiles moved under the reader: opened %v, now %v", opened, after)
+		}
+	}
+}
+
+// SetSectors can replace the layout while a drilldown is open; a stale
+// frozen order must not outlive the symbols it names.
+func TestDrilldownOrderRefreshesWhenSectorChanges(t *testing.T) {
+	m := New()
+	m.SetSectors([]Sector{{Name: "Tech", Symbols: []string{"AAA", "BBB"}}})
+	m.enterDrilldown(0)
+
+	m.sectors = NormalizeSectors([]Sector{{Name: "Tech", Symbols: []string{"XXX", "YYY"}}})
+	got := m.drilldownSymbols(m.sectors[0])
+	for _, s := range got {
+		if s != "XXX" && s != "YYY" {
+			t.Fatalf("stale symbol %q survived a sector replacement: %v", s, got)
+		}
+	}
+}

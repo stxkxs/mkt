@@ -847,3 +847,52 @@ func TestWebhookRejectsInvalidJSON(t *testing.T) {
 		t.Errorf("nothing should have been injected: %+v", injected())
 	}
 }
+
+// /metrics answers 200 from the moment the listener binds, so an
+// orchestrator pointed at it restarts nothing and routes traffic to a
+// process with no data. /readyz distinguishes the two.
+func TestReadyzReportsWarmingBeforeFirstQuote(t *testing.T) {
+	cache := market.NewCache(30)
+	srv := New("", cache, nil)
+
+	rec := httptest.NewRecorder()
+	srv.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("empty cache: got %d, want 503", rec.Code)
+	}
+
+	cache.Push(provider.Quote{Symbol: "BTC-USD", Price: 100})
+
+	rec = httptest.NewRecorder()
+	srv.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("after a quote: got %d, want 200", rec.Code)
+	}
+}
+
+// Liveness must not depend on upstream data, or an outage at Coinbase
+// becomes a restart loop.
+func TestHealthzIsUpBeforeAnyQuote(t *testing.T) {
+	srv := New("", market.NewCache(30), nil)
+	rec := httptest.NewRecorder()
+	srv.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+}
+
+// A read route answering a DELETE with 200 tells the caller the method was
+// accepted.
+func TestReadRoutesRejectWrites(t *testing.T) {
+	srv := New("", market.NewCache(30), nil)
+	for _, path := range []string{"/quotes", "/quotes/BTC-USD", "/alerts", "/metrics"} {
+		rec := httptest.NewRecorder()
+		srv.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, path, nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("DELETE %s: got %d, want 405", path, rec.Code)
+		}
+		if allow := rec.Header().Get("Allow"); allow == "" {
+			t.Errorf("DELETE %s: 405 carries no Allow header", path)
+		}
+	}
+}

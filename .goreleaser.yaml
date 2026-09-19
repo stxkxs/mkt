@@ -6,10 +6,9 @@ version: 2
 
 project_name: mkt
 
-before:
-  hooks:
-    - go mod tidy
-
+# No `go mod tidy` hook: it can rewrite go.mod/go.sum during the release,
+# so the tagged binaries would resolve a dependency set that no CI job ever
+# built or scanned. Tidiness is checked in CI against the committed files.
 builds:
   - id: mkt
     main: .

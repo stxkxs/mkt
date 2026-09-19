@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -14,11 +15,11 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/ssh"
 	"charm.land/wish/v2"
 	"charm.land/wish/v2/activeterm"
 	"charm.land/wish/v2/bubbletea"
 	"charm.land/wish/v2/logging"
-	"github.com/charmbracelet/ssh"
 	"github.com/spf13/cobra"
 	"github.com/stxkxs/mkt/internal/config"
 	"github.com/stxkxs/mkt/internal/news"
@@ -149,7 +150,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		_ = srv.Shutdown(shutCtx)
 	}()
 
-	if err := srv.ListenAndServe(); err != nil && err != ssh.ErrServerClosed {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
 		return fmt.Errorf("mkt serve: %w", err)
 	}
 	return nil

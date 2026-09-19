@@ -261,11 +261,10 @@ func (p *Provider) fetchAndSend(ctx context.Context, symbols []string, out chan<
 
 // fetchChartFallback covers for a failed batch with per-symbol chart
 // requests, capped at maxChartFallbacks symbols and issued sequentially
-// through the shared limiter. The previous implementation fanned out one
-// request per symbol, ten at a time and unthrottled: on the ~150-symbol
-// default watchlist a single 429 turned three requests into ~150, which
-// guaranteed more 429s and kept the storm going. Returns false when ctx
-// ended and the caller should stop.
+// through the shared limiter. Both caps matter: an unthrottled fan-out of
+// one request per symbol turns a single 429 on the ~150-symbol default
+// watchlist into ~150 requests, which earns more 429s and sustains the
+// storm. Returns false when ctx ended and the caller should stop.
 func (p *Provider) fetchChartFallback(ctx context.Context, symbols []string, out chan<- provider.Quote) bool {
 	if len(symbols) > maxChartFallbacks {
 		symbols = symbols[:maxChartFallbacks]

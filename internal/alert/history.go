@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/stxkxs/mkt/internal/ndjson"
 	"sync"
 )
 
@@ -13,10 +15,16 @@ import (
 // concurrency-safe; multiple goroutines may call Append. Missing file
 // is treated as empty.
 type HistoryFile struct {
-	mu   sync.Mutex
-	path string
-	max  int // upper bound when trimming on LoadAll; 0 means unlimited
+	mu     sync.Mutex
+	path   string
+	max    int // entries retained; 0 means unlimited
+	writes int // appends since the last compaction check
 }
+
+// compactEvery bounds how often Append checks whether the file needs
+// trimming. Checking on every append would turn a constant-time write into
+// a file-sized one.
+const compactEvery = 64
 
 // NewHistoryFile constructs a HistoryFile at path. max bounds the number
 // of entries returned by LoadAll (most recent retained); 0 disables the
@@ -77,6 +85,14 @@ func (h *HistoryFile) Append(a TriggeredAlert) error {
 	}
 	if _, err := f.Write(append(b, '\n')); err != nil {
 		return fmt.Errorf("alert history: write %s: %w", h.path, err)
+	}
+
+	h.writes++
+	if h.max > 0 && h.writes >= compactEvery {
+		h.writes = 0
+		// Best-effort: a failed trim leaves a longer file, which the max
+		// bound on LoadAll still renders harmless.
+		_ = ndjson.Compact(h.path, h.max)
 	}
 	return nil
 }

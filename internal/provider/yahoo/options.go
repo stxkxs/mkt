@@ -58,10 +58,9 @@ type apiOption struct {
 // the given symbol. Reuses the existing Yahoo session for the crumb
 // when available.
 func (p *Provider) FetchOptionsChain(ctx context.Context, symbol string) (OptionsChain, error) {
-	if err := p.initSession(ctx); err != nil {
-		// Non-fatal — some endpoints work without crumb
-		_ = err
-	}
+	// Best-effort session init; failure is non-fatal — some endpoints
+	// work without a crumb.
+	_ = p.initSession(ctx)
 	endpoint := fmt.Sprintf("%s/%s", OptionsBaseURL, url.PathEscape(symbol))
 	endpoint += p.crumbParam("?")
 	var raw optionsResp

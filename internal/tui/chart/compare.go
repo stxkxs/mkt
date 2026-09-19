@@ -28,9 +28,9 @@ func compareColorList() []color.Color {
 // position in the comparison set.
 //
 // Both the legend and the plotted series call this, so they cannot
-// disagree. They used to: the legend colored by position in the symbol
-// list while the series colored by position in the fetched-entry list,
-// and the entries were appended in whatever order the concurrent
+// disagree. Colouring the legend by position in the symbol
+// list and the series by position in the fetched-entry list would, since
+// the entries are appended in whatever order the concurrent
 // fetches happened to finish. The legend was routinely wrong.
 func compareColorFor(symbols []string, sym string) color.Color {
 	colors := compareColorList()
@@ -57,6 +57,7 @@ type compareLoadedMsg struct {
 
 // CompareModel is the multi-symbol comparison chart.
 type CompareModel struct {
+	ctx         context.Context
 	entries     []CompareEntry
 	symbols     []string // symbols to compare (up to maxCompareSymbols)
 	zoom        int
@@ -120,6 +121,20 @@ func (m *CompareModel) Open() tea.Cmd {
 	m.active = true
 	m.loading = true
 	return m.fetchAll()
+}
+
+// SetContext supplies the process-lifetime context that bounds history
+// fetches, so a comparison started by a session that has since hung up does
+// not keep fetching.
+func (m *CompareModel) SetContext(ctx context.Context) {
+	m.ctx = ctx
+}
+
+func (m CompareModel) parentContext() context.Context {
+	if m.ctx != nil {
+		return m.ctx
+	}
+	return context.Background()
 }
 
 // SetSize updates dimensions.
@@ -233,7 +248,7 @@ func (m *CompareModel) fetchAll() tea.Cmd {
 	syms := make([]string, len(m.symbols))
 	copy(syms, m.symbols)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(m.parentContext())
 	m.cancel = cancel
 	m.loading = true
 	cache := m.cache

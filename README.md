@@ -42,7 +42,7 @@ cosign verify-blob checksums.txt \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-There is no Homebrew tap yet — publishing one needs a cross-repo push token the release workflow deliberately does not carry.
+Publishing a Homebrew tap needs a cross-repo push token that the release workflow does not carry, so installation is via the signed release archives or `go install`.
 
 ### go install
 
@@ -77,12 +77,15 @@ mkt backtest rules.yaml replay.ndjson   # replay an alert ruleset against a reco
 mkt config show                 # view configuration
 mkt config add TSLA LINK-USD    # add symbols to watchlist
 mkt config remove DOGE-USD      # remove a symbol
-mkt config set poll_interval 30s
+mkt config set poll_interval 30s   # `set` handles poll_interval and theme only;
+                                   # everything else is edited in config.yaml
 mkt config validate             # check config for invalid values
 mkt config repair --list        # list timestamped config backups; restore with --from-backup N
 mkt portfolio import --portfolio Tech schwab-export.csv   # import broker CSV
 mkt portfolio stats             # Sharpe / Sortino / max drawdown / CAGR / beta from the equity curve
 mkt position --equity 100000 --risk 1 --entry 50 --stop 48 # share-sizing calc
+mkt position --equity 100000 --entry 50 --atr 1.5 --atr-mult 2  # stop implied from ATR
+mkt position --equity 100000 --entry 50 --stop 52 --long=false  # size a short
 mkt version
 ```
 
@@ -220,9 +223,9 @@ alerts:
 
 **The first evaluation after startup establishes a baseline and does not fire.** A rule that is already breached when `mkt` launches stays quiet until it un-breaches and re-breaches. This is what stops a fresh install from spraying a notification for every seeded alert that happens to be true at that moment.
 
-On top of that, each rule has a 5-minute cooldown, and notifiers are rate-limited to ~20/min each.
+On top of that, each rule has a 5-minute cooldown, and notifiers are rate-limited to ~20/min each. `mkt backtest --cooldown` overrides the cooldown for a replay, measured in recorded time rather than wall clock.
 
-Alerts created, toggled or deleted in the TUI now **persist** to `~/.config/mkt/config.yaml` (coalesced with a 2s debounce, timestamped backup per write). Two exceptions: under `mkt serve` persistence is off unless you pass `--persist-alerts` (a guest must not rewrite the host's config), and it is off entirely while the config file is degraded.
+Alerts created, toggled or deleted in the TUI **persist** to `~/.config/mkt/config.yaml` (coalesced with a 2s debounce, timestamped backup per write). Two exceptions: under `mkt serve` persistence is off unless you pass `--persist-alerts` (a guest must not rewrite the host's config), and it is off entirely while the config file is degraded.
 
 Compound rules combine multiple conditions with `match: all`, `match: any`, or `match: sequence` (in declared order):
 
@@ -349,7 +352,15 @@ portfolios:
   - name: AI / Compute Buildout
     tax_method: fifo                      # fifo | lifo | hifo | "" (weighted average)
     holdings: [{symbol: NVDA, name: NVIDIA, quantity: 20, cost_basis: 475}]
-    transactions: []                      # optional; folds into derived holdings
+    transactions:                         # optional; folds into derived holdings
+      - type: buy                         # buy | sell | dividend
+        symbol: NVDA
+        quantity: 20
+        price: 475                        # per share, in the position's currency
+        time: 2024-03-11T14:30:00Z        # RFC 3339 (note: the CSV importer's
+                                          # column is `date`, the YAML key is `time`)
+        fee: 1.25                         # optional
+        note: "opening lot"               # optional
 alerts: []
 notes:                # free text shown in the detail panel
   NVDA: "trim above 200"
@@ -463,7 +474,7 @@ $ mkt config repair --from-backup 1
 
 No API keys required. Crypto streams from Coinbase (US-native, no geo-restrictions). Stock data polls from Yahoo Finance.
 
-> **`fapi.binance.com` returns HTTP 451 from US IP addresses.** The Macro tab's *Crypto Futures* panel (mark price, funding rate, open interest) is therefore unavailable on a US host. It used to render as legitimate-looking `0.00` values; the rows now read `BTCUSDT   — unavailable in this region` rather than presenting a zero as a price. Turn the egress off entirely with `providers: { binance: false }`.
+> **`fapi.binance.com` returns HTTP 451 from US IP addresses.** The Macro tab's *Crypto Futures* panel (mark price, funding rate, open interest) is therefore unavailable on a US host. The rows read `BTCUSDT   — unavailable in this region` rather than presenting a zero as a price. Turn the egress off entirely with `providers: { binance: false }`.
 
 ---
 
@@ -484,6 +495,12 @@ serve:
     - ssh-ed25519 AAAA...you@laptop
     - ssh-ed25519 AAAA...you@phone       # or: authorized_keys_file: ~/.ssh/authorized_keys
 ```
+
+`--addr` and `--host-key` override `serve.addr` and `serve.host_key` for a
+single run. Sessions idle for 30 minutes are disconnected. Theme switching
+(`T`, and `:theme <name>`) is withheld from sessions here: the palette lives
+in process-wide state, so one guest changing it would restyle every other
+session.
 
 ```sh
 mkt serve                 # start the SSH server
@@ -592,6 +609,90 @@ task demo          # builds ./mkt, then renders demo/mkt.gif via vhs
 
 ---
 
+## Operating
+
+`mkt serve` and `mkt daemon` are long-running services. This section is the
+on-call reference for both.
+
+### Where the logs go
+
+| Surface | Destination |
+| --- | --- |
+| `mkt` (dashboard) | `~/.config/mkt/mkt.log`, mode 0600, **truncated on every launch** |
+| `mkt serve` | process stderr — the operator's console, not any session's terminal |
+| `mkt daemon` | process stderr |
+
+The dashboard redirects the standard logger because Bubbletea owns the
+alternate screen: a stray write to stderr lands mid-frame and stays until
+something repaints over it. A healthy run logs nothing, so an empty
+`mkt.log` is the expected state, and the file does not accumulate across
+runs — copy it before relaunching if you need it.
+
+### Reading `/metrics`
+
+Served on `--listen` at `/metrics` in Prometheus text format.
+
+| Series | What a rising value means |
+| --- | --- |
+| `mkt_quote_drops_total` | The TUI dispatch queue (256) overflowed and shed quotes. The terminal or the SSH link cannot keep up with the tick rate. Alert evaluation is unaffected — it rides the reliable observer path. |
+| `mkt_provider_coinbase_ws_reconnects_total` | The crypto stream is flapping. Each reconnect backs off 1s→30s with jitter, and the delay resets only after a session stays up 60s. |
+| `mkt_provider_yahoo_rate_limited_total` | Yahoo returned 429. A package-wide cooldown honours `Retry-After` before the next request. |
+| `mkt_provider_yahoo_retries_total` | Transient stock-fetch failures being retried. Steady growth with no `batch_failures` is normal. |
+| `mkt_provider_yahoo_batch_failures_total` | A whole batch fetch failed after its retries. Stock prices are stale. |
+| `mkt_quote_age_seconds` | Seconds since the freshest quote. Climbing past a poll interval means the data plane is stalled, not merely quiet. |
+| `mkt_webhook_rejected_total` | Inbound TradingView payloads failing validation — bad token, wrong `Origin`, oversized body, or text carrying control characters. |
+
+### Failure modes
+
+**The crypto stream goes quiet.** The WebSocket is pinged every 15s with a
+10s pong deadline, and the upgrade handshake is bounded at 15s, so a
+half-open connection is torn down and reconnected rather than blocking
+forever. Watch `mkt_provider_coinbase_ws_reconnects_total`; a value that
+climbs steadily means the peer is accepting and dropping.
+
+**Stock prices freeze but crypto keeps moving.** Yahoo-side problem. Check
+`mkt_provider_yahoo_batch_failures_total` and
+`mkt_provider_yahoo_session_init_failures_total`.
+
+**The config file stops parsing.** `mkt` loads defaults and refuses every
+write, and the TUI shows a persistent banner. Nothing on disk is
+overwritten. Recover with `mkt config repair`, or start from a backup:
+backups are `~/.config/mkt/config.yaml.bak.<timestamp>` and the newest ten
+are kept. `--force` resumes writing and takes a backup first.
+
+**A session hangs on to a wedged terminal.** Sessions idle for 30 minutes
+are disconnected. A guest that stops reading costs one parked goroutine and
+its own dropped quotes; it cannot apply back-pressure to the providers or to
+other sessions.
+
+**Shutdown loses notifications.** Queued webhook/ntfy/Pushover sends are
+flushed for up to 3 seconds on exit. Past that `mkt` reports
+`alerts: gave up waiting for queued notifications` on stderr and exits. Both
+SIGTERM and SIGINT take this path.
+
+### Running `mkt daemon` under systemd
+
+```ini
+# ~/.config/systemd/user/mkt.service — systemctl --user enable --now mkt
+[Unit]
+Description=mkt market data daemon
+After=network-online.target
+
+[Service]
+ExecStart=%h/go/bin/mkt daemon --listen 127.0.0.1:9999
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
+```
+
+The daemon runs the same data plane as the dashboard, so alerts, the equity
+curve, news, macro, futures and calendar histories all advance with no TUI
+attached.
+
+---
+
 ## Hardening
 
 `mkt`'s sharp surfaces are **off by default** — the HTTP API (`--listen`), the SSH dashboard (`mkt serve`), the MCP server (`mkt mcp`), and the webhook/ntfy/Pushover notifiers all require explicit opt-in. When you do enable them, these knobs scope them down:
@@ -666,7 +767,7 @@ External integrations:
 The data plane is program-agnostic: a **broadcaster** fans every quote/update out to all attached `tea.Program`s, so `mkt` (one local program) and `mkt serve` (one per SSH session) share the exact same hub, cache, alert engine, and pollers — built once in `cmd/backend.go`. `mkt daemon` runs the identical data plane with no program attached.
 
 - **Providers** stream/poll quotes into a shared channel. `Hub.Start` returns the symbols no provider can serve, so an unroutable ticker is reported rather than silently never pricing.
-- **Two fan-out paths.** Observers (alert evaluation) are reliable and never dropped; the TUI dispatch is bounded and sheds on back-pressure, counted by `mkt_quote_drops_total`. A stalled terminal can no longer cost you an alert.
+- **Two fan-out paths.** Observers (alert evaluation) are reliable and never dropped; the TUI dispatch is bounded and sheds on back-pressure, counted by `mkt_quote_drops_total`. A stalled terminal cannot cost you an alert.
 - **Cache seeding.** Every subscribed symbol is backfilled from daily history at startup, so sparklines are populated on the first frame and `RSI(14)` / SMA-cross rules evaluate over days rather than over however many poll ticks have accumulated.
 - **Alert engine** is edge-triggered with a per-rule cooldown; the notifier fan-out is asynchronous, so a wedged webhook cannot stall quote processing. Queued notifications are flushed (up to 3s) on exit.
 - **Config write layer** is atomic (temp + rename), takes a timestamped backup before any change, diffs old against new to name what a write would drop, and refuses every write while the file on disk does not parse.

@@ -16,8 +16,8 @@ import (
 // fan out to desktop / push / webhook destinations — and /alerts, which
 // leaks configured destinations, to anyone reachable. Only an explicit
 // loopback host is allowed without a token; everything else must set
-// --listen-token. Returns an error the caller surfaces to refuse startup
-// (previously this only printed a warning and served anyway).
+// --listen-token. Returns an error the caller surfaces to refuse startup:
+// an unsafe bind must fail closed, not warn and serve.
 func checkListenSafety(addr, token string) error {
 	if token != "" {
 		return nil

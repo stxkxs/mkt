@@ -29,9 +29,9 @@ var recordClock = time.Now
 // preserveRecording protects an existing MKT_RECORD target from the sink's
 // truncating open.
 //
-// recording.NewSink opens the path with O_TRUNC, so every launch used to
-// destroy the previous capture — including the long-running `mkt daemon`
-// case, where the recording is the whole point. Rather than silently
+// recording.NewSink opens the path with O_TRUNC, so a launch would destroy
+// the previous capture — including the long-running `mkt daemon` case,
+// where the recording is the whole point. Rather than silently
 // overwrite, the existing file is copied to a timestamped sibling first and
 // the copy is named on stderr, so the data is recoverable and the user is
 // told where it went. An empty or missing target needs no protection.

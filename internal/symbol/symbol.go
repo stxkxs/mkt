@@ -1,11 +1,10 @@
 // Package symbol is the single source of truth for classifying and
 // normalizing a market symbol as crypto, a FRED economic series, or a
-// stock. Providers used to each carry their own (divergent) copy of "what
-// is a crypto symbol", which only stayed correct because of provider
-// ordering in the hub chain. Centralizing it here removes that hidden
-// coupling: coinbase.Supports, yahoo.Supports, fred.Supports and the
-// earnings ticker filter all delegate to these functions, so the lists can
-// never drift apart again.
+// stock. coinbase.Supports, yahoo.Supports, fred.Supports and the earnings
+// ticker filter all delegate to these functions, so no provider carries its
+// own notion of "what is a crypto symbol" and the lists cannot drift apart.
+// Correctness therefore does not depend on provider ordering in the hub
+// chain.
 //
 // Classification and canonicalization share one implementation
 // (classify), which is what guarantees a symbol can never be claimed by

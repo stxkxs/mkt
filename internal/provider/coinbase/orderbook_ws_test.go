@@ -3,6 +3,9 @@ package coinbase
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -252,5 +255,43 @@ func TestBuildBookSorted(t *testing.T) {
 	// Asks ascending
 	if book.Asks[0].Price != 101.5 || book.Asks[2].Price != 103 {
 		t.Errorf("asks not sorted asc: %+v", book.Asks)
+	}
+}
+
+// A peer that completes the TCP and TLS handshakes and then never sends the
+// 101 response must not park the dial for the lifetime of the process. The
+// bound belongs to the dial itself: keepAlive is not armed yet, and neither
+// the reconnect counter nor the status flip has run, so nothing downstream
+// can observe the stall.
+func TestDialTimeoutBoundsASilentUpgrade(t *testing.T) {
+	blocked := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-blocked // accept the connection, answer nothing
+	}))
+	defer srv.Close()
+	defer close(blocked)
+
+	prevURL, prevTimeout := wsURL, dialTimeout
+	wsURL = "ws" + strings.TrimPrefix(srv.URL, "http")
+	dialTimeout = 150 * time.Millisecond
+	defer func() { wsURL, dialTimeout = prevURL, prevTimeout }()
+
+	p := New()
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		done <- p.streamOrderBook(context.Background(), "BTC-USD", make(chan OrderBook, 1), nil)
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a silent upgrade should fail, not succeed")
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("dial took %v; the timeout did not bound it", elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("dial hung past the timeout — the upgrade is unbounded")
 	}
 }

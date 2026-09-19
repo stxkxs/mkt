@@ -25,6 +25,7 @@ import (
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/observe"
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/symbol"
 )
 
 // Webhook payload limits.
@@ -145,14 +146,52 @@ func (s *Server) Start() error {
 // state / drives the notifier fan-out. Exposed for tests.
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/quotes", s.auth(s.handleQuotes))
-	mux.HandleFunc("/quotes/", s.auth(s.handleQuote))
-	mux.HandleFunc("/alerts", s.auth(s.handleAlerts))
-	mux.HandleFunc("/metrics", s.auth(s.handleMetrics))
+	mux.HandleFunc("/quotes", s.auth(readOnly(s.handleQuotes)))
+	mux.HandleFunc("/quotes/", s.auth(readOnly(s.handleQuote)))
+	mux.HandleFunc("/alerts", s.auth(readOnly(s.handleAlerts)))
+	mux.HandleFunc("/metrics", s.auth(readOnly(s.handleMetrics)))
+	// Probes answer before auth: an orchestrator holds no token, and
+	// neither endpoint discloses anything a port scan does not.
+	mux.HandleFunc("/healthz", readOnly(s.handleHealthz))
+	mux.HandleFunc("/readyz", readOnly(s.handleReadyz))
 	if s.webhookEnabled {
 		mux.HandleFunc("/webhook/tradingview", s.auth(s.handleTradingView))
 	}
 	return mux
+}
+
+// readOnly rejects any verb that is not a read. Without it every route
+// answers a DELETE with 200 and a body, which tells a caller the method was
+// accepted.
+func readOnly(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h(w, r)
+	}
+}
+
+// handleHealthz reports that the process is up and serving. It says nothing
+// about the data plane — that is what /readyz is for — so a restart loop
+// cannot be triggered by an upstream outage.
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"status": "ok"})
+}
+
+// handleReadyz reports whether any provider has delivered a quote yet.
+// /metrics answers 200 from the moment the listener binds, so it cannot
+// serve as a readiness signal; this can.
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	cached := len(s.cache.Symbols())
+	if cached == 0 {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]any{"status": "warming", "symbols_cached": 0})
+		return
+	}
+	writeJSON(w, map[string]any{"status": "ready", "symbols_cached": cached})
 }
 
 // auth wraps a handler with token authentication when a token has been
@@ -260,7 +299,10 @@ func (s *Server) handleQuotes(w http.ResponseWriter, r *http.Request) {
 
 // /quotes/{symbol} — single quote.
 func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
-	sym := strings.TrimPrefix(r.URL.Path, "/quotes/")
+	// Canonicalize like every other symbol entry point: without this
+	// /quotes/btc and /quotes/BTCUSDT 404 while /quotes/BTC-USD works, and
+	// the MCP live-quote path builds its URL against this same route.
+	sym := symbol.Canonical(strings.TrimPrefix(r.URL.Path, "/quotes/"))
 	if sym == "" {
 		http.NotFound(w, r)
 		return
@@ -495,6 +537,9 @@ func (s *Server) handleTradingView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.webhookLimiter.Allow() {
+		// Name the backoff the server itself enforces; a caller cannot
+		// infer webhookRatePerSec from a bare 429.
+		w.Header().Set("Retry-After", "1")
 		rejectWebhook(w, "rate limited", http.StatusTooManyRequests)
 		return
 	}

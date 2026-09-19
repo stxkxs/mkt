@@ -3,11 +3,11 @@ package alert
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
+
+	"github.com/stxkxs/mkt/internal/httpx"
 )
 
 const defaultPushoverEndpoint = "https://api.pushover.net/1/messages.json"
@@ -47,19 +47,14 @@ func (p *PushoverNotifier) Notify(ctx context.Context, a TriggeredAlert) error {
 	form.Set("title", "mkt Alert: "+a.Rule.Symbol)
 	form.Set("message", a.Message)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return fmt.Errorf("pushover: build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("pushover: %w", err)
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("pushover: status %d", resp.StatusCode)
+	headers := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
+	// *url.Error embeds the request URL verbatim. The Pushover endpoint is
+	// a constant and the token rides in the form body, so nothing leaks
+	// today; redacting keeps the three notifier error paths identical, so
+	// making the endpoint configurable cannot quietly turn this into a
+	// token in the logs.
+	if err := httpx.Post(ctx, p.client, p.endpoint, headers, []byte(form.Encode())); err != nil {
+		return fmt.Errorf("pushover: %w", redactErr(err))
 	}
 	return nil
 }

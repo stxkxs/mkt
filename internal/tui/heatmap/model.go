@@ -20,8 +20,14 @@ type Model struct {
 	quotes    map[string]provider.Quote
 	cursor    int // sector cursor (overview) or stock cursor (drilldown)
 	sectorIdx int // which sector we're drilled into (-1 = overview)
-	width     int
-	height    int
+	// drillOrder is the symbol order of the open drilldown, ranked by
+	// change% when it was opened. Ranking at render time instead would
+	// reorder the tiles on every arriving quote while the reader is
+	// looking at them, and the cursor — a position in this slice — would
+	// land on a different symbol without a keypress.
+	drillOrder []string
+	width      int
+	height     int
 }
 
 // New creates a heatmap model seeded with DefaultSectors. Callers that
@@ -149,8 +155,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			for i, r := range rects {
 				if gridX >= r.X && gridX < r.X+r.W && gridY >= r.Y && gridY < r.Y+r.H {
 					if m.cursor == i {
-						m.sectorIdx = i
-						m.cursor = 0
+						m.enterDrilldown(i)
 					} else {
 						m.cursor = i
 					}
@@ -210,11 +215,68 @@ func (m Model) updateOverview(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		}
 	case "enter":
 		if m.cursor < len(m.sectors) {
-			m.sectorIdx = m.cursor
-			m.cursor = 0
+			m.enterDrilldown(m.cursor)
 		}
 	}
 	return m, nil
+}
+
+// enterDrilldown opens sector i and fixes the tile order for as long as it
+// stays open. The ranking is a snapshot: prices keep updating in place, but
+// a tile never moves out from under the cursor.
+func (m *Model) enterDrilldown(i int) {
+	m.sectorIdx = i
+	m.cursor = 0
+	sect, ok := m.sector(i)
+	if !ok {
+		m.drillOrder = nil
+		return
+	}
+	m.drillOrder = m.rankSymbols(sect.Symbols)
+}
+
+// rankSymbols orders symbols by change% descending, quoted before unquoted,
+// with the caller's order breaking ties so the result is deterministic.
+func (m Model) rankSymbols(symbols []string) []string {
+	out := append([]string(nil), symbols...)
+	pos := make(map[string]int, len(symbols))
+	for i, s := range symbols {
+		pos[s] = i
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		qi, hasI := m.quotes[out[i]]
+		qj, hasJ := m.quotes[out[j]]
+		if hasI != hasJ {
+			return hasI
+		}
+		if hasI && qi.ChangePct != qj.ChangePct {
+			return qi.ChangePct > qj.ChangePct
+		}
+		return pos[out[i]] < pos[out[j]]
+	})
+	return out
+}
+
+// drilldownSymbols returns the frozen order, re-ranking only if the sector
+// changed underneath it (SetSectors can replace the layout at any time).
+func (m Model) drilldownSymbols(sect Sector) []string {
+	if len(m.drillOrder) == len(sect.Symbols) {
+		known := make(map[string]bool, len(sect.Symbols))
+		for _, s := range sect.Symbols {
+			known[s] = true
+		}
+		fresh := true
+		for _, s := range m.drillOrder {
+			if !known[s] {
+				fresh = false
+				break
+			}
+		}
+		if fresh {
+			return m.drillOrder
+		}
+	}
+	return m.rankSymbols(sect.Symbols)
 }
 
 func (m Model) updateDrilldown(msg tea.KeyPressMsg) (Model, tea.Cmd) {
@@ -228,6 +290,7 @@ func (m Model) updateDrilldown(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	case "esc":
 		m.cursor = m.sectorIdx
 		m.sectorIdx = -1
+		m.drillOrder = nil
 	case "j", "down":
 		m.cursor += cols
 		if m.cursor >= len(sect.Symbols) {
@@ -481,26 +544,19 @@ func (m Model) viewDrilldown() string {
 		return sb.String()
 	}
 
-	// Sort symbols by change% descending
+	// Tile order was fixed when the drilldown opened; only the prices
+	// inside each tile move.
 	type stockEntry struct {
 		sym   string
 		quote provider.Quote
 		has   bool
 	}
-	entries := make([]stockEntry, len(sect.Symbols))
-	for i, sym := range sect.Symbols {
+	order := m.drilldownSymbols(sect)
+	entries := make([]stockEntry, len(order))
+	for i, sym := range order {
 		q, ok := m.quotes[sym]
 		entries[i] = stockEntry{sym: sym, quote: q, has: ok}
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		if !entries[i].has {
-			return false
-		}
-		if !entries[j].has {
-			return true
-		}
-		return entries[i].quote.ChangePct > entries[j].quote.ChangePct
-	})
 
 	// Tile layout: each tile is a fixed-width card
 	tileW := 22

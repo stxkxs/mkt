@@ -19,6 +19,7 @@ import (
 	"github.com/stxkxs/mkt/internal/provider/coinbase"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
 	optionsview "github.com/stxkxs/mkt/internal/tui/options"
+	"github.com/stxkxs/mkt/internal/tui/theme"
 	"github.com/stxkxs/mkt/internal/tui/watchlist"
 )
 
@@ -1146,4 +1147,78 @@ func TestDataPlaneWiringInterfaces(t *testing.T) {
 	if !strings.Contains(got[1], "NOTREAL") {
 		t.Errorf("unroutable notice = %q", got[1])
 	}
+}
+
+// The spinner is drawn only before the first WindowSizeMsg. Re-arming the
+// tick after that repaints the whole frame ten times a second for the life
+// of the process — on every attached SSH session — to animate a glyph that
+// is no longer rendered.
+func TestSpinnerTickStopsOnceReady(t *testing.T) {
+	a := newTestApp()
+
+	if cmd := a.Init(); cmd == nil {
+		t.Fatal("Init should arm the spinner before the first size message")
+	}
+
+	m, cmd := a.Update(SpinnerTickMsg{})
+	if cmd == nil {
+		t.Fatal("the spinner should keep ticking while not ready")
+	}
+	a = m.(*App)
+
+	if _, cmd = a.Update(tea.WindowSizeMsg{Width: 120, Height: 40}); cmd != nil {
+		t.Fatal("a size message should not arm a repaint loop")
+	}
+
+	before := a.spinnerTick
+	m, cmd = a.Update(SpinnerTickMsg{})
+	a = m.(*App)
+	if cmd != nil {
+		t.Fatal("the spinner re-armed after ready: the UI repaints forever")
+	}
+	if a.spinnerTick != before {
+		t.Fatalf("spinnerTick advanced while unread: %d -> %d", before, a.spinnerTick)
+	}
+}
+
+// theme.Apply writes package-level vars. Under mkt serve every session is
+// a separate model in one process, so a guest pressing T would restyle the
+// host and every other guest, writing those vars from its own goroutine
+// while the others render from them.
+func TestSharedSessionWithholdsThemeControls(t *testing.T) {
+	a := sizedApp(t, 120, 40)
+	a.SetShared(true)
+
+	before := theme.CurrentName
+	m, cmd := a.Update(tea.KeyPressMsg{Code: 'T', Text: "T", Mod: tea.ModShift})
+	a = m.(*App)
+
+	if theme.CurrentName != before {
+		t.Fatalf("a shared session mutated the process theme: %q -> %q", before, theme.CurrentName)
+	}
+	if cmd != nil {
+		if _, ok := cmd().(theme.ChangedMsg); ok {
+			t.Fatal("a shared session broadcast a theme change to its peers")
+		}
+	}
+
+	// The reference must not advertise a key the session does not have.
+	a.help.Open("Watch")
+	if strings.Contains(a.help.View(), "cycle color theme") {
+		t.Fatal("help advertises the withheld theme binding")
+	}
+}
+
+// A single local dashboard owns its process, so the control stays.
+func TestUnsharedSessionKeepsThemeControls(t *testing.T) {
+	a := sizedApp(t, 120, 40)
+
+	before := theme.CurrentName
+	if _, cmd := a.Update(tea.KeyPressMsg{Code: 'T', Text: "T", Mod: tea.ModShift}); cmd == nil {
+		t.Fatal("T should switch the theme for a local dashboard")
+	}
+	if theme.CurrentName == before {
+		t.Fatalf("theme did not advance from %q", before)
+	}
+	theme.Apply(before)
 }

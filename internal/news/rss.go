@@ -9,8 +9,26 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/stxkxs/mkt/internal/httpx"
+	"github.com/stxkxs/mkt/internal/textsafe"
 )
+
+const (
+	// fetchConcurrency bounds simultaneous outbound feed requests.
+	fetchConcurrency = 4
+	// feedRPS paces every request this package makes. SEC EDGAR documents a
+	// ~10 req/s ceiling and blocks clients past it, and mkt shares a source
+	// IP with whatever else the user is running, so the budget is set well
+	// under the published limit.
+	feedRPS   = 4
+	feedBurst = 4
+)
+
+// feedGate paces every outbound request in this package, across both the
+// RSS and EDGAR fan-outs, so their concurrency caps cannot compound.
+var feedGate = rate.NewLimiter(feedRPS, feedBurst)
 
 // Headline represents a single news item. Category is empty for general
 // RSS items; SEC filings populate it with the filing type ("8-K", "10-Q", etc).
@@ -51,16 +69,28 @@ type rssItem struct {
 	PubDate string `xml:"pubDate"`
 }
 
-// FetchAll fetches all feeds concurrently, deduplicates by URL, sorts by time descending, returns top 50.
+// FetchAll fetches all feeds, deduplicates by URL, sorts by time descending, returns top 50.
+//
+// Concurrency is capped at fetchConcurrency and every request passes the
+// package limiter: the feed list comes from config and has no length bound,
+// so an unpaced fan-out turns one poll into as many simultaneous requests as
+// the user has feeds.
 func FetchAll(ctx context.Context, feeds []Feed) []Headline {
 	var mu sync.Mutex
 	var all []Headline
 
+	sem := make(chan struct{}, fetchConcurrency)
 	var wg sync.WaitGroup
 	for _, f := range feeds {
 		wg.Add(1)
 		go func(feed Feed) {
 			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
 			items := fetchFeed(ctx, feed)
 			mu.Lock()
 			all = append(all, items...)
@@ -96,6 +126,9 @@ const feedTimeout = 8 * time.Second
 var feedClient = &http.Client{Timeout: feedTimeout}
 
 func fetchFeed(ctx context.Context, feed Feed) []Headline {
+	if err := feedGate.Wait(ctx); err != nil {
+		return nil
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, feedTimeout)
 	defer cancel()
 
@@ -113,7 +146,7 @@ func fetchFeed(ctx context.Context, feed Feed) []Headline {
 	for _, item := range rss.Channel.Items {
 		t := parseTime(item.PubDate)
 		headlines = append(headlines, Headline{
-			Title:   item.Title,
+			Title:   textsafe.Clean(item.Title),
 			Link:    item.Link,
 			Source:  feed.Name,
 			PubTime: t,

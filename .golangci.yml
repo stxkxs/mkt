@@ -18,14 +18,26 @@ linters:
     # provider in this tree is a long-lived poller, so a single missed Close
     # compounds for the lifetime of the process.
     - bodyclose
+    - gosec
     # The config write-safety layer hands *config.DestroyError back through
     # wrapped errors and callers recover it with errors.As. A `==` comparison
     # or an unwrapped %v anywhere on that path silently turns a refusal into
     # an unrecognized error, so the correctness of %w / errors.As / errors.Is
     # is load-bearing rather than stylistic.
-    - gosec
     - errorlint
+    # Function length and branch count. Neither changes behaviour, which is
+    # why the rest of this list cannot see them: every correctness linter
+    # above passes on a 400-line router. The thresholds are a ratchet set
+    # just above the current ceiling — they stop new growth, and the
+    # functions already over it are named in the exclusions below.
+    - funlen
+    - gocyclo
   settings:
+    funlen:
+      lines: 130
+      statements: 85
+    gocyclo:
+      min-complexity: 45
     errcheck:
       check-type-assertions: true
       exclude-functions:
@@ -34,9 +46,8 @@ linters:
         - (*github.com/coder/websocket.Conn).Close
         - (*github.com/coder/websocket.Conn).CloseNow
         - io/ioutil.ReadAll
-        # Writes to a cobra command's stdout/stderr. There is nothing useful a
-        # CLI can do when its own output stream fails, and errcheck itself
-        # shipped this exact exemption as a built-in default for years.
+        # Writes to a cobra command's stdout/stderr. A CLI has nowhere to
+        # report a failure of the stream it reports failures on.
         - fmt.Fprint
         - fmt.Fprintf
         - fmt.Fprintln
@@ -65,6 +76,38 @@ linters:
         - "-ST1000"
   exclusions:
     rules:
+      # ── funlen / gocyclo budget ───────────────────────────────────────
+      # The thresholds above sit just over today's ceiling. These five are
+      # the functions already past it: the gate names them rather than
+      # hiding them, and each shrinks as it is next worked on.
+      - path: cmd/mcp\.go
+        source: "func runMCP"
+        linters:
+          - funlen
+      - path: internal/tui/app\.go
+        source: "func \\(a \\*App\\) handleKey"
+        linters:
+          - funlen
+      - path: internal/tui/chart/model\.go
+        source: "func \\(m Model\\) Update"
+        linters:
+          - funlen
+      - path: internal/tui/heatmap/model\.go
+        linters:
+          - funlen
+          - gocyclo
+      - path: internal/tui/macro/model\.go
+        source: "func \\(m Model\\) contentLines"
+        linters:
+          - funlen
+
+      # A table-driven test is one statement per case by construction, so
+      # its length tracks the number of cases rather than its complexity.
+      - path: _test\.go
+        linters:
+          - funlen
+          - gocyclo
+
       - path: _test\.go
         linters:
           - errcheck
@@ -154,14 +197,6 @@ linters:
         linters:
           - gosec
 
-      # wish's ListenAndServe returns ssh.ErrServerClosed unwrapped, exactly
-      # as net/http does. Left as a direct comparison rather than churned to
-      # errors.Is for a sentinel that is documented never to be wrapped.
-      # TODO: switch to errors.Is when cmd/serve.go is next touched.
-      - path: cmd/serve\.go
-        source: "err != ssh\\.ErrServerClosed"
-        linters:
-          - errorlint
 
 formatters:
   enable:

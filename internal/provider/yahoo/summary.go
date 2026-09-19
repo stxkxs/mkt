@@ -22,9 +22,9 @@ type SymbolSummary struct {
 
 // FetchSummary retrieves fundamental data using Yahoo's quoteSummary endpoint.
 func (p *Provider) FetchSummary(ctx context.Context, symbol string) (SymbolSummary, error) {
-	if err := p.initSession(ctx); err != nil {
-		_ = err // non-fatal
-	}
+	// Best-effort session init; failure is non-fatal — some endpoints
+	// work without a crumb.
+	_ = p.initSession(ctx)
 
 	endpoint := fmt.Sprintf("%s/v10/finance/quoteSummary/%s?modules=summaryDetail,defaultKeyStatistics,summaryProfile",
 		baseURL, url.PathEscape(symbol))

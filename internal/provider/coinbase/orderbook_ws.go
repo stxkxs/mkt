@@ -129,7 +129,9 @@ func (p *Provider) StreamOrderBook(ctx context.Context, productID string, out ch
 // must already be canonical. onConnected, if non-nil, is called on this
 // goroutine once the level2 subscribe has been written.
 func (p *Provider) streamOrderBook(ctx context.Context, productID string, out chan<- OrderBook, onConnected func()) error {
-	ws, _, err := websocket.Dial(ctx, wsURL, nil)
+	dialCtx, dialCancel := context.WithTimeout(ctx, dialTimeout)
+	ws, _, err := websocket.Dial(dialCtx, wsURL, nil)
+	dialCancel()
 	if err != nil {
 		return fmt.Errorf("orderbook ws dial: %w", err)
 	}

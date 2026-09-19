@@ -162,7 +162,7 @@ func (p *panel) render(label func(row int) string) string {
 		// Cells are emitted in runs of a single color rather than one
 		// styled Render per cell: a full-screen grid holds thousands of
 		// colored cells and the chart redraws on every quote, so the
-		// per-cell style build used to dominate the frame.
+		// per-cell style build would otherwise dominate the frame.
 		var buf []rune
 		var curColor color.Color
 		var curKey colorKey

@@ -41,8 +41,8 @@ func runWatch(cmd *cobra.Command, args []string) error {
 	yahooProv := yahoo.New(5 * time.Second)
 
 	// Route symbols to providers. Canonicalize first: the providers accept
-	// only the spelling they emit, so a bare "btc" used to be routed by
-	// Supports and then subscribed as "BTC" — a product that does not exist.
+	// only the spelling they emit, so a bare "btc" that passed Supports
+	// would be subscribed as "BTC" — a product that does not exist.
 	var cryptoSyms, stockSyms, unknown []string
 	for _, s := range args {
 		canon := symbol.Canonical(s)

@@ -1,13 +1,13 @@
 package alert
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
+
+	"github.com/stxkxs/mkt/internal/httpx"
 )
 
 // WebhookNotifier posts triggered alerts as JSON to configured URLs.
@@ -79,19 +79,9 @@ func (w *WebhookNotifier) Notify(ctx context.Context, a TriggeredAlert) error {
 // and these errors are logged.
 func (w *WebhookNotifier) post(ctx context.Context, dest string, body []byte) error {
 	safe := redactURL(dest)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dest, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("webhook %s: build request: %w", safe, err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := w.client.Do(req)
-	if err != nil {
+	headers := map[string]string{"Content-Type": "application/json"}
+	if err := httpx.Post(ctx, w.client, dest, headers, body); err != nil {
 		return fmt.Errorf("webhook %s: %w", safe, redactErr(err))
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook %s: status %d", safe, resp.StatusCode)
 	}
 	return nil
 }

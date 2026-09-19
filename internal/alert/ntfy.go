@@ -1,13 +1,13 @@
 package alert
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/stxkxs/mkt/internal/httpx"
 )
 
 const defaultNtfyServer = "https://ntfy.sh"
@@ -47,20 +47,12 @@ func (n *NtfyNotifier) Notify(ctx context.Context, a TriggeredAlert) error {
 	}
 	dest := n.server + "/" + n.topic
 	safe := redactURL(dest)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dest, bytes.NewReader([]byte(a.Message)))
-	if err != nil {
-		return fmt.Errorf("ntfy: build request: %w", err)
+	headers := map[string]string{
+		"Title":        "mkt Alert: " + a.Rule.Symbol,
+		"Content-Type": "text/plain",
 	}
-	req.Header.Set("Title", "mkt Alert: "+a.Rule.Symbol)
-	req.Header.Set("Content-Type", "text/plain")
-	resp, err := n.client.Do(req)
-	if err != nil {
+	if err := httpx.Post(ctx, n.client, dest, headers, []byte(a.Message)); err != nil {
 		return fmt.Errorf("ntfy %s: %w", safe, redactErr(err))
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("ntfy %s: status %d", safe, resp.StatusCode)
 	}
 	return nil
 }
