@@ -1,5 +1,7 @@
 package format
 
+import "strings"
+
 // Col describes one column of a terminal table to Fit.
 //
 // Width is what the column wants in display cells. Min is the floor it may
@@ -186,4 +188,33 @@ func dropLowest(live Layout) Layout {
 		}
 	}
 	return append(live[:worst:worst], live[worst+1:]...)
+}
+
+// CellText prepares free text for a fixed-width table cell.
+//
+// A cell is one line of a known number of columns, and two characters break
+// that on their own: a tab measures zero cells and the terminal expands it
+// to the next stop, and a newline splits one data row into two screen lines
+// — which is the same harm a too-wide row causes, since a click is mapped
+// from a screen row straight to a data-row index. Both fold to a space.
+//
+// Only unstyled content goes through here. ANSI escapes are control
+// characters too, so a styled string would lose its styling; style the
+// result, never the input.
+func CellText(s string) string {
+	if !strings.ContainsFunc(s, isCellBreaking) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if isCellBreaking(r) {
+			return ' '
+		}
+		return r
+	}, s)
+}
+
+// isCellBreaking reports the characters whose rendered width disagrees with
+// their measured width, or which end the line outright.
+func isCellBreaking(r rune) bool {
+	return r == '\t' || r == '\n' || r == '\r' || r == '\v' || r == '\f'
 }

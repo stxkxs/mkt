@@ -98,8 +98,21 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 // View renders the overlay.
+// panelPreferredWidth is the card's full width; minPanelWidth is the
+// narrowest worth drawing.
+const (
+	panelPreferredWidth = 44
+	minPanelWidth       = 22
+)
+
 func (m Model) View() string {
 	if !m.active {
+		return ""
+	}
+	// The card is composited at a fixed origin, so one wider than the
+	// frame overflows the right edge rather than being clipped.
+	w := theme.PanelWidth(panelPreferredWidth, m.width, minPanelWidth)
+	if w == 0 {
 		return ""
 	}
 
@@ -131,7 +144,7 @@ func (m Model) View() string {
 	lines = append(lines, "  "+styleHint.Render("esc: close"))
 	lines = append(lines, "")
 	content := strings.Join(lines, "\n")
-	return theme.RenderPanel(m.summary.Symbol, content, 44)
+	return theme.RenderPanel(m.summary.Symbol, content, w)
 }
 
 func row(label, value string) string {

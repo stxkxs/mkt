@@ -415,7 +415,7 @@ func valueText(r alert.Rule, cells int) string {
 // verbs count runes, so padding a string that already carries ANSI
 // escapes counts the escapes and the cell silently grows.
 func pad(s string, cells int, right bool) string {
-	s = format.Truncate(s, cells)
+	s = format.Truncate(format.CellText(s), cells)
 	gap := format.Spaces(cells - lipgloss.Width(s))
 	if right {
 		return gap + s

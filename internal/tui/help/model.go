@@ -186,25 +186,14 @@ func (m Model) View() string {
 const panelWidth = 58
 const keyColWidth = 18
 
-// panelChrome is what RenderPanel adds around the width it is given: a
-// border column on each side plus the shadow column.
-const panelChrome = 3
-
 // minPanelWidth is the narrowest card worth drawing; below this the frame
-// cannot hold the overlay and View returns nothing.
+// cannot hold the overlay and View renders nothing.
 const minPanelWidth = 16
 
 // panelWidth returns the card width for the current frame, or 0 when the
 // frame is too narrow to hold the card at all.
 func (m Model) panelWidth() int {
-	if m.width <= 0 {
-		return panelWidth
-	}
-	w := min(panelWidth, m.width-panelChrome)
-	if w < minPanelWidth {
-		return 0
-	}
-	return w
+	return theme.PanelWidth(panelWidth, m.width, minPanelWidth)
 }
 
 // writeSection renders one titled block of bindings inside width cells.

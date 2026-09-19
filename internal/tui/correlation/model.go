@@ -233,7 +233,7 @@ func fitCell(s string) string {
 // frame. The result is padded here rather than by a fmt width verb,
 // because those count runes too.
 func trimSym(s string) string {
-	s = format.Clip(s, symWidth)
+	s = format.Clip(format.CellText(s), symWidth)
 	return s + format.Spaces(symWidth-lipgloss.Width(s))
 }
 
