@@ -47,7 +47,11 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # shell: bash on every leg. PowerShell's native-argument parsing
+      # splits -coverprofile=cover.out, and go then reads ".out" as a
+      # package path and fails the run before a single test executes.
       - name: go test
+        shell: bash
         run: go test ${{ matrix.race }} -count=1 -coverprofile=cover.out ./...
 
       # A ratchet, not a target. 82% is what the tree carries; the gate

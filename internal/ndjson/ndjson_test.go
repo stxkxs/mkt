@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -69,7 +70,15 @@ func TestCompactLeavesShortFileAlone(t *testing.T) {
 
 // These files carry holdings and alert metadata; the rewrite must not widen
 // their mode.
+//
+// Windows has no POSIX permission model — os.Chmod there only toggles the
+// read-only attribute, so a file written 0600 reports 0666. The assertion is
+// load-bearing on Linux and macOS and describes something Windows does not
+// implement.
 func TestCompactPreservesMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows does not implement Unix permission bits (os.Chmod only toggles read-only)")
+	}
 	path := filepath.Join(t.TempDir(), "h.ndjson")
 	writeN(t, path, 500)
 
