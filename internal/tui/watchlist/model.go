@@ -445,7 +445,7 @@ func (m Model) layout() format.Layout {
 // fmt's width verbs count runes rather than cells, and count an ANSI
 // escape as runes, which silently grows a styled cell past its column.
 func cell(s string, w int, alignRight bool) string {
-	s = format.Truncate(s, w)
+	s = format.Truncate(format.CellText(s), w)
 	pad := format.Spaces(w - lipgloss.Width(s))
 	if alignRight {
 		return pad + s

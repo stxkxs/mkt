@@ -304,7 +304,7 @@ func (m Model) layout() format.Layout {
 // caller styles the cell. fmt's width verbs count runes, so they
 // under-budget a wide glyph and count an ANSI escape as content.
 func cell(key, text string, w int) string {
-	text = format.Truncate(text, w)
+	text = format.Truncate(format.CellText(text), w)
 	pad := format.Spaces(w - lipgloss.Width(text))
 	switch key {
 	case "symbol", "name":
