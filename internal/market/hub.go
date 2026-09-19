@@ -281,6 +281,12 @@ type observer struct {
 	cond    *sync.Cond
 	queue   []provider.Quote
 	stopped bool
+
+	// inflight is the part of a taken batch this observer has not delivered
+	// yet. run takes the whole queue at once and nils it, so the queue
+	// length alone reports nothing while the observer is working — and
+	// reports zero precisely when a wedged observer is holding the most.
+	inflight atomic.Int64
 }
 
 func newObserver(fn func(provider.Quote), drops *atomic.Uint64) *observer {
@@ -306,10 +312,24 @@ func (o *observer) push(q provider.Quote) {
 	o.cond.Signal()
 }
 
-func (o *observer) pending() int {
+// queued is how many quotes are waiting in the queue, which is the quantity
+// max bounds. It excludes the batch already taken for delivery, so it
+// measures the memory the queue holds rather than the work outstanding.
+func (o *observer) queued() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return len(o.queue)
+}
+
+// pending is how many quotes this observer has accepted and not yet
+// delivered: those still queued plus those in the batch it is working
+// through. Both halves count, since a consumer stuck inside fn holds its
+// whole batch outside the queue.
+func (o *observer) pending() int {
+	o.mu.Lock()
+	queued := len(o.queue)
+	o.mu.Unlock()
+	return queued + int(o.inflight.Load())
 }
 
 // stop discards the backlog and wakes the pump. It does not wait for an
@@ -336,10 +356,12 @@ func (o *observer) run() {
 		}
 		batch := o.queue
 		o.queue = nil
+		o.inflight.Store(int64(len(batch)))
 		o.mu.Unlock()
 
-		for _, q := range batch {
+		for i, q := range batch {
 			o.fn(q)
+			o.inflight.Store(int64(len(batch) - i - 1))
 		}
 	}
 }
