@@ -983,7 +983,7 @@ func (a *App) View() tea.View {
 		a.alerts.SetSize(contentW, contentH)
 		content = a.alerts.View()
 	case TabChart:
-		content = theme.StyleDim.Render("  Select a symbol from Watchlist and press 'c' for chart")
+		content = theme.StyleDim.Render(format.Truncate("  Select a symbol from Watchlist and press 'c' for chart", contentW))
 	case TabMacro:
 		a.macro.SetSize(contentW, contentH)
 		content = a.macro.View()
@@ -1166,10 +1166,10 @@ func (a *App) toContentCoords(m tea.Mouse) tea.Mouse {
 // renderContentPanel wraps content in a bordered panel with an embedded title.
 func (a *App) renderContentPanel(title, content string, contentH int) string {
 	if !a.usePanelBorders() {
-		return lipgloss.NewStyle().
+		return clampLines(lipgloss.NewStyle().
 			Width(a.width).
 			Height(contentH).
-			Render(content)
+			Render(content), a.width)
 	}
 
 	innerWidth := a.width - 2
@@ -1195,6 +1195,11 @@ func (a *App) renderContentPanel(title, content string, contentH int) string {
 	sb.WriteString("\n")
 	border := theme.StyleBorderChar.Render("│")
 	for _, line := range lines {
+		// The panel owns the border, so it is where the frame is
+		// enforced: a tab that overruns its budget must cost its own
+		// content, never a wrapped row that displaces everything below
+		// and desynchronizes the click hit-test.
+		line = format.Truncate(line, innerWidth)
 		sb.WriteString(border)
 		sb.WriteString(line)
 		sb.WriteString(format.Spaces(innerWidth - lipgloss.Width(line)))
@@ -1212,6 +1217,7 @@ const tabBarLeadPad = 1
 // tabSegment is one tab label as drawn in the tab bar, together with the
 // column range it occupies.
 type tabSegment struct {
+	tab   Tab // which tab this segment selects; the bar sheds, so this is not the slice index
 	text  string
 	start int
 	width int
@@ -1222,24 +1228,106 @@ func tabSeparator() string {
 	return theme.StyleTabSeparator.Render(" │ ")
 }
 
-// tabSegments lays the tab labels out left to right. renderTabBar draws
-// these and tabAtX hit-tests them, so the geometry on screen and the
-// geometry the mouse is measured against are the same numbers rather
-// than two copies of the same arithmetic.
+// tabBarBranding is the fixed right-hand segment of the bar. tabSegments
+// budgets around it and renderTabBar draws it, so the space it costs is
+// subtracted in exactly one place.
+func tabBarBranding() string {
+	return theme.StyleBranding.Render("▸ mkt ")
+}
+
+// tabLabel renders one tab's label in its active or inactive style.
+func (a *App) tabLabel(i int) string {
+	indicator, style := "◇", theme.StyleTabInactive
+	if Tab(i) == a.activeTab {
+		indicator, style = "◆", theme.StyleTabActive
+	}
+	return style.Render(indicator + " " + tabNames[i])
+}
+
+// tabOverflowMarker tells the reader that tabs exist outside the bar. The
+// bar is the only place the tab set is enumerated, so a bar that silently
+// shows three of nine reads as a three-tab program.
+func (a *App) tabOverflowMarker(shown int) string {
+	return theme.StyleTabSeparator.Render(fmt.Sprintf(" %d/%d ", int(a.activeTab)+1, len(tabNames)))
+}
+
+// tabSegments lays out the tab labels that fit the frame, left to right.
+//
+// renderTabBar draws these and tabAtX hit-tests them, so what is on screen
+// and what the mouse is measured against are the same numbers rather than
+// two copies of the same arithmetic — which is also why shedding a label
+// here is enough to keep a click accurate.
+//
+// The nine labels are 103 cells wide, so on any frame narrower than that
+// the bar has to shed or it wraps and displaces every row below it. The
+// active tab is always present and the window grows outward from it, right
+// first, so moving along the tabs scrolls the bar rather than jumping it.
 func (a *App) tabSegments() []tabSegment {
+	if len(tabNames) == 0 || a.width <= 0 {
+		return nil
+	}
 	sepW := lipgloss.Width(tabSeparator())
-	segs := make([]tabSegment, 0, len(tabNames))
-	x := tabBarLeadPad
-	for i, name := range tabNames {
-		indicator := "◇"
-		style := theme.StyleTabInactive
-		if Tab(i) == a.activeTab {
-			indicator = "◆"
-			style = theme.StyleTabActive
+	budget := a.width - tabBarLeadPad - lipgloss.Width(tabBarBranding())
+	if budget <= 0 {
+		return nil
+	}
+
+	active := int(a.activeTab)
+	if active < 0 || active >= len(tabNames) {
+		active = 0
+	}
+
+	// Everything fits: no marker to reserve, no window to compute.
+	full := 0
+	for i := range tabNames {
+		if i > 0 {
+			full += sepW
 		}
-		text := style.Render(indicator + " " + name)
+		full += lipgloss.Width(a.tabLabel(i))
+	}
+	lo, hi := 0, len(tabNames)-1
+	if full > budget {
+		// Some labels are hidden, so the count marker has to be paid for.
+		budget -= lipgloss.Width(a.tabOverflowMarker(1))
+		if budget <= 0 {
+			return nil
+		}
+		lo, hi = active, active
+		used := lipgloss.Width(a.tabLabel(active))
+		for used <= budget {
+			grew := false
+			if hi+1 < len(tabNames) {
+				if w := used + sepW + lipgloss.Width(a.tabLabel(hi+1)); w <= budget {
+					hi, used, grew = hi+1, w, true
+				}
+			}
+			if lo-1 >= 0 {
+				if w := used + sepW + lipgloss.Width(a.tabLabel(lo-1)); w <= budget {
+					lo, used, grew = lo-1, w, true
+				}
+			}
+			if !grew {
+				break
+			}
+		}
+		if used > budget {
+			// Not even the active label fits; cut it to the budget so the
+			// bar is short rather than wrapped.
+			return []tabSegment{{
+				tab:   Tab(active),
+				text:  format.Truncate(a.tabLabel(active), budget),
+				start: tabBarLeadPad,
+				width: budget,
+			}}
+		}
+	}
+
+	segs := make([]tabSegment, 0, hi-lo+1)
+	x := tabBarLeadPad
+	for i := lo; i <= hi; i++ {
+		text := a.tabLabel(i)
 		w := lipgloss.Width(text)
-		segs = append(segs, tabSegment{text: text, start: x, width: w})
+		segs = append(segs, tabSegment{tab: Tab(i), text: text, start: x, width: w})
 		x += w + sepW
 	}
 	return segs
@@ -1253,14 +1341,23 @@ func (a *App) renderTabBar() string {
 	}
 
 	bar := theme.StyleTabBar.Render(format.Spaces(tabBarLeadPad)) + strings.Join(parts, tabSeparator())
+	if len(segs) < len(tabNames) {
+		if marker := a.tabOverflowMarker(len(segs)); lipgloss.Width(bar)+lipgloss.Width(marker) <= a.width {
+			bar += marker
+		}
+	}
 
-	// Right side: the degraded-config marker rides alongside the
-	// branding so the warning is on every tab, not only the tabs whose
-	// content happens to mention it. It is dropped rather than allowed
-	// to push the bar past the frame — the notice row below carries the
-	// same warning and is never dropped.
+	// Right side: the branding, and ahead of it the degraded-config
+	// marker so the warning is on every tab rather than only the tabs
+	// whose content happens to mention it. Each is added only if it fits
+	// — the notice row below carries the same warning and is never
+	// dropped, and a frame too narrow for the branding is too narrow to
+	// spend cells on it.
 	barW := lipgloss.Width(bar)
-	right := theme.StyleBranding.Render("▸ mkt ")
+	right := ""
+	if branding := tabBarBranding(); barW+lipgloss.Width(branding) <= a.width {
+		right = branding
+	}
 	if a.configStatus.Degraded {
 		marker := lipgloss.NewStyle().
 			Background(theme.ColorTabBg).
@@ -1274,14 +1371,27 @@ func (a *App) renderTabBar() string {
 
 	pad := a.width - barW - lipgloss.Width(right)
 	filler := theme.StyleTabBar.Render(format.Spaces(pad))
-	return lipgloss.JoinHorizontal(lipgloss.Top, bar, filler, right)
+	// The bar is the topmost row; a wrap here displaces every row below
+	// it, so the width is enforced rather than assumed.
+	return format.Truncate(lipgloss.JoinHorizontal(lipgloss.Top, bar, filler, right), a.width)
+}
+
+// clampLines cuts every line of a block to width. lipgloss word-wraps what
+// it cannot fit, which at a very narrow frame still emits a line wider than
+// the frame when a single word cannot be broken.
+func clampLines(block string, width int) string {
+	lines := strings.Split(block, "\n")
+	for i, line := range lines {
+		lines[i] = format.Truncate(line, width)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // tabAtX returns which tab index was clicked at the given X coordinate, or -1.
 func (a *App) tabAtX(x int) Tab {
-	for i, s := range a.tabSegments() {
+	for _, s := range a.tabSegments() {
 		if x >= s.start && x < s.start+s.width {
-			return Tab(i)
+			return s.tab
 		}
 	}
 	return -1

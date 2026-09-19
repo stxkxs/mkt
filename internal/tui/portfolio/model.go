@@ -3,6 +3,7 @@ package portfolio
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -188,7 +189,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 	case tea.MouseClickMsg:
 		p := m.activePortfolio()
-		if len(p.Holdings) == 0 {
+		// A frame too narrow for the table draws no rows, so a click
+		// there names nothing: the row arithmetic below would map it to
+		// a holding that is not on screen.
+		if len(p.Holdings) == 0 || m.layout() == nil {
 			return m, nil
 		}
 		row := msg.Y - headerLines
@@ -241,6 +245,173 @@ func (m Model) viewportStart(p portfolio.Portfolio, s portfolio.Summary) int {
 	return format.ViewportStart(m.cursor, len(s.Positions), m.visibleRows(p, s))
 }
 
+// tableGutter is the cursor column every row of the table draws before
+// its first data column.
+const tableGutter = 2
+
+// columnPlan is the holdings table's geometry and the only place it is
+// written down: the header, both row shapes and the too-narrow check all
+// read one fit of this plan, so a column can not be one width in the
+// header and another in the rows it labels.
+//
+// symbol holds eight cells because a Coinbase pair is eight (LINK-USD),
+// and a ticker with a cell cut off names a different instrument. name
+// carries the table's only prose, so it both absorbs a wide frame's
+// slack and is the first column a narrow frame sheds.
+//
+// pnl wants the cells a whole figure takes with its percentage attached
+// (-1234567.89 (-1234.5%)). A narrower want is not a narrower cell: name
+// is the only Flex column, so every cell a wide frame does not give pnl
+// is spent padding prose, while the P&L cell compresses a figure it had
+// the room to print.
+func columnPlan() []format.Col {
+	return []format.Col{
+		{Key: "symbol", Width: 8, Min: 6, Prio: 7},
+		{Key: "name", Width: 22, Min: 8, Prio: 1, Flex: true},
+		{Key: "qty", Width: 10, Min: 8, Prio: 3},
+		{Key: "cost", Width: 10, Min: 8, Prio: 2},
+		{Key: "price", Width: 12, Min: 8, Prio: 4},
+		{Key: "value", Width: 12, Min: 10, Prio: 5},
+		{Key: "pnl", Width: 22, Min: 10, Prio: 6},
+	}
+}
+
+// headerLabels names each column of columnPlan. A label is budgeted
+// against its column like any other cell.
+var headerLabels = map[string]string{
+	"symbol": "SYMBOL",
+	"name":   "NAME",
+	"qty":    "QTY",
+	"cost":   "COST",
+	"price":  "PRICE",
+	"value":  "VALUE",
+	"pnl":    "P&L",
+}
+
+// layout fits the plan to the frame. A nil layout means not even the
+// symbol column fits, which is the signal to print the too-narrow line
+// instead of a partial table.
+func (m Model) layout() format.Layout {
+	return format.Fit(columnPlan(), m.width, tableGutter)
+}
+
+// cell renders text into exactly w display cells: truncated to the
+// column first, so a value can never be wider than the column it sits
+// in, then padded. Numeric columns are flushed right so digits line up
+// down the table; symbol and name are flushed left.
+//
+// The padding is measured with lipgloss.Width and applied before the
+// caller styles the cell. fmt's width verbs count runes, so they
+// under-budget a wide glyph and count an ANSI escape as content.
+func cell(key, text string, w int) string {
+	text = format.Truncate(text, w)
+	pad := format.Spaces(w - lipgloss.Width(text))
+	switch key {
+	case "symbol", "name":
+		return text + pad
+	default:
+		return pad + text
+	}
+}
+
+// compactUnits scale a figure too large for its column, largest first.
+var compactUnits = []struct {
+	suffix string
+	div    float64
+}{{"T", 1e12}, {"B", 1e9}, {"M", 1e6}, {"K", 1e3}}
+
+// fitNumber renders v with the most precision that fits w cells: the
+// decimals asked for, then fewer, then a scaled suffix, then an
+// exponent. A number is a value rather than prose — an ellipsis in a
+// price reads as a different price — so a cramped cell spends precision
+// instead of digits, and the result is never wider than w.
+func fitNumber(v float64, decimals, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	for d := decimals; d >= 0; d-- {
+		if s := strconv.FormatFloat(v, 'f', d, 64); lipgloss.Width(s) <= w {
+			return s
+		}
+	}
+	abs := math.Abs(v)
+	for _, u := range compactUnits {
+		if abs < u.div {
+			continue
+		}
+		for d := 1; d >= 0; d-- {
+			if s := strconv.FormatFloat(v/u.div, 'f', d, 64) + u.suffix; lipgloss.Width(s) <= w {
+				return s
+			}
+		}
+	}
+	// Past the largest suffix, an exponent is the only form left that
+	// fits a column at all: 1e+30 is five cells where the digits are
+	// thirty-one. Handing those digits back would put the caller's
+	// truncation in the middle of a figure, and a number with its tail
+	// cut off reads as a smaller number rather than as one that did not
+	// fit.
+	for d := 2; d >= 0; d-- {
+		if s := strconv.FormatFloat(v, 'e', d, 64); lipgloss.Width(s) <= w {
+			return s
+		}
+	}
+	return format.Truncate(strconv.FormatFloat(v, 'e', 0, 64), w)
+}
+
+// pnlText renders unrealized P&L into w cells. The percentage is what
+// makes one position's P&L comparable with another's, so the dollar
+// figure spends its precision before the percentage is dropped.
+func pnlText(pnl, pct float64, w int) string {
+	sign := "+"
+	if pnl < 0 {
+		sign = "" // the formatted figure carries its own minus
+	}
+	tail := fmt.Sprintf(" (%s%.1f%%)", sign, pct)
+	if budget := w - lipgloss.Width(tail) - lipgloss.Width(sign); budget >= 3 {
+		if head := fitNumber(pnl, 2, budget); head != "" && lipgloss.Width(sign+head+tail) <= w {
+			return sign + head + tail
+		}
+	}
+	return sign + fitNumber(pnl, 2, w-lipgloss.Width(sign))
+}
+
+// seg is one styled run of a footer line.
+type seg struct {
+	text  string
+	style lipgloss.Style
+}
+
+// footerLine composes a footer row from styled segments within the
+// frame, indented and separated like the table above it. Each segment
+// carries its own color, which rules out truncating the finished line —
+// the escapes would count as content — so the line is measured as plain
+// text and a segment that does not fit whole is dropped along with the
+// ones after it, rather than showing half a figure. The first segment is
+// truncated instead of dropped, so the line always says something.
+func footerLine(width int, segs ...seg) string {
+	var b strings.Builder
+	used := min(tableGutter, max(width, 0))
+	b.WriteString(format.Spaces(used))
+	for i, s := range segs {
+		gap := 0
+		if i > 0 {
+			gap = tableGutter
+		}
+		if used+gap+lipgloss.Width(s.text) > width {
+			if i == 0 {
+				b.WriteString(s.style.Render(format.Truncate(s.text, width-used)))
+			}
+			break
+		}
+		b.WriteString(format.Spaces(gap))
+		b.WriteString(s.style.Render(s.text))
+		used += gap + lipgloss.Width(s.text)
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
 // View renders the portfolio.
 func (m Model) View() string {
 	if m.width <= 0 {
@@ -248,34 +419,52 @@ func (m Model) View() string {
 	}
 
 	if len(m.portfolios) == 0 {
-		return theme.StyleDim.Render("  No portfolios configured.\n  Add portfolios in ~/.config/mkt/config.yaml")
+		return theme.StyleDim.Render(format.Truncate("  No portfolios configured.", m.width)) + "\n" +
+			theme.StyleDim.Render(format.Truncate("  Add portfolios in ~/.config/mkt/config.yaml", m.width))
 	}
 
 	p := m.activePortfolio()
 	var sb strings.Builder
 
-	// Portfolio selector
+	// Title. The name always renders; the switch hint and the equity
+	// sparkline join it only while the frame holds them whole, the hint
+	// first because it names a key binding.
+	title := format.Truncate("  "+p.Name, m.width)
+	used := lipgloss.Width(title)
 	navHint := ""
 	if len(m.portfolios) > 1 {
-		navHint = theme.StyleDim.Render(fmt.Sprintf("  [/]: switch  (%d/%d)", m.activeIdx+1, len(m.portfolios)))
+		hint := fmt.Sprintf("  [/]: switch  (%d/%d)", m.activeIdx+1, len(m.portfolios))
+		if used+lipgloss.Width(hint) <= m.width {
+			navHint = theme.StyleDim.Render(hint)
+			used += lipgloss.Width(hint)
+		}
 	}
-
-	// Equity curve sparkline (the numeric risk stats live in the footer)
 	curveHint := ""
 	if marks := m.equity[p.Name]; len(marks) >= 2 {
-		curveHint = "  " + theme.StyleDim.Render(sparkline(portfolio.MarkValues(marks), 24))
+		curve := sparkline(portfolio.MarkValues(marks), 24)
+		if used+tableGutter+lipgloss.Width(curve) <= m.width {
+			curveHint = format.Spaces(tableGutter) + theme.StyleDim.Render(curve)
+		}
 	}
-	sb.WriteString(styleLabel.Render(fmt.Sprintf("  %s", p.Name)) + curveHint + navHint + "\n")
+	sb.WriteString(styleLabel.Render(title) + curveHint + navHint + "\n")
 
 	if len(p.Holdings) == 0 {
-		sb.WriteString(theme.StyleDim.Render("  No holdings in this portfolio.\n"))
+		sb.WriteString(theme.StyleDim.Render(format.Truncate("  No holdings in this portfolio.", m.width)) + "\n")
+		return sb.String()
+	}
+
+	cols := m.layout()
+	if cols == nil {
+		sb.WriteString(theme.StyleDim.Render(format.Truncate("  Terminal too small for holdings", m.width)))
 		return sb.String()
 	}
 
 	// Header
-	header := fmt.Sprintf("  %-6s %-22s %10s %10s %12s %12s %10s",
-		"SYMBOL", "NAME", "QTY", "COST", "PRICE", "VALUE", "P&L")
-	sb.WriteString(theme.StyleHeader.Render(header))
+	labels := make([]string, 0, len(cols))
+	for _, c := range cols {
+		labels = append(labels, cell(c.Key, headerLabels[c.Key], c.Width))
+	}
+	sb.WriteString(theme.StyleHeader.Render(format.Spaces(tableGutter) + strings.Join(labels, " ")))
 	sb.WriteString("\n")
 	sb.WriteString(theme.StyleBorderChar.Render(format.Repeat("─", m.width)))
 	sb.WriteString("\n")
@@ -289,7 +478,7 @@ func (m Model) View() string {
 	}
 
 	for i := startIdx; i < endIdx; i++ {
-		m.renderPosition(&sb, summary.Positions[i], i == m.cursor)
+		m.renderPosition(&sb, cols, summary.Positions[i], i == m.cursor)
 	}
 
 	// Total row
@@ -300,33 +489,33 @@ func (m Model) View() string {
 		totalPnlStyle = theme.StyleDown
 		totalSign = ""
 	}
-	sb.WriteString(fmt.Sprintf("  %s  %s  %s\n",
-		styleTotal.Render(fmt.Sprintf("Total Cost: $%.2f", summary.TotalCost)),
-		styleTotal.Render(fmt.Sprintf("Value: $%.2f", summary.TotalValue)),
-		totalPnlStyle.Bold(true).Render(fmt.Sprintf("P&L: %s$%.2f (%s%.1f%%)",
-			totalSign, summary.TotalPnL, totalSign, summary.TotalPnLPct)),
+	sb.WriteString(footerLine(m.width,
+		seg{fmt.Sprintf("Total Cost: $%.2f", summary.TotalCost), styleTotal},
+		seg{fmt.Sprintf("Value: $%.2f", summary.TotalValue), styleTotal},
+		seg{fmt.Sprintf("P&L: %s$%.2f (%s%.1f%%)",
+			totalSign, summary.TotalPnL, totalSign, summary.TotalPnLPct), totalPnlStyle.Bold(true)},
 	))
 
 	// Coverage: the totals above cover priced holdings only, so say so
 	// rather than letting a fabricated break-even row pass for a real
 	// position folded into the total.
 	if !summary.FullyPriced() {
-		sb.WriteString(fmt.Sprintf("  %s\n", styleUnknown.Render(fmt.Sprintf(
+		sb.WriteString(footerLine(m.width, seg{fmt.Sprintf(
 			"%d of %d holdings not quoted (%s) — totals cover %.0f%% of cost basis",
 			len(summary.Unpriced), len(summary.Positions),
 			format.Truncate(strings.Join(summary.Unpriced, ", "), 40),
 			summary.Coverage()*100,
-		))))
+		), styleUnknown}))
 	}
 
 	// Risk metrics over the recorded equity curve.
 	if marks := m.equity[p.Name]; len(marks) >= 2 {
 		st := portfolio.StatsFromMarks(marks, 0)
-		sb.WriteString(fmt.Sprintf("  %s\n", theme.StyleDim.Render(fmt.Sprintf(
+		sb.WriteString(footerLine(m.width, seg{fmt.Sprintf(
 			"Sharpe %s   Sortino %s   Vol %s   MaxDD %.2f%%   %s   (%d marks)",
 			ratio(st.Sharpe), ratio(st.Sortino), pct(st.Volatility*100),
 			st.MaxDrawdown*100, m.betaLabel(p.Name), st.Marks,
-		))))
+		), theme.StyleDim}))
 	}
 
 	if len(p.Transactions) > 0 {
@@ -341,16 +530,16 @@ func (m Model) View() string {
 		if p.TaxMethod != portfolio.TaxAverage {
 			label = fmt.Sprintf("Realized (%s)", strings.ToUpper(string(p.TaxMethod)))
 		}
-		sb.WriteString(fmt.Sprintf("  %s\n",
-			realizedStyle.Bold(true).Render(fmt.Sprintf("%s: %s$%.2f", label, realizedSign, realized)),
-		))
+		sb.WriteString(footerLine(m.width, seg{
+			fmt.Sprintf("%s: %s$%.2f", label, realizedSign, realized), realizedStyle.Bold(true),
+		}))
 
 		divTotal := portfolio.Dividends(p.Transactions)
 		if divTotal > 0 {
 			ytd := portfolio.DividendsYTD(p.Transactions, time.Now())
-			sb.WriteString(fmt.Sprintf("  %s\n",
-				theme.StyleUp.Bold(true).Render(fmt.Sprintf("Dividends: $%.2f  (YTD: $%.2f)", divTotal, ytd)),
-			))
+			sb.WriteString(footerLine(m.width, seg{
+				fmt.Sprintf("Dividends: $%.2f  (YTD: $%.2f)", divTotal, ytd), theme.StyleUp.Bold(true),
+			}))
 		}
 	}
 
@@ -361,41 +550,47 @@ func (m Model) View() string {
 // dash for price and value and is marked "not quoted": its P&L is zero
 // only because there was no quote, and rendering that as a break-even
 // row is indistinguishable from a position that really has not moved.
-func (m Model) renderPosition(sb *strings.Builder, pos portfolio.Position, selected bool) {
-	cursor := "  "
+func (m Model) renderPosition(sb *strings.Builder, cols format.Layout, pos portfolio.Position, selected bool) {
+	cursor := format.Spaces(tableGutter)
 	if selected {
 		cursor = theme.StyleCursorGutter.Render("▎") + " "
 	}
 
-	name := format.Truncate(pos.Name, 22)
-	head := fmt.Sprintf("%s%s %s %s %s",
-		cursor,
-		theme.StyleSymbol.Render(fmt.Sprintf("%-6s", pos.Symbol)),
-		theme.StyleDim.Render(fmt.Sprintf("%-22s", name)),
-		theme.StyleVal.Render(fmt.Sprintf("%10.4f", pos.Quantity)),
-		theme.StyleVal.Render(fmt.Sprintf("%10.2f", pos.CostBasis)),
-	)
-
-	if !pos.Priced {
-		sb.WriteString(fmt.Sprintf("%s %s %s %s\n", head,
-			theme.StyleNeutral.Render(fmt.Sprintf("%12s", "—")),
-			theme.StyleNeutral.Render(fmt.Sprintf("%12s", "—")),
-			styleUnknown.Render("not quoted"),
-		))
-		return
+	cells := make([]string, 0, len(cols))
+	for _, c := range cols {
+		var text string
+		style := theme.StyleVal
+		switch c.Key {
+		case "symbol":
+			text, style = pos.Symbol, theme.StyleSymbol
+		case "name":
+			text, style = pos.Name, theme.StyleDim
+		case "qty":
+			text = fitNumber(pos.Quantity, 4, c.Width)
+		case "cost":
+			text = fitNumber(pos.CostBasis, 2, c.Width)
+		case "price":
+			text, style = "—", theme.StyleNeutral
+			if pos.Priced {
+				text, style = fitNumber(pos.CurrentPrice, 2, c.Width), theme.StyleVal
+			}
+		case "value":
+			text, style = "—", theme.StyleNeutral
+			if pos.Priced {
+				text, style = fitNumber(pos.MarketValue, 2, c.Width), theme.StyleVal
+			}
+		case "pnl":
+			text, style = "not quoted", styleUnknown
+			if pos.Priced {
+				text, style = pnlText(pos.PnL, pos.PnLPct, c.Width), theme.StyleUp
+				if pos.PnL < 0 {
+					style = theme.StyleDown
+				}
+			}
+		}
+		cells = append(cells, style.Render(cell(c.Key, text, c.Width)))
 	}
-
-	pnlStyle := theme.StyleUp
-	sign := "+"
-	if pos.PnL < 0 {
-		pnlStyle = theme.StyleDown
-		sign = ""
-	}
-	sb.WriteString(fmt.Sprintf("%s %s %s %s\n", head,
-		theme.StyleVal.Render(fmt.Sprintf("%12.2f", pos.CurrentPrice)),
-		theme.StyleVal.Render(fmt.Sprintf("%12.2f", pos.MarketValue)),
-		pnlStyle.Render(fmt.Sprintf("%s%.2f (%s%.1f%%)", sign, pos.PnL, sign, pos.PnLPct)),
-	))
+	sb.WriteString(cursor + strings.Join(cells, " ") + "\n")
 }
 
 // betaLabel renders the Beta readout, naming the benchmark so an

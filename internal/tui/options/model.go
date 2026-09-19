@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
 	"github.com/stxkxs/mkt/internal/tui/format"
 	"github.com/stxkxs/mkt/internal/tui/theme"
@@ -109,6 +110,135 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+const (
+	// chainGutter is the cursor column, spent before the first cell.
+	chainGutter = 2
+	// chainSepExtra is what the two " | " frames around Strike cost over
+	// and above the single cell Fit charges between adjacent columns:
+	// 3 cells each, so 4 beyond what the fit accounts for. The tab
+	// reserves them up front — Fit(cols, width-chainSepExtra, chainGutter)
+	// — and composes the frames itself.
+	chainSepExtra = 4
+)
+
+var (
+	chainCallKeys = []string{"call_bid", "call_last", "call_iv"}
+	chainPutKeys  = []string{"put_bid", "put_last", "put_iv"}
+
+	// chainMate binds each column to the one it must shed with.
+	chainMate = map[string]string{
+		"call_bid":  "put_bid",
+		"call_last": "put_last",
+		"call_iv":   "put_iv",
+		"put_bid":   "call_bid",
+		"put_last":  "call_last",
+		"put_iv":    "call_iv",
+	}
+
+	// chainLabels are the header cells, laid out through the same
+	// geometry as a data row. A label is a value like any other: "PUT IV%"
+	// is 7 cells against a floor of 6, and a label wider than its column
+	// overflows the header row exactly as an over-long quote overflows a
+	// data row.
+	chainLabels = map[string]string{
+		"call_bid":  "CALL Bid",
+		"call_last": "Last",
+		"call_iv":   "IV%",
+		"strike":    "Strike",
+		"put_bid":   "Bid",
+		"put_last":  "Last",
+		"put_iv":    "PUT IV%",
+	}
+)
+
+// chainCols is the column plan in table order, and the only place the
+// chain's geometry is written down. A call column and its put
+// counterpart carry the same Prio because the chain is read across
+// Strike: a call quote with no put beside it compares nothing.
+func chainCols() []format.Col {
+	return []format.Col{
+		{Key: "call_bid", Width: 12, Min: 8, Prio: 6},
+		{Key: "call_last", Width: 8, Min: 6, Prio: 4},
+		{Key: "call_iv", Width: 8, Min: 6, Prio: 2},
+		{Key: "strike", Width: 9, Min: 7, Prio: 7}, // the row identifier: highest Prio, so it sheds last
+		{Key: "put_bid", Width: 8, Min: 6, Prio: 6},
+		{Key: "put_last", Width: 8, Min: 6, Prio: 4},
+		{Key: "put_iv", Width: 12, Min: 6, Prio: 2},
+	}
+}
+
+// chainLayout fits the plan to a frame and then enforces the pairing
+// that equal Prio only makes likely: Fit breaks a Prio tie on position,
+// so it sheds one side of a pair a step before the other. Dropping a
+// column only frees cells, so the refit sheds nothing further and the
+// surviving set is the same either way.
+//
+// A nil layout means the frame holds no table at all.
+func chainLayout(width int) format.Layout {
+	cols := chainCols()
+	fitted := format.Fit(cols, width-chainSepExtra, chainGutter)
+	if fitted == nil {
+		return nil
+	}
+
+	kept := make([]format.Col, 0, len(cols))
+	for _, c := range cols {
+		if !fitted.Has(c.Key) {
+			continue
+		}
+		if mate, paired := chainMate[c.Key]; paired && !fitted.Has(mate) {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	if len(kept) == len(fitted) {
+		return fitted
+	}
+	return format.Fit(kept, width-chainSepExtra, chainGutter)
+}
+
+// chainCell renders one value right-aligned in w display cells. A column
+// width is a maximum as much as a minimum: fmt's %Ns pads a short value
+// and writes a long one straight through the column, and nothing
+// downstream clips it. The padding is measured in cells and applied to
+// the raw value, before a style wraps it in escapes a rune count would
+// then charge for.
+func chainCell(s string, w int) string {
+	s = format.Truncate(s, w)
+	return format.Spaces(w-lipgloss.Width(s)) + s
+}
+
+// chainRow lays one row out around Strike, taking each surviving cell
+// from value. lead is the cursor gutter, already styled; it escapes the
+// cell arithmetic because it is never padded to a width.
+func chainRow(l format.Layout, lead string, value func(key string) string) string {
+	var b strings.Builder
+	b.WriteString(lead)
+	if calls := chainSide(l, chainCallKeys, value); calls != "" {
+		b.WriteString(calls)
+		b.WriteString(" | ")
+	}
+	b.WriteString(chainCell(value("strike"), l.Cells("strike")))
+	if puts := chainSide(l, chainPutKeys, value); puts != "" {
+		b.WriteString(" | ")
+		b.WriteString(puts)
+	}
+	return b.String()
+}
+
+// chainSide joins the surviving columns of one block with the single
+// cell Fit charges between adjacent columns.
+func chainSide(l format.Layout, keys []string, value func(key string) string) string {
+	cells := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if !l.Has(k) {
+			continue
+		}
+		cells = append(cells, chainCell(value(k), l.Cells(k)))
+	}
+	return strings.Join(cells, " ")
+}
+
 // View renders the options chain.
 func (m Model) View() string {
 	if m.width <= 0 {
@@ -116,10 +246,16 @@ func (m Model) View() string {
 	}
 	var sb strings.Builder
 
+	// Every chrome line is truncated to the frame for the same reason a
+	// row is: the content panel word-wraps what it cannot fit, and a
+	// wrapped line spends a second row of a height budget that assumes
+	// one display line per row.
+	dim := func(s string) string { return theme.StyleDim.Render(format.Truncate(s, m.width)) }
+
 	if m.symbol == "" {
 		sb.WriteString(theme.SectionHeader("Options", m.width))
 		sb.WriteString("\n\n")
-		sb.WriteString(theme.StyleDim.Render("  Select a symbol on the Watchlist tab and press 'O' to load its options chain."))
+		sb.WriteString(dim("  Select a symbol on the Watchlist tab and press 'O' to load its options chain."))
 		return sb.String()
 	}
 
@@ -134,15 +270,21 @@ func (m Model) View() string {
 	sb.WriteString("\n\n")
 
 	if m.loading {
-		sb.WriteString(theme.StyleDim.Render("  Loading…"))
+		sb.WriteString(dim("  Loading…"))
 		return sb.String()
 	}
 	if m.errMsg != "" {
-		sb.WriteString(theme.StyleDown.Render("  " + m.errMsg))
+		sb.WriteString(theme.StyleDown.Render(format.Truncate("  "+m.errMsg, m.width)))
 		return sb.String()
 	}
 	if len(m.chain.Calls) == 0 && len(m.chain.Puts) == 0 {
-		sb.WriteString(theme.StyleDim.Render("  No options data available."))
+		sb.WriteString(dim("  No options data available."))
+		return sb.String()
+	}
+
+	lay := chainLayout(m.width)
+	if lay == nil {
+		sb.WriteString(dim("  Terminal too small for the options chain."))
 		return sb.String()
 	}
 
@@ -152,8 +294,7 @@ func (m Model) View() string {
 	putsByStrike := indexByStrike(m.chain.Puts)
 
 	// Column header
-	colHdr := fmt.Sprintf("  %12s %8s %8s | %9s | %8s %8s %12s",
-		"CALL Bid", "Last", "IV%", "Strike", "Bid", "Last", "PUT IV%")
+	colHdr := chainRow(lay, format.Spaces(chainGutter), func(k string) string { return chainLabels[k] })
 	sb.WriteString(theme.StyleHeader.Render(colHdr))
 	sb.WriteString("\n")
 	sb.WriteString(theme.StyleBorderChar.Render(format.Repeat("─", m.width)))
@@ -171,16 +312,29 @@ func (m Model) View() string {
 		s := strikes[i]
 		c := callsByStrike[s]
 		p := putsByStrike[s]
-		cursor := "  "
+		lead := format.Spaces(chainGutter)
 		if i == m.cursor {
-			cursor = theme.StyleCursorGutter.Render("▎") + " "
+			lead = theme.StyleCursorGutter.Render("▎") + " "
 		}
-		row := fmt.Sprintf("%s%12s %8s %8s | %9s | %8s %8s %12s",
-			cursor,
-			fmtMoney(c.Bid), fmtMoney(c.Last), fmtPct(c.IV),
-			fmt.Sprintf("$%.2f", s),
-			fmtMoney(p.Bid), fmtMoney(p.Last), fmtPct(p.IV),
-		)
+		row := chainRow(lay, lead, func(k string) string {
+			switch k {
+			case "call_bid":
+				return fmtMoney(c.Bid)
+			case "call_last":
+				return fmtMoney(c.Last)
+			case "call_iv":
+				return fmtPct(c.IV)
+			case "strike":
+				return fmt.Sprintf("$%.2f", s)
+			case "put_bid":
+				return fmtMoney(p.Bid)
+			case "put_last":
+				return fmtMoney(p.Last)
+			case "put_iv":
+				return fmtPct(p.IV)
+			}
+			return ""
+		})
 		sb.WriteString(theme.StyleVal.Render(row))
 		sb.WriteString("\n")
 	}

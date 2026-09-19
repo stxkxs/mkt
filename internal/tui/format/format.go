@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // FormatPrice formats a price with appropriate precision.
@@ -220,35 +220,52 @@ func resample(prices []float64, n int) []float64 {
 }
 
 // Truncate shortens s to at most max display cells, appending "…" when
-// anything was cut. Never splits a multibyte character.
+// anything was cut.
 //
-// Width is measured in cells, not runes: a CJK glyph or an emoji occupies
-// two columns, so a rune count budgets half the space the terminal actually
-// spends and the caller's row overruns its frame. Every caller here is
-// budgeting terminal columns.
+// The budget is display cells and the indivisible piece is the grapheme
+// cluster, not the rune. A CJK glyph spends two cells for one rune, and a
+// base character followed by a variation selector spends two cells across
+// two runes while each rune measures one on its own — so a per-rune tally
+// under-counts an emoji-presentation cluster and the caller's row overruns
+// its frame by the difference. Callers budget terminal columns, so the
+// result is a ceiling.
 func Truncate(s string, max int) string {
 	if max <= 0 {
 		return ""
 	}
-	if lipgloss.Width(s) <= max {
-		return s
+	return cut(s, max, "…")
+}
+
+// Clip shortens s to at most max display cells with no ellipsis, for a
+// fixed grid cell where the marker would cost a column the value needs.
+func Clip(s string, max int) string {
+	if max <= 0 {
+		return ""
 	}
-	// Reserve one cell for the ellipsis, then take runes while they fit.
-	budget := max - 1
-	if budget <= 0 {
-		return "…"
-	}
-	var b strings.Builder
-	used := 0
-	for _, r := range s {
-		w := lipgloss.Width(string(r))
-		if used+w > budget {
-			break
+	return cut(s, max, "")
+}
+
+// cut trims s to max display cells, appending tail when it cuts.
+//
+// ansi.Truncate budgets some grapheme clusters at fewer cells than
+// StringWidth charges for them — a keycap sequence (digit, U+FE0F, U+20E3)
+// is one — and a frame is laid out in StringWidth's cells. The result is
+// re-measured against that metric and re-cut until it fits, so the ceiling
+// holds for free text as well as for tickers. The loop terminates because
+// the budget strictly decreases and stops at one.
+func cut(s string, max int, tail string) string {
+	out := ansi.Truncate(s, max, tail)
+	for budget := max; ansi.StringWidth(out) > max && budget > 1; {
+		budget -= ansi.StringWidth(out) - max
+		if budget < 1 {
+			budget = 1
 		}
-		b.WriteRune(r)
-		used += w
+		out = ansi.Truncate(s, budget, tail)
 	}
-	return b.String() + "…"
+	if ansi.StringWidth(out) > max {
+		return tail
+	}
+	return out
 }
 
 // Repeat returns s repeated n times, clamping a negative count to zero.

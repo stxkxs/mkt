@@ -254,6 +254,12 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.switchGroup(1)
 		}
 	case tea.MouseClickMsg:
+		// The hit-test maps a mouse row straight to a data-row index, so it
+		// only holds while rows are on screen. A frame too narrow for the
+		// table draws none.
+		if m.layout() == nil {
+			return m, nil
+		}
 		row := msg.Y - m.headerLines()
 		if row < 0 {
 			return m, nil
@@ -395,7 +401,79 @@ func (m Model) viewportStart() int {
 	return format.ViewportStart(m.cursor, len(m.symbols), m.visibleRows())
 }
 
-const rangeWidth = 8
+// Column keys. The header, every row and the search view compose by
+// switching on these, so the table's geometry is described once.
+const (
+	colSymbol = "symbol"
+	colPrice  = "price"
+	colChange = "change"
+	colVol    = "vol"
+	colRange  = "range"
+	colTrend  = "trend"
+)
+
+// rowGutter is the cursor column that every row and the header lead with.
+const rowGutter = 2
+
+// columnPlan describes the table to format.Fit. Prio is the shedding
+// order: TREND goes first, then RANGE, VOL and CHANGE, leaving SYMBOL and
+// PRICE — the row identifier and the value being watched — for the
+// narrowest frames that still render a table. VOL and RANGE carry no Min
+// and so are dropped whole rather than squeezed: a volume figure and a
+// glyph bar at half width are not smaller versions of themselves. TREND
+// flexes, so the sparkline takes whatever the other columns leave.
+func columnPlan() []format.Col {
+	return []format.Col{
+		{Key: colSymbol, Width: 12, Min: 6, Prio: 6},
+		{Key: colPrice, Width: 12, Min: 8, Prio: 5},
+		{Key: colChange, Width: 10, Min: 8, Prio: 4},
+		{Key: colVol, Width: 8, Prio: 3},
+		{Key: colRange, Width: 8, Prio: 2},
+		{Key: colTrend, Width: 20, Min: 8, Prio: 1, Flex: true},
+	}
+}
+
+// layout fits the plan to the frame. A nil Layout means not even the
+// symbol column fits, and the view prints its too-narrow line instead of
+// a partial table.
+func (m Model) layout() format.Layout {
+	return format.Fit(columnPlan(), m.width, rowGutter)
+}
+
+// cell pads s to exactly w display cells, truncating first so a column
+// width is a ceiling as well as a floor. Padding happens before styling:
+// fmt's width verbs count runes rather than cells, and count an ANSI
+// escape as runes, which silently grows a styled cell past its column.
+func cell(s string, w int, alignRight bool) string {
+	s = format.Truncate(s, w)
+	pad := format.Spaces(w - lipgloss.Width(s))
+	if alignRight {
+		return pad + s
+	}
+	return s + pad
+}
+
+// headerRow renders the column header from the same Layout the rows use.
+func headerRow(lay format.Layout) string {
+	cells := make([]string, 0, len(lay))
+	for _, c := range lay {
+		switch c.Key {
+		case colSymbol:
+			cells = append(cells, cell("SYMBOL", c.Width, false))
+		case colPrice:
+			cells = append(cells, cell("PRICE", c.Width, true))
+		case colChange:
+			cells = append(cells, cell("CHANGE", c.Width, true))
+		case colVol:
+			cells = append(cells, cell("VOL", c.Width, true))
+		case colRange:
+			cells = append(cells, cell("RANGE", c.Width, true))
+		case colTrend:
+			cells = append(cells, cell("TREND", c.Width, false))
+		}
+	}
+	return theme.StyleHeader.Render(format.Spaces(rowGutter) + strings.Join(cells, " "))
+}
 
 // View renders the watchlist.
 func (m Model) View() string {
@@ -403,33 +481,26 @@ func (m Model) View() string {
 		return ""
 	}
 
-	sparkWidth := 20
+	lay := m.layout()
+	if lay == nil {
+		return theme.StyleDim.Render(format.Truncate("  Terminal too small for the watchlist.", m.width))
+	}
+
 	var sb strings.Builder
 
 	// Search mode: show filtered results
 	if m.searching {
-		return m.viewSearch(sparkWidth)
+		return m.viewSearch(lay)
 	}
 
 	// Hint line: group switcher and/or active sort mode.
 	if m.showHintLine() {
-		sb.WriteString("  ")
-		if len(m.groups) > 1 {
-			sb.WriteString(theme.StyleAccentText(m.ActiveGroupName()))
-			sb.WriteString(theme.StyleDim.Render(fmt.Sprintf("  [/]: switch  (%d/%d)", m.activeIdx+1, len(m.groups))))
-		}
-		if m.sortMode != sortConfig {
-			sb.WriteString(theme.StyleDim.Render("  sort: "))
-			sb.WriteString(theme.StyleAccentText(m.sortMode.String() + " ↓"))
-			sb.WriteString(theme.StyleDim.Render("  s: cycle"))
-		}
+		sb.WriteString(m.hintLine())
 		sb.WriteString("\n")
 	}
 
 	// Header
-	header := fmt.Sprintf("  %-12s %12s %10s %8s %*s  %-*s",
-		"SYMBOL", "PRICE", "CHANGE", "VOL", rangeWidth, "RANGE", sparkWidth, "TREND")
-	sb.WriteString(theme.StyleHeader.Render(header))
+	sb.WriteString(headerRow(lay))
 	sb.WriteString("\n")
 	sb.WriteString(theme.StyleBorderChar.Render(format.Repeat("─", m.width)))
 	sb.WriteString("\n")
@@ -445,30 +516,60 @@ func (m Model) View() string {
 	// Rows, in display order
 	ord := m.order()
 	for pos := startIdx; pos < endIdx; pos++ {
-		m.renderRow(&sb, ord[pos], pos == m.cursor, sparkWidth)
+		m.renderRow(&sb, ord[pos], pos == m.cursor, lay)
 	}
 
 	return sb.String()
 }
 
-func (m Model) viewSearch(sparkWidth int) string {
+// hintLine renders the group switcher and the active sort mode within the
+// frame. Chrome is budgeted like a row: the content panel word-wraps a
+// line it cannot fit, and a wrapped hint costs a symbol row and shifts
+// every mouse row against the data-row index it maps to.
+func (m Model) hintLine() string {
+	var sb strings.Builder
+	sb.WriteString(format.Spaces(rowGutter))
+	budget := m.width - rowGutter
+	write := func(text string, style func(string) string) {
+		if budget <= 0 {
+			return
+		}
+		t := format.Truncate(text, budget)
+		budget -= lipgloss.Width(t)
+		sb.WriteString(style(t))
+	}
+
+	dim := func(s string) string { return theme.StyleDim.Render(s) }
+
+	if len(m.groups) > 1 {
+		write(m.ActiveGroupName(), theme.StyleAccentText)
+		write(fmt.Sprintf("  [/]: switch  (%d/%d)", m.activeIdx+1, len(m.groups)), dim)
+	}
+	if m.sortMode != sortConfig {
+		write("  sort: ", dim)
+		write(m.sortMode.String()+" ↓", theme.StyleAccentText)
+		write("  s: cycle", dim)
+	}
+	return sb.String()
+}
+
+func (m Model) viewSearch(lay format.Layout) string {
 	var sb strings.Builder
 
-	// Search prompt
-	sb.WriteString(styleSearch.Render(fmt.Sprintf("  / %s", m.searchQuery)))
+	// Search prompt, clipped so the caret still lands inside the frame.
+	prompt := format.Truncate("  / "+m.searchQuery, m.width-1)
+	sb.WriteString(styleSearch.Render(prompt))
 	sb.WriteString(theme.StyleDim.Render("_"))
 	sb.WriteString("\n")
 
 	// Header
-	header := fmt.Sprintf("  %-12s %12s %10s %8s %*s  %-*s",
-		"SYMBOL", "PRICE", "CHANGE", "VOL", rangeWidth, "RANGE", sparkWidth, "TREND")
-	sb.WriteString(theme.StyleHeader.Render(header))
+	sb.WriteString(headerRow(lay))
 	sb.WriteString("\n")
 	sb.WriteString(theme.StyleBorderChar.Render(format.Repeat("─", m.width)))
 	sb.WriteString("\n")
 
 	if len(m.filtered) == 0 {
-		sb.WriteString(theme.StyleDim.Render("  No matches"))
+		sb.WriteString(theme.StyleDim.Render(format.Truncate("  No matches", m.width)))
 		sb.WriteString("\n")
 		return sb.String()
 	}
@@ -483,96 +584,100 @@ func (m Model) viewSearch(sparkWidth int) string {
 
 	for fi := startIdx; fi < endIdx; fi++ {
 		idx := m.filtered[fi]
-		m.renderRow(&sb, idx, fi == m.filterCur, sparkWidth)
+		m.renderRow(&sb, idx, fi == m.filterCur, lay)
 	}
 
 	return sb.String()
 }
 
-func (m Model) renderRow(sb *strings.Builder, i int, selected bool, sparkWidth int) {
+func (m Model) renderRow(sb *strings.Builder, i int, selected bool, lay format.Layout) {
 	sym := m.symbols[i]
 	q, hasQuote := m.quotes[sym]
 
 	// Cursor indicator
-	cursor := "  "
+	cursor := format.Spaces(rowGutter)
 	if selected {
 		cursor = theme.StyleCursorGutter.Render("▎") + " "
 	}
 
-	// Symbol
-	symStr := theme.StyleSymbol.Render(fmt.Sprintf("%-12s", sym))
-
-	// Price
-	var priceStr, changeStr string
-	var changeStyle lipgloss.Style
-	if hasQuote {
-		priceStr = fmt.Sprintf("%12s", format.FormatPrice(q.Price))
-		sign := "+"
-		if q.ChangePct < 0 {
-			sign = ""
+	cells := make([]string, 0, len(lay))
+	for _, c := range lay {
+		switch c.Key {
+		case colSymbol:
+			cells = append(cells, theme.StyleSymbol.Render(cell(sym, c.Width, false)))
+		case colPrice:
+			price := "—"
+			if hasQuote {
+				price = format.FormatPrice(q.Price)
+			}
+			cells = append(cells, cell(price, c.Width, true))
+		case colChange:
+			cells = append(cells, changeCell(q, hasQuote, c.Width))
+		case colVol:
+			if hasQuote && q.Volume > 0 {
+				cells = append(cells, styleVol.Render(cell(format.FormatVolume(q.Volume), c.Width, true)))
+			} else {
+				cells = append(cells, theme.StyleNeutral.Render(cell("—", c.Width, true)))
+			}
+		case colRange:
+			cells = append(cells, rangeCell(q, hasQuote, c.Width))
+		case colTrend:
+			cells = append(cells, m.trendCell(sym, q, hasQuote, c.Width))
 		}
-		changeStr = fmt.Sprintf("%s%.2f%%", sign, q.ChangePct)
-		if q.ChangePct > 0 {
-			changeStyle = theme.StyleUp
-		} else if q.ChangePct < 0 {
-			changeStyle = theme.StyleDown
-		} else {
-			changeStyle = theme.StyleNeutral
-		}
-	} else {
-		priceStr = fmt.Sprintf("%12s", "—")
-		changeStr = fmt.Sprintf("%10s", "—")
-		changeStyle = theme.StyleNeutral
 	}
 
-	// Volume
-	var volStr string
-	if hasQuote && q.Volume > 0 {
-		volStr = styleVol.Render(fmt.Sprintf("%8s", format.FormatVolume(q.Volume)))
-	} else {
-		volStr = theme.StyleNeutral.Render(fmt.Sprintf("%8s", "—"))
-	}
-
-	// Day Range
-	var rangeStr string
-	if hasQuote && q.High24h > 0 && q.Low24h > 0 {
-		track, markerIdx := format.DayRange(q.Price, q.Low24h, q.High24h, rangeWidth)
-		if markerIdx >= 0 {
-			runes := []rune(track)
-			before := string(runes[:markerIdx])
-			marker := string(runes[markerIdx : markerIdx+1])
-			after := string(runes[markerIdx+1:])
-			rangeStr = styleRangeTrack.Render(before) + styleRangeMark.Render(marker) + styleRangeTrack.Render(after)
-		} else {
-			rangeStr = styleRangeTrack.Render(track)
-		}
-	} else {
-		rangeStr = theme.StyleNeutral.Render(fmt.Sprintf("%*s", rangeWidth, "—"))
-	}
-
-	// Sparkline (braille for higher resolution)
-	prices := m.cache.Prices(sym)
-	spark := format.BrailleSparkline(prices, sparkWidth)
-	// Pad if needed
-	for len(spark) < sparkWidth {
-		spark += " "
-	}
-	var sparkStyled string
-	if hasQuote && q.ChangePct >= 0 {
-		sparkStyled = styleSparkUp.Render(spark)
-	} else {
-		sparkStyled = styleSparkDown.Render(spark)
-	}
-
-	row := fmt.Sprintf("%s%s %s %s %s %s  %s",
-		cursor, symStr, priceStr,
-		changeStyle.Render(fmt.Sprintf("%10s", changeStr)),
-		volStr, rangeStr, sparkStyled)
-
+	row := cursor + strings.Join(cells, " ")
 	if selected {
-		sb.WriteString(theme.StyleCursorRow.Bold(true).Render(row))
-	} else {
-		sb.WriteString(row)
+		row = theme.StyleCursorRow.Bold(true).Render(row)
 	}
+	sb.WriteString(row)
 	sb.WriteString("\n")
+}
+
+// changeCell renders the percentage move, padded to the column before the
+// direction style is applied so one shape serves every path.
+func changeCell(q provider.Quote, hasQuote bool, w int) string {
+	if !hasQuote {
+		return theme.StyleNeutral.Render(cell("—", w, true))
+	}
+	sign := "+"
+	if q.ChangePct < 0 {
+		sign = ""
+	}
+	style := theme.StyleNeutral
+	if q.ChangePct > 0 {
+		style = theme.StyleUp
+	} else if q.ChangePct < 0 {
+		style = theme.StyleDown
+	}
+	return style.Render(cell(fmt.Sprintf("%s%.2f%%", sign, q.ChangePct), w, true))
+}
+
+// rangeCell draws where the price sits between the day's low and high.
+// The track is generated at the column's width, so a squeezed or widened
+// column gets a bar built for it rather than one sliced from another size.
+func rangeCell(q provider.Quote, hasQuote bool, w int) string {
+	if !hasQuote || q.High24h <= 0 || q.Low24h <= 0 {
+		return theme.StyleNeutral.Render(cell("—", w, true))
+	}
+	track, markerIdx := format.DayRange(q.Price, q.Low24h, q.High24h, w)
+	runes := []rune(track)
+	if markerIdx < 0 || markerIdx >= len(runes) {
+		return styleRangeTrack.Render(cell(track, w, false))
+	}
+	return styleRangeTrack.Render(string(runes[:markerIdx])) +
+		styleRangeMark.Render(string(runes[markerIdx])) +
+		styleRangeTrack.Render(string(runes[markerIdx+1:]))
+}
+
+// trendCell renders the sparkline at the column's width. A braille rune is
+// three bytes and one cell, so the cell is measured and padded in cells:
+// format.BrailleSparkline already returns exactly w of them for a
+// non-empty series, and an empty series pads to keep the row's geometry.
+func (m Model) trendCell(sym string, q provider.Quote, hasQuote bool, w int) string {
+	spark := cell(format.BrailleSparkline(m.cache.Prices(sym), w), w, false)
+	if hasQuote && q.ChangePct >= 0 {
+		return styleSparkUp.Render(spark)
+	}
+	return styleSparkDown.Render(spark)
 }

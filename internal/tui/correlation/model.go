@@ -173,13 +173,13 @@ func (m Model) View() string {
 	sb.WriteString("\n\n")
 
 	if len(m.symbols) == 0 {
-		sb.WriteString(theme.StyleDim.Render("  No symbols in watchlist."))
+		sb.WriteString(theme.StyleDim.Render(format.Truncate("  No symbols in watchlist.", m.width)))
 		return sb.String()
 	}
 
 	syms, start := m.window()
 	if len(syms) == 0 {
-		sb.WriteString(theme.StyleDim.Render("  Terminal too small for the matrix."))
+		sb.WriteString(theme.StyleDim.Render(format.Truncate("  Terminal too small for the matrix.", m.width)))
 		return sb.String()
 	}
 
@@ -188,40 +188,53 @@ func (m Model) View() string {
 	// Column header
 	sb.WriteString(format.Spaces(labelWidth))
 	for _, s := range syms {
-		sb.WriteString(theme.StyleDim.Render(fmt.Sprintf("%6s ", trimSym(s))))
+		sb.WriteString(theme.StyleDim.Render(trimSym(s) + " "))
 	}
 	sb.WriteString("\n")
 	for i, row := range syms {
-		sb.WriteString(theme.StyleDim.Render(fmt.Sprintf("%-7s ", trimSym(row))))
+		sb.WriteString(theme.StyleDim.Render(trimSym(row) + "  "))
 		for j := range syms {
 			c := matrix[i][j]
 			cell := "  —  "
 			if !math.IsNaN(c) {
 				cell = fmt.Sprintf("%+.2f", c)
 			}
-			sb.WriteString(colorize(c).Render(fmt.Sprintf("%6s ", cell)))
+			sb.WriteString(colorize(c).Render(fitCell(cell) + " "))
 		}
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
+	// Chrome is budgeted like a row. The panel word-wraps a line it cannot
+	// fit, and a wrapped line costs a row of the matrix and shifts every
+	// row below it.
 	if len(syms) < len(m.symbols) {
-		sb.WriteString(theme.StyleDim.Render(fmt.Sprintf(
+		sb.WriteString(theme.StyleDim.Render(format.Truncate(fmt.Sprintf(
 			"  showing %d-%d of %d symbols  ·  h/l or [/] to scroll, g/G for ends",
-			start+1, start+len(syms), len(m.symbols))))
+			start+1, start+len(syms), len(m.symbols)), m.width)))
 		sb.WriteString("\n")
 	}
-	sb.WriteString(theme.StyleDim.Render("  Positive = green; negative = red; intensity by magnitude."))
+	sb.WriteString(theme.StyleDim.Render(
+		format.Truncate("  Positive = green; negative = red; intensity by magnitude.", m.width)))
 	return sb.String()
 }
 
-// trimSym shortens a symbol to the header cell width without splitting a
-// multibyte character.
+// fitCell right-aligns a matrix value in the grid's cell width, measured
+// in display cells for the same reason trimSym is.
+func fitCell(s string) string {
+	s = format.Clip(s, symWidth)
+	return format.Spaces(symWidth-lipgloss.Width(s)) + s
+}
+
+// trimSym fits a symbol into the header cell, measured in display cells.
+//
+// The matrix is a fixed grid, so every label has to occupy exactly
+// symWidth columns: a rune count would let one CJK ticker or one emoji
+// cluster spend two columns per rune and push the whole row past the
+// frame. The result is padded here rather than by a fmt width verb,
+// because those count runes too.
 func trimSym(s string) string {
-	r := []rune(s)
-	if len(r) > symWidth {
-		return string(r[:symWidth])
-	}
-	return s
+	s = format.Clip(s, symWidth)
+	return s + format.Spaces(symWidth-lipgloss.Width(s))
 }
 
 // colorize maps a correlation value to a styled cell.

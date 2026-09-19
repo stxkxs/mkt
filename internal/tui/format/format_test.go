@@ -181,8 +181,17 @@ func TestTruncateCountsDisplayCells(t *testing.T) {
 	}
 }
 
+// The budget is a ceiling for every input, not only for the ones whose
+// cells a rune tally happens to get right. A keycap sequence (digit,
+// U+FE0F, U+20E3) and an emoji-presentation pair spend two cells across
+// several runes, a ZWJ family spends two across seven, and a skin-tone
+// modifier spends two across two — so the vectors that disagree with a
+// per-rune count are the ones worth holding the ceiling against.
 func TestTruncateNeverExceedsBudget(t *testing.T) {
-	for _, s := range []string{"abcdef", "日本語です", "aあbいc", "🙂🙂🙂", ""} {
+	for _, s := range []string{
+		"abcdef", "日本語です", "aあbいc", "🙂🙂🙂", "",
+		"1️⃣2️⃣3️⃣4️⃣5️⃣", "#️⃣*️⃣#️⃣", "❤️✔️⚠️ℹ️", "👨‍👩‍👧‍👦", "🇺🇸🇯🇵", "👍🏽👍🏿", "e\u0301e\u0301e\u0301",
+	} {
 		for max := range 12 {
 			got := Truncate(s, max)
 			if w := lipgloss.Width(got); w > max {
