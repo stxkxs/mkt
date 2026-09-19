@@ -14,10 +14,10 @@ permissions:
   contents: read
 
 jobs:
-  # mkt ships six cross-platform targets and links a notification stack
-  # (beeep -> go-toast on Windows, systray/esiqveland-notify on Linux,
-  # NSUserNotification on macOS) with real per-OS code paths. Testing only on
-  # Linux leaves two thirds of the release matrix unexercised.
+  # mkt ships six cross-platform targets and picks its desktop notification
+  # helper per GOOS, so the notifier is a distinct code path on each of the
+  # three. Testing only on Linux leaves two thirds of the release matrix
+  # unexercised.
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
