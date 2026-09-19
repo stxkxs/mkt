@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/provider"
 )
@@ -176,6 +178,171 @@ func TestEmptyGroupSurvivesEverySize(t *testing.T) {
 			_ = m.View()
 			m = press(m, "/")
 			_ = m.View()
+		}
+	}
+}
+
+// sweepCache holds enough history for every sweep symbol to draw a
+// sparkline, so the trend column is exercised at its real glyph width.
+func sweepCache(syms []string) *market.Cache {
+	c := market.NewCache(60)
+	for _, s := range syms {
+		for i := range 40 {
+			c.Push(provider.Quote{Symbol: s, Price: float64(100 + i%11), Timestamp: time.Now()})
+		}
+	}
+	return c
+}
+
+// sweepStates returns the watchlist in each state whose chrome differs:
+// the plain table, the sort hint, the group switcher, search with matches
+// and without, and an empty group.
+func sweepStates(w, h int) []Model {
+	syms := []string{"BTC-USD", "AAPL", "FRED:UNRATE", "VERYLONGSYMBOLNAME", "NOQUOTE"}
+	base := New([]Group{
+		{Name: "Crypto and Equities", Symbols: syms},
+		{Name: "Second", Symbols: []string{"AAA"}},
+	}, sweepCache(syms))
+	base.SetSize(w, h)
+	base.UpdateQuote(provider.Quote{Symbol: "BTC-USD", Price: 123456.78, ChangePct: 12.34, Volume: 9876543210, High24h: 130000, Low24h: 120000})
+	base.UpdateQuote(provider.Quote{Symbol: "AAPL", Price: 201.5, ChangePct: -1.25, Volume: 5000000, High24h: 205, Low24h: 199})
+	base.UpdateQuote(provider.Quote{Symbol: "FRED:UNRATE", Price: 4.1, ChangePct: 0, High24h: 4.1, Low24h: 4.1})
+	base.UpdateQuote(provider.Quote{Symbol: "VERYLONGSYMBOLNAME", Price: 0.00001234, ChangePct: -123.456, Volume: 1, High24h: 9, Low24h: 1})
+
+	empty := New(nil, market.NewCache(60))
+	empty.SetSize(w, h)
+
+	search := press(base, "/")
+	long := search
+	for _, k := range "abcdefghijklmnopqrstuvwxyz0123456789" {
+		long = press(long, string(k))
+	}
+	return []Model{
+		base,
+		press(base, "s"),
+		press(base, "]"),
+		press(base, "G"),
+		empty,
+		search,
+		press(search, "a"),
+		press(search, "z"),
+		long,
+	}
+}
+
+// The content panel word-wraps a line it cannot fit: a row that wraps to
+// two screen lines pushes the last row out of the panel and past the
+// status bar, and desynchronizes the click hit-test, which maps a mouse
+// row straight to a data-row index. Every line the watchlist emits —
+// rows, header, rule and chrome alike — stays within the frame it was
+// given.
+func TestEveryLineFitsTheFrame(t *testing.T) {
+	for w := 1; w <= 200; w++ {
+		for _, h := range []int{3, 20} {
+			for state, m := range sweepStates(w, h) {
+				for i, line := range strings.Split(m.View(), "\n") {
+					if got := lipgloss.Width(line); got > w {
+						t.Fatalf("width %d height %d state %d: line %d measures %d cells: %q",
+							w, h, state, i, got, line)
+					}
+				}
+			}
+		}
+	}
+}
+
+// Columns are shed lowest priority first, so a frame too narrow for the
+// whole table loses the sparkline before the price and the price last.
+func TestNarrowFrameShedsColumns(t *testing.T) {
+	cases := []struct {
+		width int
+		want  []string
+		gone  []string
+	}{
+		{100, []string{"SYMBOL", "PRICE", "CHANGE", "VOL", "RANGE", "TREND"}, nil},
+		{53, []string{"SYMBOL", "PRICE", "CHANGE", "VOL", "RANGE", "TREND"}, nil},
+		{52, []string{"SYMBOL", "PRICE", "CHANGE", "VOL", "RANGE"}, []string{"TREND"}},
+		{43, []string{"SYMBOL", "PRICE", "CHANGE", "VOL"}, []string{"RANGE", "TREND"}},
+		{34, []string{"SYMBOL", "PRICE", "CHANGE"}, []string{"VOL", "RANGE", "TREND"}},
+		{20, []string{"SYMBOL", "PRICE"}, []string{"CHANGE", "VOL", "RANGE", "TREND"}},
+	}
+	for _, tc := range cases {
+		m := newTestModel()
+		m.SetSize(tc.width, 20)
+		header := strings.Split(m.View(), "\n")[0]
+		for _, label := range tc.want {
+			if !strings.Contains(header, label) {
+				t.Errorf("width %d: header %q dropped %s", tc.width, header, label)
+			}
+		}
+		for _, label := range tc.gone {
+			if strings.Contains(header, label) {
+				t.Errorf("width %d: header %q still carries %s", tc.width, header, label)
+			}
+		}
+	}
+}
+
+// Below the width that fits the symbol column the tab prints its own
+// too-narrow line, clipped to the frame, instead of a partial table.
+func TestTooNarrowPrintsNoTable(t *testing.T) {
+	m := newTestModel()
+	for w := 1; w < 8; w++ {
+		m.SetSize(w, 20)
+		out := m.View()
+		if strings.Contains(out, "SYMBOL") {
+			t.Errorf("width %d: rendered a table: %q", w, out)
+		}
+		if strings.Contains(out, "\n") {
+			t.Errorf("width %d: too-narrow notice spans rows: %q", w, out)
+		}
+		if got := lipgloss.Width(out); got > w {
+			t.Errorf("width %d: notice measures %d cells: %q", w, got, out)
+		}
+	}
+	m.SetSize(8, 20)
+	if !strings.Contains(m.View(), "SYMBOL") {
+		t.Errorf("width 8 renders no table: %q", m.View())
+	}
+}
+
+// Free text reaches the table from three directions: a symbol carried in
+// from the config watchlist, the group name on the hint line, and the
+// query typed into search. A grapheme cluster spends cells that a rune
+// count does not predict — a keycap sequence spends two across three
+// runes — so the frame guarantee is held against the clusters that
+// disagree with a rune tally rather than against tidy tickers.
+func TestEveryLineFitsTheFrameWithUnicodeFreeText(t *testing.T) {
+	syms := []string{"1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣", "中文中文中文中文", "👨‍👩‍👧‍👦🇺🇸👍🏽", "❤️✔️⚠️ℹ️", "PLAIN", ""}
+	for w := 1; w <= 200; w++ {
+		base := New([]Group{
+			{Name: "1️⃣ 中文 ❤️ named group", Symbols: syms},
+			{Name: "Second", Symbols: []string{"PLAIN"}},
+		}, sweepCache(syms))
+		base.SetSize(w, 20)
+		base.UpdateQuote(provider.Quote{Symbol: syms[0], Price: 123456.78, ChangePct: 12.34, Volume: 9876543210, High24h: 130000, Low24h: 120000})
+		base.UpdateQuote(provider.Quote{Symbol: syms[1], Price: 0.00001234, ChangePct: -123.456, Volume: 1, High24h: 9, Low24h: 1})
+		base.UpdateQuote(provider.Quote{Symbol: syms[3], Price: 4.1, ChangePct: 0, High24h: 4.1, Low24h: 4.1})
+
+		sorted := base
+		sorted.sortMode = sortChange
+
+		search := base
+		search.searching = true
+		search.searchQuery = "1️⃣2️⃣3️⃣❤️中文"
+		search.filtered = search.computeFiltered(search.searchQuery)
+
+		noMatch := base
+		noMatch.searching = true
+		noMatch.searchQuery = "zzqq"
+		noMatch.filtered = noMatch.computeFiltered("zzqq")
+
+		for state, m := range []Model{base, sorted, search, noMatch} {
+			for i, line := range strings.Split(m.View(), "\n") {
+				if got := lipgloss.Width(line); got > w {
+					t.Fatalf("width %d state %d: line %d measures %d cells: %q", w, state, i, got, line)
+				}
+			}
 		}
 	}
 }
