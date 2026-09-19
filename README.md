@@ -536,7 +536,7 @@ claude mcp add --transport stdio mkt -- mkt mcp
 
 ### HTTP data surface (`--listen`)
 
-`--listen` exposes a read-only HTTP API — `/quotes`, `/quotes/{symbol}`, `/alerts` and `/metrics` (any non-loopback bind requires a token). `POST /webhook/tradingview` is **not** mounted unless you also pass `--enable-webhook`, which additionally requires a token even on loopback. `/quotes` carries price, change, and a pre-computed direction; `/metrics` emits per-symbol gauges in Prometheus text format.
+`--listen` exposes a read-only HTTP API — `/quotes`, `/quotes/{symbol}`, `/alerts` and `/metrics` (any non-loopback bind requires a token). `POST /webhook/tradingview` is **not** mounted unless you also pass `--enable-webhook`, which additionally requires a token even on loopback. `/quotes` carries price, change, and a pre-computed direction; `/metrics` emits per-symbol gauges, process counters and duration histograms in Prometheus text format.
 
 ```sh
 mkt --listen 127.0.0.1:9999
@@ -554,9 +554,11 @@ mkt_uptime_seconds 3841.0
 mkt_quote_drops_total 0
 mkt_provider_yahoo_batch_failures_total 0
 mkt_provider_coinbase_ws_reconnects_total 2
+mkt_http_fetch_duration_seconds_bucket{le="0.25"} 32
+mkt_http_fetch_duration_seconds_count 36
 ```
 
-`mkt_quote_drops_total` counts quotes shed by TUI back-pressure — a non-zero and climbing value means the terminal cannot keep up with the feed.
+`mkt_quote_drops_total` counts quotes shed by TUI back-pressure — a non-zero and climbing value means the terminal cannot keep up with the feed. The full series list is in [Reading `/metrics`](#reading-metrics).
 
 **Prometheus / Grafana / Netdata** — point a scrape at it:
 
@@ -630,17 +632,62 @@ runs — copy it before relaunching if you need it.
 
 ### Reading `/metrics`
 
-Served on `--listen` at `/metrics` in Prometheus text format.
+Served on `--listen` at `/metrics` in Prometheus text format. This is every
+series emitted; a name that is not here is not exported.
 
-| Series | What a rising value means |
-| --- | --- |
-| `mkt_quote_drops_total` | The TUI dispatch queue (256) overflowed and shed quotes. The terminal or the SSH link cannot keep up with the tick rate. Alert evaluation is unaffected — it rides the reliable observer path. |
-| `mkt_provider_coinbase_ws_reconnects_total` | The crypto stream is flapping. Each reconnect backs off 1s→30s with jitter, and the delay resets only after a session stays up 60s. |
-| `mkt_provider_yahoo_rate_limited_total` | Yahoo returned 429. A package-wide cooldown honours `Retry-After` before the next request. |
-| `mkt_provider_yahoo_retries_total` | Transient stock-fetch failures being retried. Steady growth with no `batch_failures` is normal. |
-| `mkt_provider_yahoo_batch_failures_total` | A whole batch fetch failed after its retries. Stock prices are stale. |
-| `mkt_quote_age_seconds` | Seconds since the freshest quote. Climbing past a poll interval means the data plane is stalled, not merely quiet. |
-| `mkt_webhook_rejected_total` | Inbound TradingView payloads failing validation — bad token, wrong `Origin`, oversized body, or text carrying control characters. |
+**Market data** — one series per cached symbol, carrying a `symbol` label.
+
+| Series | Type | What it says |
+| --- | --- | --- |
+| `mkt_price` | gauge | Latest price for the symbol. |
+| `mkt_change_pct` | gauge | Percent change for the symbol — 24h for crypto, day for stocks. |
+| `mkt_quote_age_seconds` | gauge | Seconds since that symbol's last quote. Climbing past a poll interval means the data plane is stalled, not merely quiet. A symbol the provider left unstamped is skipped rather than reported as infinitely old. |
+
+**Data-plane back-pressure** — the difference between a quiet feed and a
+wedged one.
+
+| Series | Type | What a rising value means |
+| --- | --- | --- |
+| `mkt_quote_drops_total` | counter | The TUI dispatch queue (256) overflowed and shed quotes. The terminal or the SSH link cannot keep up with the tick rate. Alert evaluation is unaffected — it rides the reliable observer path. |
+| `mkt_observer_backlog_quotes` | gauge | Deepest observer queue. Non-zero means a consumer on the reliable path (alert evaluation) is falling behind; it rises before drops start. |
+| `mkt_observer_drops_total` | counter | An observer let its backlog reach the cap and the oldest quotes were discarded. Any non-zero value costs alert evaluations and means that consumer is wedged. |
+
+**Latency** — histograms, each exposing `_bucket`/`_sum`/`_count`.
+
+| Series | Type | What it says |
+| --- | --- | --- |
+| `mkt_http_fetch_duration_seconds` | histogram | Outbound provider fetches. Buckets run 10ms→30s, so the top ones separate a slow upstream from one the client timeout gave up on. |
+| `mkt_http_post_duration_seconds` | histogram | Outbound notification sends (webhook, ntfy, Pushover). A tail here is what delays the flush on exit. |
+| `mkt_api_request_duration_seconds` | histogram | Inbound handling of every route on this server. Handlers answer from memory, so the buckets start sub-millisecond; a scrape is recorded after it is served and lands in the next one. |
+
+**Provider health.**
+
+| Series | Type | What a rising value means |
+| --- | --- | --- |
+| `mkt_provider_coinbase_ws_reconnects_total` | counter | The crypto stream is flapping. Each reconnect backs off 1s→30s with jitter, and the delay resets only after a session stays up 60s. |
+| `mkt_provider_yahoo_rate_limited_total` | counter | Yahoo returned 429. A package-wide cooldown honours `Retry-After` before the next request. |
+| `mkt_provider_yahoo_retries_total` | counter | Transient stock-fetch failures being retried. Steady growth with no `batch_failures` is normal. |
+| `mkt_provider_yahoo_batch_failures_total` | counter | A whole batch fetch failed after its retries. Stock prices are stale. |
+| `mkt_provider_yahoo_session_init_failures_total` | counter | Yahoo session setup (cookie + crumb) failed, so no batch can be fetched at all. |
+
+**Process and endpoint.**
+
+| Series | Type | What it says |
+| --- | --- | --- |
+| `mkt_uptime_seconds` | gauge | Seconds since this process started serving. |
+| `mkt_symbols_cached` | gauge | Symbols held in the quote cache. |
+| `mkt_alert_rules` | gauge | Configured alert rules, emitted when the alert engine is wired. |
+| `mkt_webhook_accepted_total` | counter | Inbound TradingView payloads injected into the notifier fan-out. |
+| `mkt_webhook_rejected_total` | counter | Inbound TradingView payloads failing validation — bad token, wrong `Origin`, oversized body, or text carrying control characters. |
+
+Yahoo quote polling keeps its own HTTP client so it can read `Retry-After`,
+so its latency is outside `mkt_http_fetch_duration_seconds`. Stock-side
+slowness shows up in the Yahoo counters and in `mkt_quote_age_seconds`
+instead.
+
+Every series is label-free apart from the market-data block's `symbol` and a
+histogram's `le`, so cardinality scales with the watchlist and with nothing
+else.
 
 ### Failure modes
 
@@ -801,7 +848,7 @@ mkt/
 └── internal/
     ├── config/                    # viper load/save ~/.config/mkt/config.yaml, backups, safe-write, diff
     ├── symbol/                    # canonicalization + provider routing (single source of truth)
-    ├── observe/                   # dependency-free counter registry behind /metrics
+    ├── observe/                   # dependency-free metric registry (counters, gauges, histograms) behind /metrics
     ├── httpx/                     # shared HTTP client helpers (timeouts, retries, rate limits)
     ├── provider/
     │   ├── provider.go            # QuoteProvider, HistoryProvider interfaces

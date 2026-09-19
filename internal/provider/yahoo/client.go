@@ -19,8 +19,10 @@ import (
 
 // Pacing counters surfaced on /metrics.
 var (
-	rateLimited = observe.NewCounter("mkt_provider_yahoo_rate_limited_total")
-	retries     = observe.NewCounter("mkt_provider_yahoo_retries_total")
+	rateLimited = observe.NewCounter("mkt_provider_yahoo_rate_limited_total",
+		"Yahoo responses carrying HTTP 429, each starting a package-wide cooldown")
+	retries = observe.NewCounter("mkt_provider_yahoo_retries_total",
+		"Yahoo requests retried after a transient failure")
 )
 
 // Request pacing against Yahoo's public, unauthenticated endpoints.

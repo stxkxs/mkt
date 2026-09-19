@@ -21,8 +21,10 @@ import (
 
 // Provider-level failure counters surfaced on /metrics.
 var (
-	batchFailures   = observe.NewCounter("mkt_provider_yahoo_batch_failures_total")
-	sessionFailures = observe.NewCounter("mkt_provider_yahoo_session_init_failures_total")
+	batchFailures = observe.NewCounter("mkt_provider_yahoo_batch_failures_total",
+		"Yahoo batch quote fetches that failed after their retries, leaving stock prices stale")
+	sessionFailures = observe.NewCounter("mkt_provider_yahoo_session_init_failures_total",
+		"Yahoo session/crumb initialisations that failed")
 )
 
 // Yahoo endpoint bases. Declared as vars (not consts) so tests can point

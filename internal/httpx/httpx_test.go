@@ -124,3 +124,62 @@ func TestStatusErrorBodyIsBounded(t *testing.T) {
 		t.Fatalf("truncation split a rune: %q", se.Body)
 	}
 }
+
+func TestGetRecordsDuration(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	before, beforeSum := getDuration.Count(), getDuration.Sum()
+	if _, err := Get(context.Background(), testClient(), srv.URL, nil); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got := getDuration.Count() - before; got != 1 {
+		t.Errorf("observations recorded by one Get: %d, want 1", got)
+	}
+	if getDuration.Sum() < beforeSum {
+		t.Errorf("duration sum went backwards: %v → %v", beforeSum, getDuration.Sum())
+	}
+}
+
+func TestGetRecordsDurationOnFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	before := getDuration.Count()
+	if _, err := Get(context.Background(), testClient(), srv.URL, nil); err == nil {
+		t.Fatal("Get against a 500 returned no error")
+	}
+	if got := getDuration.Count() - before; got != 1 {
+		t.Errorf("observations recorded by one failed Get: %d, want 1", got)
+	}
+}
+
+func TestPostRecordsDuration(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	before := postDuration.Count()
+	if err := Post(context.Background(), testClient(), srv.URL, nil, []byte("x")); err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if got := postDuration.Count() - before; got != 1 {
+		t.Errorf("observations recorded by one Post: %d, want 1", got)
+	}
+}
+
+func TestDurationSeriesNamesAreStable(t *testing.T) {
+	// These names are documented in the README's metrics table and scraped
+	// by Prometheus; renaming one silently breaks every dashboard reading it.
+	if got := getDuration.Name(); got != "mkt_http_fetch_duration_seconds" {
+		t.Errorf("fetch histogram name = %q", got)
+	}
+	if got := postDuration.Name(); got != "mkt_http_post_duration_seconds" {
+		t.Errorf("post histogram name = %q", got)
+	}
+}

@@ -57,9 +57,25 @@ const (
 // unmounted — a Prometheus alert on a rejection rate needs a series that
 // does not appear out of nowhere.
 var (
-	webhookAccepted = observe.NewCounter("mkt_webhook_accepted_total")
-	webhookRejected = observe.NewCounter("mkt_webhook_rejected_total")
+	webhookAccepted = observe.NewCounter("mkt_webhook_accepted_total",
+		"Inbound TradingView webhooks accepted")
+	webhookRejected = observe.NewCounter("mkt_webhook_rejected_total",
+		"Inbound TradingView webhooks rejected for a bad token, origin, size or payload")
 )
+
+// apiBuckets are the bucket edges, in seconds, for inbound request handling.
+// Every route answers out of memory, so the useful resolution is at the
+// sub-millisecond end and the upper edges exist to catch the two cases that
+// are not instant: a /metrics scrape rendering a large cache, and a client
+// reading its response slowly enough to hold the handler open against the
+// server's 15s write timeout.
+var apiBuckets = []float64{0.00025, 0.001, 0.005, 0.025, 0.1, 0.5, 1, 5}
+
+// requestDuration times inbound request handling. One label-free series
+// covers every route: the endpoint set is fixed and small, and a per-route
+// label would make the series depend on which routes a build mounts.
+var requestDuration = observe.NewHistogram("mkt_api_request_duration_seconds",
+	"Duration of requests served by the read API", apiBuckets)
 
 // Server is a small read-only HTTP frontend.
 type Server struct {
@@ -69,7 +85,6 @@ type Server struct {
 	token          string   // optional bearer token; empty disables auth
 	tokenHash      [32]byte // sha256 of token, compared in constant time
 	webhookEnabled bool     // mount /webhook/tradingview (the inbound injection sink)
-	drops          func() uint64
 	started        time.Time
 	srv            *http.Server
 	webhookLimiter *rate.Limiter
@@ -104,16 +119,6 @@ func (s *Server) WithToken(token string) *Server {
 // the caller is expected to require a token alongside it).
 func (s *Server) WithWebhook(enabled bool) *Server {
 	s.webhookEnabled = enabled
-	return s
-}
-
-// WithDrops attaches a counter for quotes the hub dropped under TUI
-// back-pressure, exported on /metrics as mkt_quote_drops_total. It takes a
-// function rather than the hub itself so this package stays independent of
-// the hub's lifecycle; callers pass market.Hub.Drops. Unset (the default)
-// simply omits the metric.
-func (s *Server) WithDrops(fn func() uint64) *Server {
-	s.drops = fn
 	return s
 }
 
@@ -157,7 +162,19 @@ func (s *Server) handler() http.Handler {
 	if s.webhookEnabled {
 		mux.HandleFunc("/webhook/tradingview", s.auth(s.handleTradingView))
 	}
-	return mux
+	return timed(mux)
+}
+
+// timed records how long a request took, whatever the route and whatever the
+// status. Recording after the handler returns keeps the observation out of
+// the render a /metrics scrape is doing, so a scrape reports the previous
+// request rather than a partial view of itself.
+func timed(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		h.ServeHTTP(w, r)
+		requestDuration.ObserveDuration(time.Since(start))
+	})
 }
 
 // readOnly rejects any verb that is not a read. Without it every route
@@ -368,11 +385,6 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(&sb, "# TYPE mkt_alert_rules gauge\n")
 		fmt.Fprintf(&sb, "mkt_alert_rules %d\n", len(s.engine.Rules()))
 	}
-	if s.drops != nil {
-		fmt.Fprintf(&sb, "# HELP mkt_quote_drops_total Quotes dropped by TUI back-pressure\n")
-		fmt.Fprintf(&sb, "# TYPE mkt_quote_drops_total counter\n")
-		fmt.Fprintf(&sb, "mkt_quote_drops_total %d\n", s.drops())
-	}
 	// Per-symbol market gauges so a Prometheus/Grafana/Netdata can chart
 	// live prices and momentum — not just process health. Symbols are
 	// emitted in sorted order for tidy diffs; the label value is escaped
@@ -415,14 +427,11 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(&sb, "mkt_quote_age_seconds{symbol=\"%s\"} %g\n", g.label, now.Sub(g.q.Timestamp).Seconds())
 		}
 	}
-	// Provider health counters self-registered with the observe package
-	// (yahoo batch + session failures, coinbase WS reconnects, etc.).
-	// Names are emitted in stable lex order so Prometheus diffs stay tidy.
-	snap := observe.Snapshot()
-	for _, name := range observe.SortedNames() {
-		fmt.Fprintf(&sb, "# TYPE %s counter\n", name)
-		fmt.Fprintf(&sb, "%s %d\n", name, snap[name])
-	}
+	// Everything self-registered with the observe package: provider health
+	// counters, the hub's back-pressure series, and the duration histograms.
+	// The registry renders itself in stable lex order, so a series reaches
+	// this endpoint by being constructed and needs no wiring here.
+	sb.WriteString(observe.Text())
 	_, _ = w.Write([]byte(sb.String()))
 }
 
