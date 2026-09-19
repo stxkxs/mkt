@@ -1,8 +1,9 @@
-// Package httpx centralizes the GET → check-status → read-capped-body →
-// decode pattern that every HTTP provider (yahoo, coinbase REST, binance,
-// defillama, news) was hand-rolling. Beyond removing that duplication it
-// caps the response body with an io.LimitReader so a hostile or
-// compromised upstream can't stream an unbounded body into memory.
+// Package httpx is the one GET → check-status → read-capped-body → decode
+// path every HTTP provider (coinbase REST, binance, defillama, fred, news)
+// shares. One path is what makes two properties hold everywhere at once: the
+// response body is capped with an io.LimitReader, so a hostile or compromised
+// upstream cannot stream an unbounded body into memory, and every call is
+// timed into a latency histogram.
 package httpx
 
 import (
@@ -12,8 +13,29 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
+	"github.com/stxkxs/mkt/internal/observe"
 	"github.com/stxkxs/mkt/internal/textsafe"
+)
+
+// networkBuckets are the bucket edges, in seconds, for a call to a public
+// market or notification API. The range starts at 10ms because nothing here
+// is local — a warm connection to a CDN-fronted endpoint is tens of
+// milliseconds at best — and runs to 30s because that is where the callers'
+// client timeouts sit, so the top buckets separate "slow" from "gave up".
+// A finer low end would spend buckets on a region no observation reaches.
+var networkBuckets = []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
+
+// Duration of the two outbound shapes, recorded on both the success and the
+// failure path: a fetch that times out is exactly the observation a latency
+// series exists to show. One series per shape keeps cardinality fixed —
+// per-host or per-symbol labels would grow with the watchlist.
+var (
+	getDuration = observe.NewHistogram("mkt_http_fetch_duration_seconds",
+		"Duration of outbound provider GET requests", networkBuckets)
+	postDuration = observe.NewHistogram("mkt_http_post_duration_seconds",
+		"Duration of outbound notifier POST requests", networkBuckets)
 )
 
 // MaxResponseBytes bounds how much of a response body we will read. All of
@@ -40,6 +62,8 @@ func (e *StatusError) Error() string {
 // its own timeout) and returns the response body capped at
 // MaxResponseBytes. A non-2xx response yields a *StatusError.
 func Get(ctx context.Context, client *http.Client, url string, headers map[string]string) ([]byte, error) {
+	start := time.Now()
+	defer func() { getDuration.ObserveDuration(time.Since(start)) }()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
@@ -73,6 +97,8 @@ func Get(ctx context.Context, client *http.Client, url string, headers map[strin
 // themselves — the URL is the credential for a webhook, and this package
 // cannot tell which caller that applies to.
 func Post(ctx context.Context, client *http.Client, url string, headers map[string]string, body []byte) error {
+	start := time.Now()
+	defer func() { postDuration.ObserveDuration(time.Since(start)) }()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)

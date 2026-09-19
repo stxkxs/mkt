@@ -20,7 +20,8 @@ import (
 )
 
 // Provider-level health counters surfaced on /metrics.
-var wsReconnects = observe.NewCounter("mkt_provider_coinbase_ws_reconnects_total")
+var wsReconnects = observe.NewCounter("mkt_provider_coinbase_ws_reconnects_total",
+	"Coinbase WebSocket reconnects; a climbing value means the stream is flapping")
 
 const (
 	reconnectMin = 1 * time.Second

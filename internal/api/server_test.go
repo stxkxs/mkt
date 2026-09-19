@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -240,7 +241,7 @@ func TestTradingViewBodyTooLarge(t *testing.T) {
 func TestMetricsIncludesRegisteredCounters(t *testing.T) {
 	// Register a counter and bump it; /metrics should emit it in
 	// Prometheus text format with TYPE annotation.
-	c := observe.NewCounter("mkt_test_api_metrics_counter_total")
+	c := observe.NewCounter("mkt_test_api_metrics_counter_total", "test counter")
 	c.Inc()
 	c.Inc()
 
@@ -726,29 +727,129 @@ func TestMetricsIncludesQuoteAge(t *testing.T) {
 	}
 }
 
-func TestMetricsIncludesDropsWhenWired(t *testing.T) {
+// registerHubSeries publishes the hub's back-pressure numbers the way
+// cmd/backend.go does. The wiring lives there; what these tests pin is that
+// a registered func series reaches /metrics under the documented name.
+func registerHubSeries(drops, observerDrops uint64, backlog float64) {
+	observe.RegisterCounterFunc("mkt_quote_drops_total", "test counter", func() uint64 { return drops })
+	observe.RegisterCounterFunc("mkt_observer_drops_total", "test counter", func() uint64 { return observerDrops })
+	observe.RegisterGaugeFunc("mkt_observer_backlog_quotes", "test gauge", func() float64 { return backlog })
+}
+
+func TestMetricsIncludesHubBackPressure(t *testing.T) {
+	registerHubSeries(7, 3, 128)
 	_, s := newTestServer(t)
 	rec := httptest.NewRecorder()
 	s.handleMetrics(rec, httptest.NewRequest("GET", "/metrics", nil))
-	if strings.Contains(rec.Body.String(), "mkt_quote_drops_total") {
-		t.Errorf("drops metric must be absent until wired:\n%s", rec.Body.String())
-	}
-
-	s.WithDrops(func() uint64 { return 7 })
-	rec2 := httptest.NewRecorder()
-	s.handleMetrics(rec2, httptest.NewRequest("GET", "/metrics", nil))
-	for _, want := range []string{"# TYPE mkt_quote_drops_total counter", "mkt_quote_drops_total 7"} {
-		if !strings.Contains(rec2.Body.String(), want) {
-			t.Errorf("metrics missing %q:\n%s", want, rec2.Body.String())
+	body := rec.Body.String()
+	for _, want := range []string{
+		"# TYPE mkt_quote_drops_total counter",
+		"mkt_quote_drops_total 7",
+		"# TYPE mkt_observer_drops_total counter",
+		"mkt_observer_drops_total 3",
+		"# TYPE mkt_observer_backlog_quotes gauge",
+		"mkt_observer_backlog_quotes 128",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q:\n%s", want, body)
 		}
 	}
+}
+
+func TestMetricsEmitsDurationHistograms(t *testing.T) {
+	// Drive a request through the mux so the middleware records one, then
+	// scrape: the histogram must carry every series Prometheus expects of
+	// one, with _count matching the +Inf bucket.
+	_, s := newTestServer(t)
+	h := s.handler()
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/quotes", nil))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		"# TYPE mkt_api_request_duration_seconds histogram",
+		`mkt_api_request_duration_seconds_bucket{le="0.00025"}`,
+		`mkt_api_request_duration_seconds_bucket{le="+Inf"}`,
+		"mkt_api_request_duration_seconds_sum ",
+		"mkt_api_request_duration_seconds_count ",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q:\n%s", want, body)
+		}
+	}
+	series := parsePromText(t, body)
+	inf := series[`mkt_api_request_duration_seconds_bucket{le="+Inf"}`]
+	count := series["mkt_api_request_duration_seconds_count"]
+	if count < 1 {
+		t.Errorf("_count = %v, want at least the one request served before the scrape", count)
+	}
+	if inf != count {
+		t.Errorf("+Inf bucket = %v, _count = %v; they must agree", inf, count)
+	}
+	if sum := series["mkt_api_request_duration_seconds_sum"]; sum < 0 {
+		t.Errorf("_sum = %v, want a non-negative duration total", sum)
+	}
+}
+
+// parsePromText parses a Prometheus text exposition body into a
+// series-name→value map, failing the test on any line that a scraper would
+// reject. It keeps the whole body honest rather than only the lines an
+// assertion names.
+func parsePromText(t *testing.T, body string) map[string]float64 {
+	t.Helper()
+	types := map[string]string{}
+	out := map[string]float64{}
+	for _, line := range strings.Split(strings.TrimSpace(body), "\n") {
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			fields := strings.Fields(line)
+			if len(fields) < 3 || (fields[1] != "TYPE" && fields[1] != "HELP") {
+				t.Errorf("malformed comment line: %q", line)
+				continue
+			}
+			if fields[1] == "TYPE" {
+				if len(fields) != 4 {
+					t.Errorf("malformed TYPE line: %q", line)
+					continue
+				}
+				switch fields[3] {
+				case "counter", "gauge", "histogram", "summary", "untyped":
+					types[fields[2]] = fields[3]
+				default:
+					t.Errorf("unknown metric type in %q", line)
+				}
+			}
+			continue
+		}
+		name, value, ok := strings.Cut(line, " ")
+		if !ok {
+			t.Errorf("sample line without a value: %q", line)
+			continue
+		}
+		v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil {
+			t.Errorf("sample %q carries an unparseable value: %v", line, err)
+			continue
+		}
+		if _, dup := out[name]; dup {
+			t.Errorf("series %q emitted twice in one scrape", name)
+		}
+		out[name] = v
+	}
+	if types["mkt_api_request_duration_seconds"] != "histogram" {
+		t.Errorf("request duration declared as %q, want histogram", types["mkt_api_request_duration_seconds"])
+	}
+	return out
 }
 
 func TestMetricsNamesAreStable(t *testing.T) {
 	// These names are documented in the README and scraped by Prometheus;
 	// renaming one silently breaks every existing dashboard and alert.
+	registerHubSeries(0, 0, 0)
 	_, s := newTestServer(t)
-	s.WithDrops(func() uint64 { return 0 })
 	rec := httptest.NewRecorder()
 	s.handleMetrics(rec, httptest.NewRequest("GET", "/metrics", nil))
 	body := rec.Body.String()
@@ -759,8 +860,11 @@ func TestMetricsNamesAreStable(t *testing.T) {
 		"mkt_change_pct",
 		"mkt_quote_age_seconds",
 		"mkt_quote_drops_total",
+		"mkt_observer_drops_total",
+		"mkt_observer_backlog_quotes",
 		"mkt_webhook_accepted_total",
 		"mkt_webhook_rejected_total",
+		"mkt_api_request_duration_seconds",
 	} {
 		if !strings.Contains(body, name) {
 			t.Errorf("metric %q missing from /metrics:\n%s", name, body)

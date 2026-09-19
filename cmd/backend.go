@@ -15,6 +15,7 @@ import (
 	"github.com/stxkxs/mkt/internal/config"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/news"
+	"github.com/stxkxs/mkt/internal/observe"
 	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider"
 	"github.com/stxkxs/mkt/internal/provider/binance"
@@ -163,14 +164,34 @@ func registerNotifiers(engine *alert.Engine, cfg *config.Config, opts backendOpt
 	}
 }
 
+// registerHubMetrics publishes the hub's back-pressure numbers on /metrics.
+// They are the difference between a quiet feed and a wedged one, and until
+// they are registered they exist only in the hub's own atomics:
+//
+//   - mkt_quote_drops_total — quotes shed by the bounded TUI dispatch;
+//   - mkt_observer_drops_total — quotes discarded because an observer let its
+//     backlog reach the cap, which costs an alert evaluation;
+//   - mkt_observer_backlog_quotes — the deepest observer queue, which rises
+//     before the drops start.
+//
+// The registry reads each one at scrape time, so the hub keeps owning its
+// counters and this stays a wiring statement.
+func registerHubMetrics(hub *market.Hub) {
+	observe.RegisterCounterFunc("mkt_quote_drops_total",
+		"Quotes shed by the bounded TUI dispatch when a consumer fell behind", hub.Drops)
+	observe.RegisterCounterFunc("mkt_observer_drops_total",
+		"Quotes discarded because an observer let its backlog reach the safety valve", hub.ObserverDrops)
+	observe.RegisterGaugeFunc("mkt_observer_backlog_quotes",
+		"Deepest observer queue, which rises when an observer stops keeping up", func() float64 {
+			return float64(hub.ObserverBacklog())
+		})
+}
+
 // startReadAPI starts the read-only HTTP surface when --listen is set. The
 // inbound webhook is mounted only with --enable-webhook and always requires a
 // token; --require-token forces a token even on loopback. Shared by the
 // dashboard/serve backend and the daemon.
-// drops, when non-nil, is exported on /metrics as mkt_quote_drops_total so a
-// wedged TUI consumer is visible to monitoring instead of only to whoever is
-// staring at the terminal.
-func startReadAPI(cmd *cobra.Command, cache *market.Cache, engine *alert.Engine, opts backendOpts, drops func() uint64) (func(), error) {
+func startReadAPI(cmd *cobra.Command, cache *market.Cache, engine *alert.Engine, opts backendOpts) (func(), error) {
 	addr, _ := cmd.Flags().GetString("listen")
 	if addr == "" {
 		return func() {}, nil
@@ -187,7 +208,7 @@ func startReadAPI(cmd *cobra.Command, cache *market.Cache, engine *alert.Engine,
 			return nil, err
 		}
 	}
-	srv := api.New(addr, cache, engine).WithToken(token).WithWebhook(opts.enableWebhook).WithDrops(drops)
+	srv := api.New(addr, cache, engine).WithToken(token).WithWebhook(opts.enableWebhook)
 	_ = srv.Start()
 	fmt.Fprintf(os.Stderr, "api: listening on %s (webhook=%v)\n", addr, opts.enableWebhook)
 	return func() { _ = srv.Shutdown(context.Background()) }, nil
@@ -266,6 +287,7 @@ func setupBackend(opts backendOpts) (*backend, func(), error) {
 	}
 
 	hub := market.NewHub(cache, coinbaseQP, yahooQP)
+	registerHubMetrics(hub)
 
 	portfolios := portfoliosFromConfig(cfg.Portfolios)
 
@@ -589,7 +611,7 @@ func (b *backend) startDataPlane(ctx context.Context) {
 // --require-token opt-in forces a token even on loopback for the read
 // routes (loopback is not a trust boundary on multi-user hosts).
 func (b *backend) startAPIIfRequested(cmd *cobra.Command) (func(), error) {
-	return startReadAPI(cmd, b.cache, b.alertEngine, b.opts, b.hub.Drops)
+	return startReadAPI(cmd, b.cache, b.alertEngine, b.opts)
 }
 
 // pumpStatus forwards one provider's health transitions to every attached
