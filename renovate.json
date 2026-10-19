@@ -1,0 +1,101 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommitsDisabled",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "UTC",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 2,
+  "labels": ["dependencies"],
+  "commitMessagePrefix": "build:",
+  "commitMessageAction": "update",
+  "commitMessageTopic": "{{depName}}",
+  "commitMessageExtra": "to {{newValue}}",
+  "configMigration": true,
+  "dependencyDashboard": true,
+  "dependencyDashboardApproval": false,
+  "lockFileMaintenance": {
+    "enabled": false
+  },
+  "postUpdateOptions": ["gomodTidy"],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": ["at any time"],
+    "labels": ["dependencies", "security"],
+    "minimumReleaseAge": null
+  },
+  "packageRules": [
+    {
+      "description": "A release is left to settle before it is proposed, so a version withdrawn within days of publication is never the one this tree is bumped to. A vulnerability fix overrides this, above.",
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "minimumReleaseAge": "5 days"
+    },
+    {
+      "description": "A major is a breaking line. It waits longer, and it is labeled so it is read before merge.",
+      "matchUpdateTypes": ["major"],
+      "minimumReleaseAge": "21 days",
+      "addLabels": ["major"],
+      "automerge": false
+    },
+    {
+      "description": "Nothing is automerged. This repository has no required status check, so a merge can land before the workflow finishes.",
+      "matchPackageNames": ["*"],
+      "automerge": false
+    },
+    {
+      "description": "The terminal UI is drawn by these modules together and they release in step, so proposing them separately produces a tree that has never been built as a whole.",
+      "groupName": "charm terminal libraries",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["charm.land/**", "github.com/charmbracelet/**"]
+    },
+    {
+      "description": "Actions are pinned to a digest and read only by the pipeline, so a bump is verified by the run that carries it.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions"
+    },
+    {
+      "description": "golangci-lint is named twice in the workflow: the action pin and the version the action runs. The github-actions manager reads the uses line and not the version beneath it, so both move in one pull request.",
+      "groupName": "golangci-lint",
+      "matchPackageNames": ["golangci/golangci-lint-action", "golangci/golangci-lint"]
+    },
+    {
+      "description": "govulncheck decides what the vulnerability job reports, so its own update is read rather than merged unseen.",
+      "groupName": "govulncheck",
+      "matchPackageNames": ["golang.org/x/vuln"],
+      "automerge": false
+    },
+    {
+      "description": "The go line is the toolchain the workflow and the release binaries compile with. A newer release is a compatibility claim, so it is raised deliberately.",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["golang"],
+      "automerge": false,
+      "dependencyDashboardApproval": true
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "The golangci-lint release the workflow tells the action to run.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/ci\\.yml$/"],
+      "matchStrings": [
+        "golangci-lint-action@[0-9a-f]+[^\\n]*\\n\\s*with:\\n\\s*version:\\s*(?<currentValue>v\\S+)"
+      ],
+      "depNameTemplate": "golangci/golangci-lint",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v?(?<version>.*)$"
+    },
+    {
+      "description": "The govulncheck version the vulnerability job installs. It is not a module this binary imports.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/ci\\.yml$/"],
+      "matchStrings": [
+        "golang\\.org/x/vuln/cmd/govulncheck@(?<currentValue>v\\S+?)[\"\\s]"
+      ],
+      "depNameTemplate": "golang.org/x/vuln",
+      "datasourceTemplate": "go"
+    }
+  ]
+}
