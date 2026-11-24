@@ -2,6 +2,7 @@ package alert
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -160,6 +161,34 @@ func TestFullQueueDropsRatherThanBlocking(t *testing.T) {
 	}
 	if got := e.NotifyDrops(); got != overflow {
 		t.Fatalf("NotifyDrops = %d, want %d", got, overflow)
+	}
+}
+
+// TestFailedDeliveryIsCounted: a destination that returns an error is
+// counted separately from a drop, and a healthy sibling is unaffected.
+func TestFailedDeliveryIsCounted(t *testing.T) {
+	e := NewEngine(time.Minute, nil)
+	failing := &recordingNotifier{name: "failing", err: errors.New("503 from destination")}
+	healthy := &recordingNotifier{name: "healthy"}
+	e.AddNotifier(failing)
+	e.AddNotifier(healthy)
+
+	const sent = 3
+	for i := 0; i < sent; i++ {
+		e.Inject(sampleAlert())
+	}
+	if !e.Flush(2 * time.Second) {
+		t.Fatal("notifier queues did not drain")
+	}
+
+	if got := e.NotifyFailures(); got != sent {
+		t.Fatalf("NotifyFailures = %d, want %d", got, sent)
+	}
+	if got := e.NotifyDrops(); got != 0 {
+		t.Fatalf("a refused delivery is a failure, not a drop: NotifyDrops = %d", got)
+	}
+	if got := healthy.count(); got != sent {
+		t.Fatalf("healthy notifier received %d alerts, want %d", got, sent)
 	}
 }
 

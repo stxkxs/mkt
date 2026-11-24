@@ -659,6 +659,13 @@ wedged one.
 | `mkt_observer_backlog_quotes` | gauge | Deepest observer queue. Non-zero means a consumer on the reliable path (alert evaluation) is falling behind; it rises before drops start. |
 | `mkt_observer_drops_total` | counter | An observer let its backlog reach the cap and the oldest quotes were discarded. Any non-zero value costs alert evaluations and means that consumer is wedged. |
 
+**Alert delivery** — what happened to a triggered alert after evaluation.
+
+| Series | Type | What a rising value means |
+| --- | --- | --- |
+| `mkt_alert_notify_drops_total` | counter | A notification was discarded before delivery: its notifier's queue (64) was full or its rate limit was exceeded. The destination is slower than the alerts firing at it. |
+| `mkt_alert_notify_failures_total` | counter | A notifier attempted delivery and the destination refused it, was unreachable, or ran out the 5s send deadline. The error text is in the log. |
+
 **Latency** — histograms, each exposing `_bucket`/`_sum`/`_count`.
 
 | Series | Type | What it says |

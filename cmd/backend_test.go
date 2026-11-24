@@ -12,6 +12,7 @@ import (
 	"github.com/stxkxs/mkt/internal/broadcast"
 	"github.com/stxkxs/mkt/internal/config"
 	"github.com/stxkxs/mkt/internal/market"
+	"github.com/stxkxs/mkt/internal/observe"
 	"github.com/stxkxs/mkt/internal/portfolio"
 	"github.com/stxkxs/mkt/internal/provider"
 	"github.com/stxkxs/mkt/internal/provider/coinbase"
@@ -335,6 +336,50 @@ func TestStartAlertPersistenceDebouncesAndWrites(t *testing.T) {
 			t.Fatalf("rules were never persisted (last read: %v)", rerr)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// An edit made inside the debounce window and followed at once by quitting
+// is written by the final snapshot, and cleanup returns only after it is on
+// disk.
+func TestCleanupWaitsForFinalAlertSave(t *testing.T) {
+	path := writeConfig(t, "watchlist:\n  - AAPL\n")
+
+	b, cleanup, err := setupBackend(backendOpts{noNotify: true, persistAlerts: true})
+	if err != nil {
+		t.Fatalf("setupBackend: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	b.startAlertPersistence(ctx)
+	b.alertEngine.AddRule(alert.Rule{Symbol: "AAPL", Condition: alert.CondAbove, Value: 123, Enabled: true})
+
+	// The surfaces cancel the data plane's context before cleanup runs.
+	cancel()
+	cleanup()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(raw), string(alert.CondAbove)) {
+		t.Fatalf("rule added inside the debounce window was not saved before cleanup returned:\n%s", raw)
+	}
+}
+
+// Notifier outcomes are on /metrics for every surface that builds a backend.
+func TestSetupBackendRegistersAlertMetrics(t *testing.T) {
+	writeConfig(t, "watchlist:\n  - AAPL\n")
+	_, cleanup, err := setupBackend(backendOpts{noNotify: true})
+	if err != nil {
+		t.Fatalf("setupBackend: %v", err)
+	}
+	defer cleanup()
+
+	text := observe.Text()
+	for _, name := range []string{"mkt_alert_notify_drops_total", "mkt_alert_notify_failures_total"} {
+		if !strings.Contains(text, "\n"+name+" ") {
+			t.Errorf("%s missing from the metrics registry", name)
+		}
 	}
 }
 

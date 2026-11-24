@@ -927,8 +927,46 @@ func TestStartAndShutdown(t *testing.T) {
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	// Port 0 resolves at bind time; Addr reports the port actually held,
+	// and the server answers on it as soon as Start returns.
+	if strings.HasSuffix(s.Addr(), ":0") {
+		t.Fatalf("Addr = %q, want the bound port", s.Addr())
+	}
+	resp, err := http.Get("http://" + s.Addr() + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/healthz status %d", resp.StatusCode)
+	}
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Errorf("Shutdown: %v", err)
+	}
+}
+
+// A port another process holds is an error from Start itself, so the caller
+// never reports a listener that does not exist.
+func TestStartReturnsBindError(t *testing.T) {
+	_, first := newTestServer(t)
+	first.addr = "127.0.0.1:0"
+	if err := first.Start(); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	defer func() { _ = first.Shutdown(context.Background()) }()
+
+	_, second := newTestServer(t)
+	second.addr = first.Addr()
+	err := second.Start()
+	if err == nil {
+		_ = second.Shutdown(context.Background())
+		t.Fatalf("Start on %s succeeded while the port was held", first.Addr())
+	}
+	if !strings.Contains(err.Error(), first.Addr()) {
+		t.Errorf("error %q does not name the address", err)
+	}
+	if second.Addr() != first.Addr() {
+		t.Errorf("Addr after a failed bind = %q, want the configured %q", second.Addr(), first.Addr())
 	}
 }
 
@@ -963,6 +1001,11 @@ func TestReadyzReportsWarmingBeforeFirstQuote(t *testing.T) {
 	srv.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("empty cache: got %d, want 503", rec.Code)
+	}
+	// Result carries the header map as it stood at WriteHeader, which is
+	// what a client receives; rec.Header() would show later mutations too.
+	if ct := rec.Result().Header.Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("503 Content-Type = %q, want application/json", ct)
 	}
 
 	cache.Push(provider.Quote{Symbol: "BTC-USD", Price: 100})

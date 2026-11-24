@@ -8,10 +8,12 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -87,6 +89,7 @@ type Server struct {
 	webhookEnabled bool     // mount /webhook/tradingview (the inbound injection sink)
 	started        time.Time
 	srv            *http.Server
+	ln             net.Listener
 	webhookLimiter *rate.Limiter
 }
 
@@ -122,12 +125,19 @@ func (s *Server) WithWebhook(enabled bool) *Server {
 	return s
 }
 
-// Start launches the server in a goroutine. ListenAndServe errors are
-// logged through the caller's logger (best-effort: bind failures are
-// surfaced via stderr).
+// Start binds the listen address and serves on it from a goroutine. The bind
+// happens before Start returns, so an address already in use or a host that
+// does not resolve is the caller's error, not a line printed after the
+// caller has reported the server as up. An error Serve returns after a
+// successful bind goes through the standard logger.
 func (s *Server) Start() error {
+	ln, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return fmt.Errorf("api: listen %s: %w", s.addr, err)
+	}
+	s.ln = ln
 	s.srv = &http.Server{
-		Addr:    s.addr,
+		Addr:    ln.Addr().String(),
 		Handler: s.handler(),
 		// Every handler here is in-memory and answers immediately, so the
 		// timeouts exist purely to reap slow or wedged peers rather than to
@@ -138,12 +148,23 @@ func (s *Server) Start() error {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 16,
 	}
+	srv := s.srv
 	go func() {
-		if err := s.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Fprintf(os.Stderr, "api: listen %s: %v\n", s.addr, err)
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("api: serve %s: %v", ln.Addr(), err)
 		}
 	}()
 	return nil
+}
+
+// Addr reports the address the server is bound to once Start has returned,
+// which differs from the configured address when that names port 0. Before
+// Start it returns the configured address.
+func (s *Server) Addr() string {
+	if s.ln != nil {
+		return s.ln.Addr().String()
+	}
+	return s.addr
 }
 
 // handler builds the route mux. The inbound webhook (alert injection) is
@@ -204,8 +225,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	cached := len(s.cache.Symbols())
 	if cached == 0 {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		writeJSON(w, map[string]any{"status": "warming", "symbols_cached": 0})
+		writeJSONStatus(w, http.StatusServiceUnavailable, map[string]any{"status": "warming", "symbols_cached": 0})
 		return
 	}
 	writeJSON(w, map[string]any{"status": "ready", "symbols_cached": cached})
@@ -436,7 +456,14 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
+	writeJSONStatus(w, http.StatusOK, v)
+}
+
+// writeJSONStatus sets the content type before the status line, because
+// net/http freezes the header map at WriteHeader and drops later changes.
+func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
 

@@ -4,6 +4,37 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+**The minimum Go version is 1.27.4.** It is the first 1.27 release without
+GO-2026-6859 (net/http) and GO-2026-6809 (crypto/x509), both of which
+govulncheck reaches from called code.
+
+### Behavioral changes
+
+- **`--listen` fails at startup when the address cannot be bound.** A port
+  already in use, or a host that does not resolve, is returned as the
+  command's error instead of a line on stderr after `api: listening on …`
+  had already been printed. The listening line names the bound address, so
+  `--listen 127.0.0.1:0` reports the port it took.
+- **Quitting waits for the last alert-rule save.** An alert added, toggled or
+  removed less than the two-second debounce before quitting is written by
+  the shutdown path before the process exits, bounded at three seconds.
+
+### Fixed
+
+- `/readyz` answers its 503 with `Content-Type: application/json`; the header
+  was set after the status line and dropped.
+- Equity-mark and alert-save failures during the dashboard go to `mkt.log`
+  through the standard logger instead of being drawn over the TUI frame.
+- Shutting down the `--listen` server is bounded at five seconds.
+
+### Added
+
+- `mkt_alert_notify_drops_total` and `mkt_alert_notify_failures_total` on
+  `/metrics`: notifications discarded before delivery, and deliveries a
+  destination refused or timed out on.
+
 ## v0.3.0 — 2026-09-19
 
 A quality pass across security, systems, TUI layout and the build gates,

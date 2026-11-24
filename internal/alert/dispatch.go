@@ -61,7 +61,7 @@ func (s *notifierSink) pump() {
 }
 
 // deliver applies the per-notifier rate limit and calls Notify with a
-// deadline. Errors are logged and never propagated — one failing
+// deadline. Errors are logged and counted, never propagated — one failing
 // destination must not affect the others.
 func (s *notifierSink) deliver(a TriggeredAlert) {
 	if !s.limiter.Allow() {
@@ -72,6 +72,7 @@ func (s *notifierSink) deliver(a TriggeredAlert) {
 	ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
 	defer cancel()
 	if err := s.n.Notify(ctx, a); err != nil {
+		s.engine.notifyFailures.Add(1)
 		log.Printf("alert notifier %s: %v", s.n.Name(), err)
 	}
 }
