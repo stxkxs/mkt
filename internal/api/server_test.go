@@ -566,6 +566,32 @@ func TestWebhookCounters(t *testing.T) {
 	}
 }
 
+// A webhook refused for its token is a rejection like any other, while a
+// bad token on a read route is not a webhook event.
+func TestWebhookBadTokenIsCountedAsRejected(t *testing.T) {
+	engine := alert.NewEngine(0, nil)
+	s := New(":0", market.NewCache(60), engine).WithToken("hunter2").WithWebhook(true)
+	mux := s.handler()
+
+	before := webhookRejected.Value()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/webhook/tradingview", strings.NewReader(`{"symbol":"AAPL","price":1}`))
+	req.Header.Set("Authorization", "Bearer wrong")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad token: want 401, got %d", rec.Code)
+	}
+	if got := webhookRejected.Value() - before; got != 1 {
+		t.Errorf("rejected delta after a bad webhook token = %d, want 1", got)
+	}
+
+	before = webhookRejected.Value()
+	mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/quotes", nil))
+	if got := webhookRejected.Value() - before; got != 0 {
+		t.Errorf("a refused read counted as a webhook rejection (delta %d)", got)
+	}
+}
+
 func TestAuthRequiresBearerScheme(t *testing.T) {
 	_, s := newTestServer(t)
 	s.WithToken("hunter2")

@@ -77,6 +77,36 @@ func TestLoadAuthorizedKeysFromFile(t *testing.T) {
 	}
 }
 
+// mkt serve enforces no OpenSSH key option, so a key OpenSSH would restrict
+// must not be admitted here unrestricted.
+func TestLoadAuthorizedKeysRefusesInlineOptions(t *testing.T) {
+	line := `from="10.0.0.0/8" ` + genKeyLine(t)
+	_, err := loadAuthorizedKeys(config.ServeConfig{AuthorizedKeys: []string{line}})
+	if err == nil || !strings.Contains(err.Error(), "not enforced") {
+		t.Fatalf("err = %v, want a refusal naming unenforced options", err)
+	}
+}
+
+func TestLoadAuthorizedKeysFileSkipsOptionedKeys(t *testing.T) {
+	plain, restricted := genKeyLine(t), genKeyLine(t)
+	path := filepath.Join(t.TempDir(), "authorized_keys")
+	body := `command="/usr/bin/git-shell",restrict ` + restricted + "\n" + plain + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := loadAuthorizedKeys(config.ServeConfig{AuthorizedKeysFile: path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("got %d keys, want only the unrestricted one", len(keys))
+	}
+	want, _, _, _, _ := ssh.ParseAuthorizedKey([]byte(plain))
+	if !ssh.KeysEqual(keys[0], want) {
+		t.Error("the admitted key is not the unrestricted one")
+	}
+}
+
 func TestLoadAuthorizedKeysEmptyIsEmpty(t *testing.T) {
 	keys, err := loadAuthorizedKeys(config.ServeConfig{})
 	if err != nil {

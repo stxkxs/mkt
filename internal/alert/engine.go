@@ -282,12 +282,20 @@ func (e *Engine) AddRule(r Rule) {
 	}
 }
 
-// RemoveRule removes a rule by index.
-func (e *Engine) RemoveRule(idx int) {
+// RemoveRule removes the rule with r's identity (symbol, condition, value,
+// period, match and compound sub-conditions; Enabled is not part of it) and
+// reports whether one was found. Callers name a rule rather than a
+// position because the rule list is shared: under `mkt serve` another
+// session can delete or add a rule between the moment a list is read and
+// the moment an edit is applied, and an index read before that change
+// would land on a different rule. When several rules share an identity
+// the first is removed; evaluation cannot tell them apart either.
+func (e *Engine) RemoveRule(r Rule) bool {
 	e.mu.Lock()
-	if idx < 0 || idx >= len(e.rules) {
+	idx := e.indexLocked(r)
+	if idx < 0 {
 		e.mu.Unlock()
-		return
+		return false
 	}
 	e.rules = append(e.rules[:idx], e.rules[idx+1:]...)
 	e.pruneStateLocked()
@@ -296,14 +304,17 @@ func (e *Engine) RemoveRule(idx int) {
 	if fn != nil {
 		fn(rules)
 	}
+	return true
 }
 
-// ToggleRule toggles a rule's enabled state.
-func (e *Engine) ToggleRule(idx int) {
+// ToggleRule flips the enabled state of the rule with r's identity and
+// reports whether one was found. Identity matching follows RemoveRule.
+func (e *Engine) ToggleRule(r Rule) bool {
 	e.mu.Lock()
-	if idx < 0 || idx >= len(e.rules) {
+	idx := e.indexLocked(r)
+	if idx < 0 {
 		e.mu.Unlock()
-		return
+		return false
 	}
 	e.rules[idx].Enabled = !e.rules[idx].Enabled
 	fn, rules := e.onRulesChanged, e.rulesCopyLocked()
@@ -311,6 +322,19 @@ func (e *Engine) ToggleRule(idx int) {
 	if fn != nil {
 		fn(rules)
 	}
+	return true
+}
+
+// indexLocked returns the position of the first rule sharing r's identity,
+// or -1. Caller holds e.mu.
+func (e *Engine) indexLocked(r Rule) int {
+	key := ruleKey(r)
+	for i := range e.rules {
+		if ruleKey(e.rules[i]) == key {
+			return i
+		}
+	}
+	return -1
 }
 
 // Check evaluates all rules against a quote.

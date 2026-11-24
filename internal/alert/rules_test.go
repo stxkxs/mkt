@@ -24,7 +24,7 @@ func TestCooldownSurvivesRuleRemoval(t *testing.T) {
 	}
 
 	// Delete the BTC rule; ETH slides from index 1 to index 0.
-	e.RemoveRule(0)
+	e.RemoveRule(Rule{Symbol: "BTC", Condition: CondAbove, Value: 50000})
 	if got := e.Rules(); len(got) != 1 || got[0].Symbol != "ETH" {
 		t.Fatalf("rules after removal = %+v", got)
 	}
@@ -72,7 +72,7 @@ func TestRemoveRuleDropsItsState(t *testing.T) {
 	// Deleting and re-adding is the user asking for a clean slate: the
 	// re-added rule re-establishes its baseline instead of inheriting a
 	// cooldown it never earned.
-	e.RemoveRule(0)
+	e.RemoveRule(r)
 	e.AddRule(r)
 	e.Check(provider.Quote{Symbol: "BTC", Price: 51000})
 	if len(*fired) != 1 {
@@ -125,8 +125,8 @@ func TestOnRulesChangedFiresForEveryMutation(t *testing.T) {
 
 	e.AddRule(Rule{Symbol: "BTC", Condition: CondAbove, Value: 50000, Enabled: true})
 	e.AddRule(Rule{Symbol: "ETH", Condition: CondBelow, Value: 3000, Enabled: true})
-	e.ToggleRule(0)
-	e.RemoveRule(1)
+	e.ToggleRule(Rule{Symbol: "BTC", Condition: CondAbove, Value: 50000})
+	e.RemoveRule(Rule{Symbol: "ETH", Condition: CondBelow, Value: 3000})
 
 	if len(snapshots) != 4 {
 		t.Fatalf("expected 4 hook invocations, got %d", len(snapshots))
@@ -152,15 +152,50 @@ func TestOnRulesChangedNotFiredBySetRules(t *testing.T) {
 	}
 }
 
-func TestMutationsOutOfRangeAreNoops(t *testing.T) {
+// An edit names its rule, so a rule list that changed underneath the caller
+// (another `mkt serve` session deleting the rule above) cannot redirect it.
+func TestRemoveRuleTargetsIdentityNotPosition(t *testing.T) {
+	e := NewEngine(time.Hour, nil)
+	btc := Rule{Symbol: "BTC", Condition: CondAbove, Value: 50000, Enabled: true}
+	eth := Rule{Symbol: "ETH", Condition: CondBelow, Value: 3000, Enabled: true}
+	sol := Rule{Symbol: "SOL", Condition: CondAbove, Value: 200, Enabled: true}
+	e.SetRules([]Rule{btc, eth, sol})
+
+	// A session read the list with ETH at index 1; another deletes BTC.
+	e.RemoveRule(btc)
+	// The first session's delete still removes ETH, not SOL.
+	if !e.RemoveRule(eth) {
+		t.Fatal("RemoveRule(eth) found no match")
+	}
+	got := e.Rules()
+	if len(got) != 1 || got[0].Symbol != "SOL" {
+		t.Fatalf("rules = %+v, want only SOL", got)
+	}
+
+	// Toggle matches regardless of the Enabled value the caller holds.
+	stale := sol
+	stale.Enabled = false
+	if !e.ToggleRule(stale) {
+		t.Fatal("ToggleRule did not match a rule differing only in Enabled")
+	}
+	if e.Rules()[0].Enabled {
+		t.Error("SOL should be disabled after the toggle")
+	}
+}
+
+func TestMutationsOfAbsentRulesAreNoops(t *testing.T) {
 	e := NewEngine(time.Hour, nil)
 	var calls int
 	e.SetOnRulesChanged(func([]Rule) { calls++ })
-	e.RemoveRule(0)
-	e.RemoveRule(-1)
-	e.ToggleRule(3)
+	absent := Rule{Symbol: "BTC", Condition: CondAbove, Value: 1}
+	if e.RemoveRule(absent) {
+		t.Error("RemoveRule reported a match on an empty engine")
+	}
+	if e.ToggleRule(absent) {
+		t.Error("ToggleRule reported a match on an empty engine")
+	}
 	if calls != 0 {
-		t.Fatalf("out-of-range mutations must not fire the hook, got %d calls", calls)
+		t.Fatalf("mutations of an absent rule must not fire the hook, got %d calls", calls)
 	}
 	if len(e.Rules()) != 0 {
 		t.Fatal("rules should be unchanged")

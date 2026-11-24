@@ -20,8 +20,22 @@ govulncheck reaches from called code.
 - **Quitting waits for the last alert-rule save.** An alert added, toggled or
   removed less than the two-second debounce before quitting is written by
   the shutdown path before the process exits, bounded at three seconds.
+- **`mkt serve` never admits an authorized key that carries OpenSSH
+  options.** It enforces none of them (`from=`, `command=`, `restrict`, …),
+  so such a key was admitted with none of its restrictions. An inline
+  `serve.authorized_keys` entry with options is a startup error; optioned
+  lines in `serve.authorized_keys_file` are skipped and counted in the log.
 
 ### Fixed
+
+- Deleting or toggling an alert acts on the rule that was selected. The
+  engine took a list position, so under `mkt serve` a delete confirmed after
+  another session removed a rule above it deleted the next rule down.
+- Yahoo error bodies pass through the same terminal sanitizer as every
+  other provider's before they reach the Options and Symbol Info tabs or MCP
+  output; escape sequences in an upstream error page reached the terminal.
+- `mkt_webhook_rejected_total` counts a webhook refused for its token, as
+  its description states.
 
 - `/readyz` answers its 503 with `Content-Type: application/json`; the header
   was set after the status line and dropped.

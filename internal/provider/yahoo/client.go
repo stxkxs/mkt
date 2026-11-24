@@ -211,7 +211,7 @@ func (p *Provider) get(ctx context.Context, endpoint string, headers map[string]
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
-			&httpx.StatusError{Code: resp.StatusCode, Body: truncate(string(body), 256)}
+			&httpx.StatusError{Code: resp.StatusCode, Body: httpx.ErrorSnippet(string(body))}
 	}
 	return body, 0, nil
 }
@@ -281,13 +281,6 @@ func retryable(err error) bool {
 func isRateLimited(err error) bool {
 	var se *httpx.StatusError
 	return errors.As(err, &se) && se.Code == http.StatusTooManyRequests
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }
 
 // Healthy reports whether Yahoo is currently reachable. It goes false after

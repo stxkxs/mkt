@@ -33,16 +33,16 @@ type Model struct {
 	height  int
 	history []alert.TriggeredAlert
 
-	// confirmDelete is the rule index awaiting y/n confirmation, or -1.
-	confirmDelete int
+	// pendingDelete is the rule awaiting y/n confirmation, or nil. It holds
+	// the rule itself rather than its row: under `mkt serve` the list is
+	// shared, and a row chosen before another session's edit would name a
+	// different rule by the time y is pressed.
+	pendingDelete *alert.Rule
 }
 
 // New creates an alerts model.
 func New(engine *alert.Engine) Model {
-	return Model{
-		engine:        engine,
-		confirmDelete: -1,
-	}
+	return Model{engine: engine}
 }
 
 // SetSize updates dimensions.
@@ -74,14 +74,13 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		rules := m.engine.Rules()
 		// Pending delete: y confirms, anything else cancels.
-		if m.confirmDelete >= 0 {
-			if msg.String() == "y" && m.confirmDelete < len(rules) {
-				m.engine.RemoveRule(m.confirmDelete)
+		if m.pendingDelete != nil {
+			if msg.String() == "y" && m.engine.RemoveRule(*m.pendingDelete) {
 				if m.cursor >= len(rules)-1 && m.cursor > 0 {
 					m.cursor--
 				}
 			}
-			m.confirmDelete = -1
+			m.pendingDelete = nil
 			return m, nil
 		}
 		switch msg.String() {
@@ -94,10 +93,13 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.cursor--
 			}
 		case "t":
-			m.engine.ToggleRule(m.cursor)
+			if m.cursor < len(rules) {
+				m.engine.ToggleRule(rules[m.cursor])
+			}
 		case "d", "delete":
-			if len(rules) > 0 && m.cursor < len(rules) {
-				m.confirmDelete = m.cursor
+			if m.cursor < len(rules) {
+				r := rules[m.cursor]
+				m.pendingDelete = &r
 			}
 		}
 	case tea.MouseWheelMsg:
@@ -357,8 +359,8 @@ func ruleLine(cols format.Layout, r alert.Rule, selected bool) string {
 // footerLine is the row under the table: the delete prompt when one is
 // pending, otherwise the key hints and the scroll position.
 func (m Model) footerLine(rules []alert.Rule, start, end, ruleRows int) string {
-	if m.confirmDelete >= 0 && m.confirmDelete < len(rules) {
-		r := rules[m.confirmDelete]
+	if m.pendingDelete != nil {
+		r := *m.pendingDelete
 		what := string(r.Condition)
 		if r.IsCompound() {
 			what = "compound rule"

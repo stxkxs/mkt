@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,6 +137,35 @@ func TestGetJSONNoRetryOnAuthError(t *testing.T) {
 	}
 	if hits.Load() != 1 {
 		t.Errorf("requests = %d, want 1 — 401 must not be retried", hits.Load())
+	}
+}
+
+// An upstream error body reaches the Options and Symbol Info tabs and MCP
+// tool output inside the StatusError, so it carries no terminal escape
+// sequence and no unbounded length out of this package.
+func TestGetJSONSanitizesErrorBody(t *testing.T) {
+	body := "denied\x1b]0;owned\x07\x1b[2J" + strings.Repeat("x", 4096)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	p := New(time.Second)
+	var out map[string]any
+	err := p.getJSON(context.Background(), srv.URL, nil, &out)
+	var se *httpx.StatusError
+	if !errors.As(err, &se) || se.Code != http.StatusForbidden {
+		t.Fatalf("err = %v, want 403 StatusError", err)
+	}
+	if strings.ContainsRune(se.Body, '\x1b') || strings.ContainsRune(se.Body, '\x07') {
+		t.Errorf("error body carries control characters: %q", se.Body)
+	}
+	if !strings.HasPrefix(se.Body, "denied") {
+		t.Errorf("error body lost its text: %q", se.Body)
+	}
+	if se.Body != httpx.ErrorSnippet(body) {
+		t.Errorf("error body = %q, want the shared httpx snippet of the upstream body", se.Body)
 	}
 }
 
