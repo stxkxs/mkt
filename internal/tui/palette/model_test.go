@@ -1,6 +1,7 @@
 package palette
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -38,13 +39,31 @@ func TestParseQuit(t *testing.T) {
 	}
 }
 
-func TestParseUnknownCancels(t *testing.T) {
+// A command that does nothing says so, naming what was typed and what
+// would have worked.
+func TestParseUnknownIsReported(t *testing.T) {
 	m := New([]string{"Watch"})
 	m.Open()
 	m.query = "xyz"
 	res := m.parse()
-	if res.Action != ActionCancel {
-		t.Errorf("got %+v want Cancel", res)
+	if res.Action != ActionUnknown || !strings.Contains(res.Arg, `"xyz"`) || !strings.Contains(res.Arg, "theme") {
+		t.Errorf("got %+v want Unknown naming the query and the accepted forms", res)
+	}
+}
+
+func TestParseUnknownThemeIsReported(t *testing.T) {
+	m := New([]string{"Watch"})
+	m.Open()
+	m.query = "theme nosuch"
+	res := m.parse()
+	if res.Action != ActionUnknown || !strings.Contains(res.Arg, "dracula") {
+		t.Errorf("got %+v want Unknown listing the themes", res)
+	}
+
+	m.Open()
+	m.query = "theme dark"
+	if res := m.parse(); res.Action != ActionSetTheme {
+		t.Errorf("the dark alias: got %+v want SetTheme", res)
 	}
 }
 

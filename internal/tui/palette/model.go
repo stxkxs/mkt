@@ -3,6 +3,8 @@
 package palette
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -20,12 +22,15 @@ const (
 	ActionSetTheme
 	ActionQuit
 	ActionCancel
+	// ActionUnknown is a command that names no tab, theme or action. Arg
+	// is a one-line explanation for the host to show.
+	ActionUnknown
 )
 
 // Result is the payload of an Action.
 type Result struct {
 	Action Action
-	Arg    string // tab name or theme name; empty for Quit/Cancel
+	Arg    string // tab name, theme name or ActionUnknown's message; empty for Quit/Cancel
 }
 
 // Model is the palette state.
@@ -97,15 +102,18 @@ func (m Model) parse() Result {
 		return Result{Action: ActionQuit}
 	}
 	if strings.HasPrefix(q, "theme ") {
-		return Result{Action: ActionSetTheme, Arg: strings.TrimSpace(q[len("theme "):])}
+		name := strings.TrimSpace(q[len("theme "):])
+		if name != "dark" && !slices.Contains(theme.ThemeNames, name) {
+			return Result{Action: ActionUnknown, Arg: fmt.Sprintf("no theme %q; themes: %s", name, strings.Join(theme.ThemeNames, ", "))}
+		}
+		return Result{Action: ActionSetTheme, Arg: name}
 	}
 	for _, n := range m.tabNames {
 		if strings.HasPrefix(strings.ToLower(n), q) {
 			return Result{Action: ActionJumpTab, Arg: n}
 		}
 	}
-	// Unknown — treat as cancel; UX could surface an error later.
-	return Result{Action: ActionCancel}
+	return Result{Action: ActionUnknown, Arg: fmt.Sprintf("unknown command %q; type a tab name, 'theme <name>' or q", q)}
 }
 
 // View renders the prompt as a single bottom line. Returns empty when

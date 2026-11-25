@@ -2,6 +2,7 @@ package news
 
 import (
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -76,16 +77,33 @@ func TestOpenURLPassesAcceptedURLToHandler(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d spawns, want 1: %v", len(got), got)
 	}
-	want := []string{"open", "--", link}
-	if runtime.GOOS == "linux" {
-		want = []string{"xdg-open", link}
-	}
+	name, args := opener(runtime.GOOS, link)
+	want := append([]string{name}, args...)
 	if len(got[0]) != len(want) {
 		t.Fatalf("argv = %v, want %v", got[0], want)
 	}
 	for i := range want {
 		if got[0][i] != want[i] {
 			t.Fatalf("argv = %v, want %v", got[0], want)
+		}
+	}
+}
+
+// Each platform gets its own handler, and the URL is always one argv
+// element so no shell or flag parser sees its contents.
+func TestOpenerPerPlatform(t *testing.T) {
+	const link = "https://example.test/a?b=1&c=^2"
+	cases := map[string][]string{
+		"darwin":  {"open", "--", link},
+		"windows": {"rundll32", "url.dll,FileProtocolHandler", link},
+		"linux":   {"xdg-open", link},
+		"freebsd": {"xdg-open", link},
+	}
+	for goos, want := range cases {
+		name, args := opener(goos, link)
+		got := append([]string{name}, args...)
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: argv = %q, want %q", goos, got, want)
 		}
 	}
 }

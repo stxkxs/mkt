@@ -101,22 +101,25 @@ type App struct {
 	// the others render from them. Guests keep the host's theme.
 	shared bool
 
-	watchlist   watchlist.Model
-	detail      detail.Model
-	chart       chart.Model
-	compare     chart.CompareModel
-	portfolio   portfolioview.Model
-	alerts      alertsview.Model
-	macro       macroview.Model
-	news        newsview.Model
-	heatmap     heatmapview.Model
-	options     optionsview.Model
-	correl      correlview.Model
-	palette     paletteview.Model
-	statusbar   statusbar.Model
-	alertDialog alertdialog.Model
-	symbolInfo  symbolinfo.Model
-	help        helpview.Model
+	watchlist watchlist.Model
+	detail    detail.Model
+	chart     chart.Model
+	compare   chart.CompareModel
+	portfolio portfolioview.Model
+	alerts    alertsview.Model
+	macro     macroview.Model
+	news      newsview.Model
+	heatmap   heatmapview.Model
+	options   optionsview.Model
+	correl    correlview.Model
+	palette   paletteview.Model
+	// paletteNotice explains why the last palette command did nothing. It
+	// is shown as a notice row until the next key press.
+	paletteNotice string
+	statusbar     statusbar.Model
+	alertDialog   alertdialog.Model
+	symbolInfo    symbolinfo.Model
+	help          helpview.Model
 
 	// tabs binds each Tab to the model behind it and declares where that
 	// tab departs from the common path. The size, key, mouse and view
@@ -188,7 +191,7 @@ func NewApp(groups []watchlist.Group, cache *market.Cache, histProvider chart.Hi
 func (a *App) SetWatchlistGroups(groups []watchlist.Group) {
 	sectors := make([]heatmapview.Sector, 0, len(groups))
 	for _, g := range groups {
-		sectors = append(sectors, heatmapview.Sector{Name: g.Name, Symbols: canonicalAll(g.Symbols)})
+		sectors = append(sectors, heatmapview.Sector{Name: g.Name, Symbols: symbol.CanonicalSet(g.Symbols)})
 	}
 	a.heatmap.SetSectors(sectors)
 	a.correl.SetSymbols(CanonicalSymbols(groups))
@@ -204,35 +207,7 @@ func CanonicalSymbols(groups []watchlist.Group) []string {
 	for _, g := range groups {
 		all = append(all, g.Symbols...)
 	}
-	return canonicalAll(all)
-}
-
-// canonicalAll normalizes a symbol list the way the hub does and drops
-// duplicates. Both the heatmap and the correlation matrix key off
-// incoming quotes, which always carry canonical symbols, so a
-// hand-typed `btc` in the config would otherwise index a tile nothing
-// ever fills — and deduplicating before normalizing would let `btc` and
-// `BTC-USD` survive as two entries for the same instrument, which the
-// correlation matrix would then draw as two identical rows. Canonical is
-// idempotent, so this is a no-op when the caller already normalized.
-func canonicalAll(symbols []string) []string {
-	if len(symbols) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(symbols))
-	out := make([]string, 0, len(symbols))
-	for _, s := range symbols {
-		c := symbol.Canonical(s)
-		if c == "" {
-			continue
-		}
-		if _, dup := seen[c]; dup {
-			continue
-		}
-		seen[c] = struct{}{}
-		out = append(out, c)
-	}
-	return out
+	return symbol.CanonicalSet(all)
 }
 
 // SetContext supplies the process context to the sub-models that reach the
@@ -488,6 +463,8 @@ func (a *App) routeAsyncResult(msg tea.Msg) (tea.Model, tea.Cmd) {
 // the key reaches global bindings and then the active tab.
 func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	// A palette message stays up until the next key.
+	a.paletteNotice = ""
 	// Palette guard: consume all keys while open.
 	if a.palette.Active() {
 		var res paletteview.Result
@@ -496,10 +473,12 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case paletteview.ActionJumpTab:
 			for i, n := range tabNames {
 				if n == res.Arg {
-					a.activeTab = Tab(i)
+					a.switchTab(Tab(i))
 					break
 				}
 			}
+		case paletteview.ActionUnknown:
+			a.paletteNotice = res.Arg
 		case paletteview.ActionSetTheme:
 			if a.shared {
 				return a, nil
@@ -625,15 +604,15 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Tab switching
 	if tab := isTabSwitch(msg); tab >= 0 {
-		a.activeTab = tab
+		a.switchTab(tab)
 		return a, nil
 	}
 	switch msg.String() {
 	case "tab", "right":
-		a.activeTab = (a.activeTab + 1) % Tab(len(tabNames))
+		a.switchTab((a.activeTab + 1) % Tab(len(tabNames)))
 		return a, nil
 	case "shift+tab", "left":
-		a.activeTab = (a.activeTab - 1 + Tab(len(tabNames))) % Tab(len(tabNames))
+		a.switchTab((a.activeTab - 1 + Tab(len(tabNames))) % Tab(len(tabNames)))
 		return a, nil
 	}
 
@@ -684,12 +663,7 @@ func (a *App) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	if msg.Y < tabBarHeight {
 		tab := a.tabAtX(msg.X)
 		if tab >= 0 {
-			// The detail panel is drawn over the content area while
-			// the tab bar stays visible, so a click on a tab has to
-			// close it — otherwise the tab the user picked stays
-			// hidden behind the panel.
-			a.detail.SetActive(false)
-			a.activeTab = tab
+			a.switchTab(tab)
 		}
 		return a, nil
 	}
@@ -820,7 +794,7 @@ func (a *App) watchlistShortcut(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return nil, true
 	case "O":
 		if sym != "" {
-			a.activeTab = TabOptions
+			a.switchTab(TabOptions)
 			return a.options.LoadSymbol(sym), true
 		}
 		return nil, true
@@ -856,6 +830,18 @@ func (a *App) armAlertConfirm(msg tea.KeyPressMsg) {
 	}
 }
 
+// switchTab makes t the visible tab. The detail panel and the two
+// full-screen charts are drawn over whatever tab is active, so each one is
+// closed: otherwise the tab the user asked for stays hidden behind it.
+// Every tab change goes through here, whether from a key, a click or the
+// palette.
+func (a *App) switchTab(t Tab) {
+	a.detail.SetActive(false)
+	a.chart.Close()
+	a.compare.Close()
+	a.activeTab = t
+}
+
 // modalActive reports whether one of the centered overlays owns input.
 // They are drawn on top of the tab content, so anything they do not
 // handle has to be swallowed rather than delivered to the tab behind
@@ -883,47 +869,42 @@ func (a *App) View() tea.View {
 		return tea.NewView(theme.StyleAccentText(spinner + " Loading..."))
 	}
 
-	// Full-screen chart mode — needs AllMotion so the hover crosshair
-	// can track the cursor without a click.
-	if a.chart.Active() {
-		s := a.chart.View()
-		v := tea.NewView(s)
-		v.AltScreen = true
-		return withMouseAllMotion(v)
-	}
-
-	// Comparison chart mode
-	if a.compare.Active() {
+	// The full-screen charts own every row and draw no tab bar or status
+	// bar, so the palette is composited over their last row. They need
+	// AllMotion so the hover crosshair tracks the cursor without a click.
+	if a.chart.Active() || a.compare.Active() {
 		s := a.compare.View()
+		if a.chart.Active() {
+			s = a.chart.View()
+		}
+		if a.palette.Active() {
+			s = a.overlayLastRow(s, a.palette.View(a.width))
+		}
 		v := tea.NewView(s)
 		v.AltScreen = true
 		return withMouseAllMotion(v)
-	}
-
-	// Detail panel overlay
-	if a.detail.Active() {
-		contentW, contentH := a.contentSize(a.width, a.height)
-		a.detail.SetSize(contentW, contentH)
-		panel := a.renderContentPanel("Detail", a.detail.View(), contentH)
-		s := a.frame(panel, a.statusbar.View())
-		v := tea.NewView(s)
-		v.AltScreen = true
-		return withMouse(v)
 	}
 
 	contentW, contentH := a.contentSize(a.width, a.height)
-	// A tab is sized here, immediately before it renders, so its view is
-	// built against the frame it is about to be drawn into.
-	entry := a.tabs[a.activeTab]
+	title := tabNames[a.activeTab]
 	var content string
-	if entry.signpost != nil {
-		content = entry.signpost(contentW)
+	if a.detail.Active() {
+		title = "Detail"
+		a.detail.SetSize(contentW, contentH)
+		content = a.detail.View()
 	} else {
-		entry.model.SetSize(contentW, contentH)
-		content = entry.model.View()
+		// A tab is sized here, immediately before it renders, so its view
+		// is built against the frame it is about to be drawn into.
+		entry := a.tabs[a.activeTab]
+		if entry.signpost != nil {
+			content = entry.signpost(contentW)
+		} else {
+			entry.model.SetSize(contentW, contentH)
+			content = entry.model.View()
+		}
 	}
 
-	panel := a.renderContentPanel(tabNames[a.activeTab], content, contentH)
+	panel := a.renderContentPanel(title, content, contentH)
 
 	bottom := a.statusbar.View()
 	if a.palette.Active() {
@@ -962,6 +943,19 @@ func (a *App) frame(panel, bottom string) string {
 	rows = append(rows, a.renderNotices()...)
 	rows = append(rows, panel, bottom)
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+// overlayLastRow composites a one-row overlay over the last row of the
+// frame. A view shorter than the frame (a chart still loading) is extended
+// to it, so the overlay sits where it does once the view fills the frame.
+func (a *App) overlayLastRow(bg, overlay string) string {
+	y := max(a.height, lipgloss.Height(bg)) - 1
+	y = max(y, 0)
+	c := lipgloss.NewCompositor(
+		lipgloss.NewLayer(bg),
+		lipgloss.NewLayer(overlay).X(0).Y(y).Z(1),
+	)
+	return c.Render()
 }
 
 // overlayCenter composites overlay on top of bg, centered. The underlying
@@ -1018,6 +1012,9 @@ func (a *App) notices() []string {
 	if a.configStatus.Degraded {
 		out = append(out, a.configStatus.banner())
 	}
+	if a.paletteNotice != "" {
+		out = append(out, "⚠ "+a.paletteNotice)
+	}
 	if n := len(a.unroutable); n > 0 {
 		noun := "symbols route"
 		if n == 1 {
@@ -1046,6 +1043,9 @@ func (a *App) renderNotices() []string {
 // contentSize returns the width and height available for content inside the panel.
 func (a *App) contentSize(totalW, totalH int) (int, int) {
 	h := totalH - tabBarHeight - statusBarHeight - len(a.notices())
+	if a.palette.Active() {
+		h-- // the prompt row sits above the status bar
+	}
 	w := totalW
 	if a.usePanelBorders() {
 		h -= 2 // top + bottom border

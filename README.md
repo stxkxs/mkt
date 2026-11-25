@@ -132,7 +132,7 @@ Press `?` at any time for the active tab's keys.
 |-----|--------|
 | `1`–`9` | Jump to tab (Watch, Portfolio, Alerts, Chart, Macro, News, Heatmap, Options, Correl) |
 | `tab` / `→` , `shift+tab` / `←` | Next / previous tab |
-| `:` | Command palette (tab-name prefix, `theme <name>`, or `q`) |
+| `:` | Command palette (tab-name prefix, `theme <name>`, or `q`), from any view; jumping to a tab closes the detail panel or chart over it, and a command that matches nothing is named in a notice row |
 | `T` | Cycle color theme |
 | `?` | Keybinding help for the active tab |
 | `q` / `ctrl+c` | Quit |

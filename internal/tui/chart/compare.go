@@ -94,6 +94,11 @@ func (m CompareModel) Active() bool {
 	return m.active
 }
 
+// Close hides the comparison chart, as esc does. The symbol list is kept.
+func (m *CompareModel) Close() {
+	m.active = false
+}
+
 // AddSymbol adds a symbol to the comparison set (max 3, one per palette
 // color). Duplicates and overflow are ignored.
 func (m *CompareModel) AddSymbol(sym string) {
