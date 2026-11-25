@@ -251,10 +251,11 @@ func TestConcurrentCheckAndMutation(t *testing.T) {
 		}()
 	}
 	for i := 0; i < 200; i++ {
-		e.AddRule(Rule{Symbol: "BTC", Condition: CondAbove, Value: float64(50000 + i), Enabled: true})
+		r := Rule{Symbol: "BTC", Condition: CondAbove, Value: float64(50000 + i), Enabled: true}
+		e.AddRule(r)
 		_ = e.Statuses()
-		e.ToggleRule(0)
-		e.RemoveRule(0)
+		e.ToggleRule(r)
+		e.RemoveRule(r)
 	}
 	close(stop)
 	wg.Wait()

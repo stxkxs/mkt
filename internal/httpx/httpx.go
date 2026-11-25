@@ -82,7 +82,7 @@ func Get(ctx context.Context, client *http.Client, url string, headers map[strin
 		return nil, fmt.Errorf("read body: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &StatusError{Code: resp.StatusCode, Body: errorSnippet(string(body))}
+		return nil, &StatusError{Code: resp.StatusCode, Body: ErrorSnippet(string(body))}
 	}
 	return body, nil
 }
@@ -135,12 +135,13 @@ func GetJSON(ctx context.Context, client *http.Client, url string, headers map[s
 // log line or a terminal row.
 const errorSnippetRunes = 256
 
-// errorSnippet prepares an upstream response body to travel inside an
+// ErrorSnippet prepares an upstream response body to travel inside an
 // error. StatusError.Error interpolates it verbatim, and the result reaches
 // a Bubbletea frame (the Options and Symbol Info tabs render fetch errors)
 // and MCP tool output, so the body is sanitized here rather than at each
 // renderer — a control character that survives this point has several ways
-// to reach a terminal and only one place to be caught.
-func errorSnippet(body string) string {
+// to reach a terminal and only one place to be caught. A provider that
+// builds its own StatusError passes the body through this as well.
+func ErrorSnippet(body string) string {
 	return textsafe.Truncate(textsafe.Clean(body), errorSnippetRunes)
 }

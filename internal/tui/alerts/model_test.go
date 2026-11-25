@@ -36,8 +36,8 @@ func TestDeleteRequiresConfirmation(t *testing.T) {
 	if got := len(m.engine.Rules()); got != 2 {
 		t.Fatalf("rule deleted without confirmation: %d rules left", got)
 	}
-	if m.confirmDelete != 0 {
-		t.Fatalf("confirmDelete = %d, want 0", m.confirmDelete)
+	if m.pendingDelete == nil || m.pendingDelete.Symbol != "BTC-USD" {
+		t.Fatalf("pendingDelete = %+v, want the BTC-USD rule", m.pendingDelete)
 	}
 
 	m = press(m, "y")
@@ -47,8 +47,25 @@ func TestDeleteRequiresConfirmation(t *testing.T) {
 	if m.engine.Rules()[0].Symbol != "ETH-USD" {
 		t.Errorf("wrong rule deleted: remaining %s", m.engine.Rules()[0].Symbol)
 	}
-	if m.confirmDelete != -1 {
-		t.Errorf("confirmDelete not reset: %d", m.confirmDelete)
+	if m.pendingDelete != nil {
+		t.Errorf("pendingDelete not reset: %+v", m.pendingDelete)
+	}
+}
+
+// Under `mkt serve` the rule list is shared. A confirmation pending in one
+// session must delete the rule it named, never whatever another session's
+// edit slid into that row.
+func TestPendingDeleteSurvivesAnotherSessionsEdit(t *testing.T) {
+	m := newTestModel(t)
+
+	m = press(m, "d") // row 0: BTC-USD
+	// Another session deletes BTC-USD first; ETH-USD moves into row 0.
+	m.engine.RemoveRule(alert.Rule{Symbol: "BTC-USD", Condition: alert.CondAbove, Value: 100000})
+	m = press(m, "y")
+
+	rules := m.engine.Rules()
+	if len(rules) != 1 || rules[0].Symbol != "ETH-USD" {
+		t.Fatalf("rules = %+v, want ETH-USD untouched", rules)
 	}
 }
 
@@ -60,8 +77,8 @@ func TestDeleteCancelledByOtherKey(t *testing.T) {
 	if got := len(m.engine.Rules()); got != 2 {
 		t.Fatalf("rule deleted after cancel: %d rules left", got)
 	}
-	if m.confirmDelete != -1 {
-		t.Errorf("confirmDelete not reset on cancel: %d", m.confirmDelete)
+	if m.pendingDelete != nil {
+		t.Errorf("pendingDelete not reset on cancel: %+v", m.pendingDelete)
 	}
 	// The cancelling key is consumed, not applied: cursor stays put.
 	if m.cursor != 0 {

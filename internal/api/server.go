@@ -181,7 +181,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/healthz", readOnly(s.handleHealthz))
 	mux.HandleFunc("/readyz", readOnly(s.handleReadyz))
 	if s.webhookEnabled {
-		mux.HandleFunc("/webhook/tradingview", s.auth(s.handleTradingView))
+		mux.HandleFunc("/webhook/tradingview", s.authCounting(s.handleTradingView, webhookRejected))
 	}
 	return timed(mux)
 }
@@ -234,11 +234,21 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 // auth wraps a handler with token authentication when a token has been
 // configured. With no token configured it's a no-op.
 func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
+	return s.authCounting(h, nil)
+}
+
+// authCounting is auth that also increments rejected on every 401, so a
+// route whose refusals are a metric counts a bad token alongside its other
+// rejections. A nil counter counts nothing.
+func (s *Server) authCounting(h http.HandlerFunc, rejected *observe.Counter) http.HandlerFunc {
 	if s.token == "" {
 		return h
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.authorized(r) {
+			if rejected != nil {
+				rejected.Inc()
+			}
 			w.Header().Set("WWW-Authenticate", `Bearer realm="mkt"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

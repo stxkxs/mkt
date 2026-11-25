@@ -503,6 +503,13 @@ serve:
     - ssh-ed25519 AAAA...you@phone       # or: authorized_keys_file: ~/.ssh/authorized_keys
 ```
 
+The allowlist matches the key and nothing else: `mkt serve` enforces none of
+the OpenSSH key options (`from=`, `command=`, `restrict`, `no-pty`, …), so it
+never admits a key that carries them. An inline `authorized_keys` entry with
+options is a config error; in an `authorized_keys_file`, optioned lines are
+skipped and the count is logged, so pointing at `~/.ssh/authorized_keys`
+admits only its unrestricted keys.
+
 `--addr` and `--host-key` override `serve.addr` and `serve.host_key` for a
 single run. Sessions idle for 30 minutes are disconnected. Theme switching
 (`T`, and `:theme <name>`) is withheld from sessions here: the palette lives
