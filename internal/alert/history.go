@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/stxkxs/mkt/internal/ndjson"
-	"sync"
 )
 
 // HistoryFile reads and appends triggered alerts as NDJSON. It is

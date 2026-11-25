@@ -195,15 +195,17 @@ func (h *Hub) ObserverDrops() uint64 { return h.obsDrops.Load() }
 
 // AddObserver registers fn on the reliable path. Every quote the hub reads is
 // delivered to every observer, in arrival order, with the symbol already
-// canonicalized — nothing is dropped by back-pressure, unlike the onQuote
-// dispatch path.
+// canonicalized. Unlike the onQuote dispatch path, a slow observer does not
+// lose quotes: they queue for it, up to observerBacklogMax. Only an observer
+// that falls that far behind loses its oldest quotes, counted by
+// ObserverDrops.
 //
 // The guarantee to the reader loop is that hand-off is non-blocking: each
-// observer owns a goroutine and its own unbounded-until-observerBacklogMax
-// queue, so an observer that blocks forever costs one parked goroutine and its
-// own backlog, and can never stall quote ingestion or another observer. The
-// cost of the never-drop promise is memory, so an observer should still return
-// promptly; ObserverBacklog and ObserverDrops expose one that does not.
+// observer owns a goroutine and its own queue, so an observer that blocks
+// forever costs one parked goroutine and its own backlog, and can never stall
+// quote ingestion or another observer. The queue costs memory, so an observer
+// should still return promptly; ObserverBacklog and ObserverDrops expose one
+// that does not.
 //
 // Observers may be registered before or after Start. Registering after the hub
 // has shut down is a no-op.

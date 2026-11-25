@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
 	"github.com/stxkxs/mkt/internal/config"
 	"github.com/stxkxs/mkt/internal/importer"
 	"github.com/stxkxs/mkt/internal/market"

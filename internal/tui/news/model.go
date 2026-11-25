@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
 	inews "github.com/stxkxs/mkt/internal/news"
 	"github.com/stxkxs/mkt/internal/tui/format"
 	"github.com/stxkxs/mkt/internal/tui/theme"
@@ -141,8 +142,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if len(vis) == 0 {
 			return m, nil
 		}
-		// Local header: section header + hint + blank = 3 rows. Each
-		// headline occupies 2 rows.
+		// Below the newsHeaderLines header rows, each headline occupies
+		// 2 rows.
 		row := msg.Y - newsHeaderLines
 		if row < 0 {
 			return m, nil
@@ -162,15 +163,14 @@ func newsViewportStart(cursor, total, height int) int {
 	return format.ViewportStart(cursor, total, newsVisibleItems(total, height))
 }
 
-// newsVisibleItems is how many headlines fit below the 3 header rows.
+// newsVisibleItems is how many headlines fit below the header rows.
 // Each headline occupies 2 rows (source/time, then the title).
 func newsVisibleItems(total, height int) int {
 	return format.VisibleRows((height-newsHeaderLines)/2, 0, total)
 }
 
-// newsHeaderLines is the section header row plus the blank row above the
-// first item. The hint now shares the header row instead of wrapping onto
-// its own, so this is 2 rows, not 3.
+// newsHeaderLines is the section header row, which also carries the key
+// hint, plus the blank row above the first item.
 const newsHeaderLines = 2
 
 // View renders the news feed.

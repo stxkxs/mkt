@@ -11,8 +11,9 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
-	"github.com/stxkxs/mkt/internal/symbol"
 	"gopkg.in/yaml.v3"
+
+	"github.com/stxkxs/mkt/internal/symbol"
 )
 
 // Holding represents a portfolio position from config.
@@ -26,7 +27,7 @@ type Holding struct {
 // Transaction is a buy or sell event for an optional transaction log.
 // Time is parsed lazily by callers (see ParseTime); zero means "unset".
 type Transaction struct {
-	Type     string  `mapstructure:"type" yaml:"type"` // "buy" or "sell"
+	Type     string  `mapstructure:"type" yaml:"type"` // "buy", "sell" or "dividend"
 	Symbol   string  `mapstructure:"symbol" yaml:"symbol"`
 	Quantity float64 `mapstructure:"quantity" yaml:"quantity"`
 	Price    float64 `mapstructure:"price" yaml:"price"`
@@ -206,9 +207,9 @@ const DirEnv = "MKT_CONFIG_DIR"
 // ConfigDir returns the application's config / data directory path.
 //
 // MKT_CONFIG_DIR wins when set and non-empty; otherwise it is
-// <home>/.config/mkt. The XDG base-directory spec is deliberately not
-// consulted: honoring XDG_CONFIG_HOME now would silently relocate the config
-// of every existing user who has it set.
+// <home>/.config/mkt. XDG_CONFIG_HOME is not consulted: honoring it would
+// silently move the config of any user who has it set away from the
+// ~/.config/mkt their file is in.
 func ConfigDir() string {
 	if dir := strings.TrimSpace(os.Getenv(DirEnv)); dir != "" {
 		return dir
@@ -293,11 +294,11 @@ func LoadWithResult() (*LoadResult, error) {
 		// *fs.PathError), NOT viper's ConfigFileNotFoundError — handle both.
 		var notFound viper.ConfigFileNotFoundError
 		if errors.As(err, &notFound) || errors.Is(err, os.ErrNotExist) {
-			// Fresh install ONLY: seed the rich content (grouped watchlists,
+			// Fresh install only: seed the rich content (grouped watchlists,
 			// example alerts, EDGAR tickers, notes) and persist a full
-			// config.yaml the user can see and edit. We deliberately do NOT
-			// inject these sections into a config that already exists — an
-			// upgrader keeps their file exactly as-is.
+			// config.yaml the user can see and edit. These sections are
+			// never injected into a config that already exists, so an
+			// existing file is kept exactly as it is.
 			v.SetDefault("schema_version", SchemaVersion)
 			v.SetDefault("watchlists", DefaultWatchlists)
 			v.SetDefault("alerts", DefaultAlerts)
@@ -315,8 +316,8 @@ func LoadWithResult() (*LoadResult, error) {
 			res.Line = yamlErrorLine(err)
 		}
 	}
-	// Correct perms on an existing file that may have been written loose by
-	// an older version (viper historically wrote 0644).
+	// Correct the perms on a file written with a looser mode, such as the
+	// 0644 viper's own writer uses.
 	tightenPerms()
 
 	var cfg Config

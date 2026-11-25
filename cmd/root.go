@@ -54,7 +54,7 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.PersistentFlags().String("listen", "", "if set (e.g. 127.0.0.1:9999), start a read-only HTTP server with /quotes, /alerts, /metrics; any non-loopback bind requires a listen token (env "+EnvListen+")")
 	rootCmd.PersistentFlags().String("listen-token", "", "bearer token required in the Authorization header on every HTTP request; prefer --listen-token-file or "+EnvListenTokenFile+"/"+EnvListenToken+", since argv is world-readable via ps")
-	rootCmd.PersistentFlags().String("listen-token-file", "", "read the listen bearer token from this file (first line, trimmed); keeps the token off argv (env "+EnvListenTokenFile+")")
+	rootCmd.PersistentFlags().String("listen-token-file", "", "read the listen bearer token from this file, which holds the token on a single line (surrounding whitespace is trimmed); keeps the token off argv (env "+EnvListenTokenFile+")")
 	rootCmd.PersistentFlags().Bool("enable-webhook", false, "mount the inbound /webhook/tradingview alert-injection route (requires a listen token even on loopback)")
 	rootCmd.PersistentFlags().Bool("require-token", false, "require a listen token even on a loopback bind (loopback is not a trust boundary on multi-user hosts)")
 	rootCmd.PersistentFlags().Bool("no-notify", false, "disable all desktop + third-party notifiers (desktop, webhook, ntfy, Pushover); alert rules and history still run")

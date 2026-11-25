@@ -16,6 +16,9 @@ govulncheck reaches from called code.
   silently clamped to 1000 and a zero or negative one became 30, so the
   caller received a different number of bars than it asked for. The input
   schema declares the range.
+- **A listen token file with more than one line is refused at startup.**
+  The whole file, trimmed, was taken as the token, so a second line put a
+  line break inside it and every request then failed authentication.
 - **`--listen` fails at startup when the address cannot be bound.** A port
   already in use, or a host that does not resolve, is returned as the
   command's error instead of a line on stderr after `api: listening on …`
@@ -32,6 +35,9 @@ govulncheck reaches from called code.
 
 ### Fixed
 
+- CPI releases from March through October 2026 show at 8:30 AM Eastern
+  in the Macro tab's upcoming events; they were stored with the winter UTC
+  offset and appeared an hour late.
 - The command palette is drawn over the full-screen chart, the comparison
   chart and the detail panel. Opened from any of them it took every key
   with nothing on screen, so the keyboard appeared dead until `esc`.
@@ -68,6 +74,10 @@ govulncheck reaches from called code.
 
 ### Added
 
+- `SECURITY.md` (private vulnerability reporting) and
+  `docs/threat-model.md`, which lists each input surface, its attacker and
+  the control in the code that answers it.
+- `task install` and `task vuln`.
 - `mkt mcp` tools declare a `title` and an `outputSchema` in `tools/list`,
   and `get_portfolio` carries the read-only annotations the other tools
   already had.

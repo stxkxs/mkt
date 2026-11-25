@@ -9,8 +9,9 @@ import (
 	"testing"
 
 	"charm.land/ssh"
-	"github.com/stxkxs/mkt/internal/config"
 	gossh "golang.org/x/crypto/ssh"
+
+	"github.com/stxkxs/mkt/internal/config"
 )
 
 // genKeyLine returns a valid authorized_keys line for a fresh ed25519 key.

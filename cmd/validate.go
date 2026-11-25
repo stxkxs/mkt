@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/config"
 	"github.com/stxkxs/mkt/internal/market"
@@ -20,7 +22,6 @@ import (
 	"github.com/stxkxs/mkt/internal/provider/yahoo"
 	"github.com/stxkxs/mkt/internal/symbol"
 	"github.com/stxkxs/mkt/internal/tui/theme"
-	"gopkg.in/yaml.v3"
 )
 
 // symbolCheckWorkers bounds the concurrent history fetches --check-symbols

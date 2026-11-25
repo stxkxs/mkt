@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
+
 	"github.com/stxkxs/mkt/internal/config"
 	"github.com/stxkxs/mkt/internal/symbol"
 	"github.com/stxkxs/mkt/internal/tui/detail"
@@ -17,7 +18,7 @@ import (
 // stockTickers returns the subset of symbols Yahoo's earnings endpoint can
 // answer for: plain equity tickers. Crypto and FRED series have no earnings,
 // and neither do the index / futures / FX pseudo-tickers (^GSPC, GC=F,
-// EURUSD=X) that symbol.IsStock now routes to Yahoo — asking about those
+// EURUSD=X) that symbol.IsStock routes to Yahoo — asking about those
 // wastes a request per symbol and returns nothing. Symbols are canonicalized
 // so the earnings lookup uses the same spelling as everything else.
 func stockTickers(symbols []string) []string {

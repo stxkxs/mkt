@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/api"
 	"github.com/stxkxs/mkt/internal/broadcast"
@@ -339,8 +340,8 @@ func setupBackend(opts backendOpts) (*backend, func(), error) {
 		fmt.Fprintf(os.Stderr, "equity history: %v\n", eqErr)
 	}
 
-	// Upcoming events for the macro tab: hardcoded econ schedule now,
-	// per-ticker earnings merged in later by startDataPlane.
+	// Upcoming events for the macro tab: the curated economic schedule at
+	// startup; startDataPlane merges per-ticker earnings in once fetched.
 	events := calendar.EconomicEvents()
 	calEvents := calendar.Upcoming(events, time.Now().UTC(), 30*24*time.Hour)
 
@@ -505,8 +506,8 @@ func (b *backend) buildApp(ctx context.Context) *tui.App {
 // news pollers. Every update is delivered via the broadcaster, so it
 // reaches whatever programs are attached. Call exactly once.
 func (b *backend) startDataPlane(ctx context.Context) {
-	// Provider connection status → all sessions. Both providers report now:
-	// Coinbase's WebSocket state and Yahoo's rolling health, so a total
+	// Provider connection status → all sessions. Both providers report:
+	// Coinbase its WebSocket state and Yahoo its rolling health, so a total
 	// Yahoo outage is visible instead of showing as prices that merely stop
 	// changing.
 	go pumpStatus(ctx, b.bc, "coinbase", b.coinbaseProv.StatusChan(), nil)

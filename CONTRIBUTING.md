@@ -6,7 +6,7 @@ Thanks for looking at `mkt`. This is a single-binary Go TUI, so the contribution
 
 Prereqs:
 
-- Go 1.25+ (see `go.mod`)
+- Go 1.27.4 or newer — the `go` line in `go.mod` is the minimum
 - [Task](https://taskfile.dev) — `brew install go-task` or `go install github.com/go-task/task/v3/cmd/task@latest`
 - [golangci-lint](https://golangci-lint.run) for local lint runs
 
@@ -16,6 +16,8 @@ cd mkt
 task build      # → ./mkt
 task test       # go test ./...
 task cover      # race-enabled tests plus the coverage gate CI applies
+task vuln       # govulncheck ./...
+task install    # go install with version ldflags
 task lint       # golangci-lint run ./...
 ```
 

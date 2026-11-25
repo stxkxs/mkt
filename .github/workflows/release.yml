@@ -9,10 +9,10 @@ permissions:
   contents: read
 
 jobs:
-  # ci.yml only triggers on push-to-main and pull requests, so a tag pushed
-  # from a branch (or a tag moved onto an untested commit) used to reach
-  # goreleaser with nothing verified. Running the full suite as a gate means a
-  # broken tag fails before anything signed is published.
+  # ci.yml triggers on push-to-main and pull requests, not on tags, so a tag
+  # pushed from a branch (or moved onto an untested commit) would otherwise
+  # reach goreleaser with nothing verified. Running the full suite as a gate
+  # means a broken tag fails before anything signed is published.
   ci:
     name: ci
     uses: ./.github/workflows/ci.yml
@@ -47,7 +47,9 @@ jobs:
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
-          version: '~> v2'
+          # Pinned so a release is built by the goreleaser the tree was
+          # last verified with; Renovate proposes the next one.
+          version: v2.20.2
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

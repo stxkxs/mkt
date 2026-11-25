@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+
 	"github.com/stxkxs/mkt/internal/tui/format"
 )
 

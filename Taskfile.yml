@@ -20,6 +20,11 @@ tasks:
     cmds:
       - go build -ldflags "{{.LDFLAGS}}" -o {{.BINARY}} .
 
+  install:
+    desc: Install mkt into GOBIN (or GOPATH/bin) with version ldflags
+    cmds:
+      - go install -ldflags "{{.LDFLAGS}}" .
+
   run:
     desc: Build and run
     deps: [build]
@@ -41,6 +46,11 @@ tasks:
     desc: Run linter
     cmds:
       - golangci-lint run ./...
+
+  vuln:
+    desc: Report known vulnerabilities reachable from called code (govulncheck, as CI runs it)
+    cmds:
+      - govulncheck ./...
 
   demo:
     desc: Render the demo GIF from demo/mkt.tape (requires vhs; uses your ~/.config/mkt watchlist)
