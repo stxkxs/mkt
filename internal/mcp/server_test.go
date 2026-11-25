@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func runOne(t *testing.T, srv *Server, payload string) map[string]any {
@@ -806,5 +807,114 @@ func TestInitializeReturnsInstructions(t *testing.T) {
 	got := runOne(t, srv, `{"jsonrpc":"2.0","id":3,"method":"initialize"}`)
 	if instr, _ := got["result"].(map[string]any)["instructions"].(string); instr == "" {
 		t.Fatalf("initialize returned no instructions: %+v", got["result"])
+	}
+}
+
+// A client asking for a revision the server supports gets that revision;
+// any other request is answered with the newest one.
+func TestInitializeNegotiatesProtocolVersion(t *testing.T) {
+	cases := []struct{ requested, want string }{
+		{"2025-03-26", "2025-03-26"},
+		{ProtocolVersion, ProtocolVersion},
+		{"2099-01-01", ProtocolVersion},
+		{"", ProtocolVersion},
+	}
+	for _, c := range cases {
+		srv := New("test", "1.0")
+		payload := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"` + c.requested + `"}}`
+		got := runOne(t, srv, payload)
+		if v := got["result"].(map[string]any)["protocolVersion"]; v != c.want {
+			t.Errorf("requested %q: protocolVersion = %v, want %s", c.requested, v, c.want)
+		}
+	}
+}
+
+// title and outputSchema are what a client shows and validates against;
+// tools/list carries them when a tool sets them and omits them otherwise.
+func TestToolsListCarriesTitleAndOutputSchema(t *testing.T) {
+	schema := map[string]any{"type": "object", "properties": map[string]any{"n": map[string]any{"type": "integer"}}}
+	srv := New("test", "1.0").WithTools(
+		Tool{Name: "with", Title: "With metadata", Description: "d", InputSchema: map[string]any{"type": "object"}, OutputSchema: schema},
+		Tool{Name: "without", Description: "d", InputSchema: map[string]any{"type": "object"}},
+	)
+	got := runOne(t, srv, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
+	tools := got["result"].(map[string]any)["tools"].([]any)
+	if len(tools) != 2 {
+		t.Fatalf("tools = %d, want 2", len(tools))
+	}
+	with, without := tools[0].(map[string]any), tools[1].(map[string]any)
+	if with["title"] != "With metadata" {
+		t.Errorf("title = %v", with["title"])
+	}
+	if _, ok := with["outputSchema"].(map[string]any); !ok {
+		t.Errorf("outputSchema missing: %+v", with)
+	}
+	for _, k := range []string{"title", "outputSchema"} {
+		if _, ok := without[k]; ok {
+			t.Errorf("tool without %s emits one: %+v", k, without)
+		}
+	}
+}
+
+// A handler that outlives its deadline is a failed call the client can
+// read, not a session that stops answering.
+func TestToolCallIsBoundedByTimeout(t *testing.T) {
+	srv := New("test", "1.0").WithToolTimeout(20 * time.Millisecond).WithTools(Tool{
+		Name:        "slow",
+		Description: "blocks until its context ends",
+		InputSchema: map[string]any{"type": "object"},
+		Handler: func(ctx context.Context, _ map[string]any) (any, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	})
+
+	var out bytes.Buffer
+	in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"slow"}}` + "\n" +
+		`{"jsonrpc":"2.0","id":2,"method":"ping"}` + "\n")
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(context.Background(), in, &out) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return: the tool call was not bounded")
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 responses (call, ping), got %d: %q", len(lines), out.String())
+	}
+	var call map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &call); err != nil {
+		t.Fatal(err)
+	}
+	result := call["result"].(map[string]any)
+	if result["isError"] != true {
+		t.Fatalf("timed-out call should be isError: %+v", result)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "did not finish within") {
+		t.Errorf("error text names no timeout: %q", text)
+	}
+}
+
+// A handler that ignores its context and returns after the deadline is
+// still reported as timed out: its result may rest on cut-short calls.
+func TestLateToolResultIsReportedAsTimeout(t *testing.T) {
+	srv := New("test", "1.0").WithToolTimeout(10 * time.Millisecond).WithTools(Tool{
+		Name:        "late",
+		Description: "returns after its deadline",
+		InputSchema: map[string]any{"type": "object"},
+		Handler: func(ctx context.Context, _ map[string]any) (any, error) {
+			<-ctx.Done()
+			return map[string]any{"partial": true}, nil
+		},
+	})
+	got := runOne(t, srv, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"late"}}`)
+	if got["result"].(map[string]any)["isError"] != true {
+		t.Fatalf("late result should be isError: %+v", got["result"])
 	}
 }

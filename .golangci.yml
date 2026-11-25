@@ -77,13 +77,9 @@ linters:
   exclusions:
     rules:
       # ── funlen / gocyclo budget ───────────────────────────────────────
-      # The thresholds above sit just over today's ceiling. These five are
-      # the functions already past it: the gate names them rather than
-      # hiding them, and each shrinks as it is next worked on.
-      - path: cmd/mcp\.go
-        source: "func runMCP"
-        linters:
-          - funlen
+      # The thresholds above sit just over the tree's ceiling. The entries
+      # below are the functions already past it: the gate names them rather
+      # than hiding them, and each shrinks as it is next worked on.
       - path: internal/tui/app\.go
         source: "func \\(a \\*App\\) handleKey"
         linters:

@@ -12,6 +12,10 @@ govulncheck reaches from called code.
 
 ### Behavioral changes
 
+- **`query_history` refuses a `limit` outside 1–1000.** A larger value was
+  silently clamped to 1000 and a zero or negative one became 30, so the
+  caller received a different number of bars than it asked for. The input
+  schema declares the range.
 - **`--listen` fails at startup when the address cannot be bound.** A port
   already in use, or a host that does not resolve, is returned as the
   command's error instead of a line on stderr after `api: listening on …`
@@ -45,6 +49,17 @@ govulncheck reaches from called code.
 
 ### Added
 
+- `mkt mcp` tools declare a `title` and an `outputSchema` in `tools/list`,
+  and `get_portfolio` carries the read-only annotations the other tools
+  already had.
+- `mkt mcp` negotiates the protocol revision: a client asking for
+  2025-06-18 or 2025-03-26 gets that revision, any other request gets
+  2025-06-18.
+- Each MCP `tools/call` runs under a 30-second deadline. A call that
+  overruns returns `isError` naming the timeout instead of holding every
+  later request, `ping` included, behind it.
+- MCP argument errors name what to send: a bad `symbol` lists the accepted
+  forms, and an unknown portfolio lists the configured names.
 - `mkt_alert_notify_drops_total` and `mkt_alert_notify_failures_total` on
   `/metrics`: notifications discarded before delivery, and deliveries a
   destination refused or timed out on.
