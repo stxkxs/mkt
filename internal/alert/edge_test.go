@@ -100,7 +100,8 @@ func TestEdgeTriggerNoFireOnEstablishingEvaluation(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			e, fired := newCaptureEngine(time.Millisecond)
+			e, fired := newCaptureEngine(time.Minute)
+			clock := newManualClock(e)
 			ps := &pricesStub{}
 			if tc.prices != nil {
 				ps.set(tc.prices(true))
@@ -130,7 +131,7 @@ func TestEdgeTriggerNoFireOnEstablishingEvaluation(t *testing.T) {
 				t.Fatalf("clearing the condition must not fire, got %d", len(*fired))
 			}
 
-			time.Sleep(2 * time.Millisecond) // clear the cooldown window
+			clock.advance(time.Minute + time.Second) // past the cooldown
 			if tc.prices != nil {
 				ps.set(tc.prices(true))
 			}

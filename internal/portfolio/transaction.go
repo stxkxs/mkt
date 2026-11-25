@@ -13,6 +13,13 @@ const (
 
 // Transaction is a single recorded portfolio action. Time and Fee are
 // optional; zero values are treated as "unset".
+//
+// A buy or sell whose Quantity is zero or negative transacts nothing, and
+// every fold (DeriveHoldings, Realized, RealizedByMethod) ignores it, fee
+// included. Without that rule a negative buy would reduce a position with
+// no realized P&L, and a zero-quantity buy's fee would inflate the cost
+// basis of the next real buy under the average method but not under a
+// lot method.
 type Transaction struct {
 	Type     TxType
 	Symbol   string
@@ -21,6 +28,11 @@ type Transaction struct {
 	Time     time.Time
 	Fee      float64
 	Note     string
+}
+
+// trades reports whether t is a buy or sell that moves a position.
+func (t Transaction) trades() bool {
+	return (t.Type == TxBuy || t.Type == TxSell) && t.Quantity > 0
 }
 
 // DeriveHoldings folds a transaction history into current holdings using
@@ -37,6 +49,9 @@ func DeriveHoldings(txs []Transaction) []Holding {
 	var order []string
 
 	for _, t := range txs {
+		if !t.trades() {
+			continue
+		}
 		a, ok := state[t.Symbol]
 		if !ok {
 			a = &acc{}

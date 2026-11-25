@@ -31,6 +31,9 @@ func TestSparklineLengthBounded(t *testing.T) {
 
 func TestSparklineFlatUsesLowestBlock(t *testing.T) {
 	got := sparkline([]float64{5, 5, 5, 5, 5}, 5)
+	if n := len([]rune(got)); n != 5 {
+		t.Fatalf("expected 5 cells, got %d (%q)", n, got)
+	}
 	// All cells should be the lowest block (no range → idx=0).
 	for _, r := range got {
 		if r != '▁' {

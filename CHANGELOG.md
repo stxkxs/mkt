@@ -32,6 +32,11 @@ govulncheck reaches from called code.
 
 ### Fixed
 
+- A buy or sell with a zero or negative quantity is ignored by every
+  portfolio fold. The weighted-average method let a negative buy shrink a
+  position with no realized P&L and folded a zero-quantity buy's fee into
+  the next buy's cost basis, while the FIFO/LIFO/HIFO methods skipped the
+  same rows, so the methods disagreed on identical logs.
 - Deleting or toggling an alert acts on the rule that was selected. The
   engine took a list position, so under `mkt serve` a delete confirmed after
   another session removed a rule above it deleted the next rule down.

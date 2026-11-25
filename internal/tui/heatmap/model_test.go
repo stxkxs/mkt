@@ -177,8 +177,12 @@ func TestMultibyteSectorNameTruncation(t *testing.T) {
 	m.UpdateQuote(provider.Quote{Symbol: "AAA", Price: 10, ChangePct: 1})
 	for _, w := range sweepWidths {
 		m.SetSize(w, 24)
-		if !isValidUTF8(m.View()) {
+		view := m.View()
+		if !isValidUTF8(view) {
 			t.Fatalf("width %d produced invalid UTF-8", w)
+		}
+		if w >= 20 && !strings.Contains(ansiRE.ReplaceAllString(view, ""), "Soc") {
+			t.Fatalf("width %d rendered no part of the sector name:\n%s", w, view)
 		}
 	}
 }
@@ -228,6 +232,9 @@ func TestDrilldownOrderIsStableAcrossQuotes(t *testing.T) {
 	m.UpdateQuote(provider.Quote{Symbol: "CCC", Price: 100, ChangePct: -99})
 
 	after := m.drilldownSymbols(m.sectors[0])
+	if len(opened) != 3 || len(after) != len(opened) {
+		t.Fatalf("drilldown lists %v then %v, want the same three symbols", opened, after)
+	}
 	for i := range opened {
 		if opened[i] != after[i] {
 			t.Fatalf("tiles moved under the reader: opened %v, now %v", opened, after)
@@ -244,6 +251,9 @@ func TestDrilldownOrderRefreshesWhenSectorChanges(t *testing.T) {
 
 	m.sectors = NormalizeSectors([]Sector{{Name: "Tech", Symbols: []string{"XXX", "YYY"}}})
 	got := m.drilldownSymbols(m.sectors[0])
+	if len(got) != 2 {
+		t.Fatalf("drilldown lists %v, want the two replacement symbols", got)
+	}
 	for _, s := range got {
 		if s != "XXX" && s != "YYY" {
 			t.Fatalf("stale symbol %q survived a sector replacement: %v", s, got)

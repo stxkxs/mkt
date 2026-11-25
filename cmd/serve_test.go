@@ -107,6 +107,47 @@ func TestLoadAuthorizedKeysFileSkipsOptionedKeys(t *testing.T) {
 	}
 }
 
+// The callback wish runs on every connection: only a listed key gets in.
+func TestAuthorizedKeyHandler(t *testing.T) {
+	parse := func(line string) ssh.PublicKey {
+		k, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return k
+	}
+	listed, stranger := parse(genKeyLine(t)), parse(genKeyLine(t))
+	other := parse(genKeyLine(t))
+
+	allow := authorizedKeyHandler([]ssh.PublicKey{other, listed})
+	if !allow(nil, listed) {
+		t.Error("a listed key was refused")
+	}
+	if allow(nil, stranger) {
+		t.Error("an unlisted key was admitted")
+	}
+	if authorizedKeyHandler(nil)(nil, listed) {
+		t.Error("an empty allowlist admitted a key")
+	}
+}
+
+func TestLoadAuthorizedKeysFileErrors(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent")
+	if _, err := loadAuthorizedKeys(config.ServeConfig{AuthorizedKeysFile: missing}); err == nil ||
+		!strings.Contains(err.Error(), "authorized_keys_file") {
+		t.Errorf("missing file: err = %v, want an authorized_keys_file error", err)
+	}
+
+	bad := filepath.Join(t.TempDir(), "authorized_keys")
+	if err := os.WriteFile(bad, []byte(genKeyLine(t)+"\nnot a key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadAuthorizedKeys(config.ServeConfig{AuthorizedKeysFile: bad}); err == nil ||
+		!strings.Contains(err.Error(), "authorized_keys_file") {
+		t.Errorf("malformed file: err = %v, want an authorized_keys_file error", err)
+	}
+}
+
 func TestLoadAuthorizedKeysEmptyIsEmpty(t *testing.T) {
 	keys, err := loadAuthorizedKeys(config.ServeConfig{})
 	if err != nil {

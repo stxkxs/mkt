@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -166,5 +167,22 @@ func TestWebhookName(t *testing.T) {
 	n := NewWebhookNotifier("")
 	if got, want := n.Name(), "webhook"; got != want {
 		t.Errorf("Name() = %q, want %q", got, want)
+	}
+}
+
+// JSON has no NaN, so a non-finite price cannot be encoded. The failure is
+// returned, and counted as a failed delivery, rather than posting nothing.
+func TestWebhookNonFinitePriceIsAnError(t *testing.T) {
+	var cap captured
+	srv := newTestServer(t, http.StatusOK, &cap)
+	defer srv.Close()
+
+	a := sampleAlert(srv.URL)
+	a.Price = math.NaN()
+	if err := NewWebhookNotifier("").Notify(context.Background(), a); err == nil {
+		t.Fatal("a NaN price encoded without error")
+	}
+	if cap.calls != 0 {
+		t.Errorf("posted %d time(s) with an unencodable payload", cap.calls)
 	}
 }

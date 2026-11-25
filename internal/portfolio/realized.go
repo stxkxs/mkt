@@ -13,6 +13,9 @@ func Realized(txs []Transaction) float64 {
 	state := make(map[string]*acc, len(txs))
 	var total float64
 	for _, t := range txs {
+		if !t.trades() {
+			continue
+		}
 		a, ok := state[t.Symbol]
 		if !ok {
 			a = &acc{}
