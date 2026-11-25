@@ -12,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/stxkxs/mkt/internal/provider"
+	"github.com/stxkxs/mkt/internal/tui/format"
 	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
@@ -458,7 +459,7 @@ func (m CompareModel) View() string {
 		chartHeight = 5
 	}
 	if chartWidth < 1 {
-		sb.WriteString(styleAxis.Render("  Terminal too small for chart"))
+		sb.WriteString(styleAxis.Render(format.Truncate("  Terminal too small for chart", m.width)))
 		return sb.String()
 	}
 

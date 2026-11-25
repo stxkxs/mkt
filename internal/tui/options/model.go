@@ -336,7 +336,11 @@ func (m Model) View() string {
 			}
 			return ""
 		})
-		sb.WriteString(theme.StyleVal.Render(row))
+		row = theme.StyleVal.Render(row)
+		if i == m.cursor {
+			row = theme.HighlightRow(row, m.width)
+		}
+		sb.WriteString(row)
 		sb.WriteString("\n")
 	}
 	return sb.String()

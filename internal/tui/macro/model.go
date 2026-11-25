@@ -219,7 +219,15 @@ func (m Model) View() string {
 	var sb strings.Builder
 	sb.WriteString(theme.SectionHeaderHint("Macro Dashboard", hint, m.width))
 	sb.WriteString("\n\n")
-	sb.WriteString(strings.Join(lines[start:end], "\n"))
+	// Each row is clipped to the frame: the content panel word-wraps a row
+	// it cannot fit, and a wrapped row costs a line the window did not
+	// budget, pushing the frame past the terminal.
+	for i, line := range lines[start:end] {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(format.Truncate(line, m.width))
+	}
 	return sb.String()
 }
 

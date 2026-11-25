@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -304,28 +303,25 @@ func (m Model) updateSearch(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		return m, nil
 	case "backspace":
 		if len(m.searchQuery) > 0 {
-			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+			m.searchQuery = format.DropLastRune(m.searchQuery)
 			m.filtered = m.computeFiltered(m.searchQuery)
 			m.filterCur = 0
 		}
 		return m, nil
-	case "j", "down", "ctrl+n":
+	case "down", "ctrl+n":
 		if len(m.filtered) > 0 && m.filterCur < len(m.filtered)-1 {
 			m.filterCur++
 		}
 		return m, nil
-	case "k", "up", "ctrl+p":
+	case "up", "ctrl+p":
 		if m.filterCur > 0 {
 			m.filterCur--
 		}
 		return m, nil
 	default:
-		// Append printable characters
-		for _, r := range key {
-			if unicode.IsPrint(r) && !unicode.IsControl(r) {
-				m.searchQuery += string(r)
-			}
-		}
+		// j and k are letters here, not navigation: a search for JPM or KO
+		// has to be typeable.
+		m.searchQuery = format.AppendTyped(m.searchQuery, msg.Text)
 		m.filtered = m.computeFiltered(m.searchQuery)
 		m.filterCur = 0
 		return m, nil
@@ -629,7 +625,7 @@ func (m Model) renderRow(sb *strings.Builder, i int, selected bool, lay format.L
 
 	row := cursor + strings.Join(cells, " ")
 	if selected {
-		row = theme.StyleCursorRow.Bold(true).Render(row)
+		row = theme.HighlightRow(row, m.width)
 	}
 	sb.WriteString(row)
 	sb.WriteString("\n")

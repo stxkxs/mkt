@@ -87,3 +87,37 @@ func TestViewSurvivesEveryWidth(t *testing.T) {
 		}
 	}
 }
+
+// typeKeys sends each rune as the key press a terminal delivers for it. A
+// space arrives as the named key "space" whose Text is " ", which is the
+// case that has to reach the query as a space rather than as its name.
+func typeKeys(m Model, s string) Model {
+	for _, r := range s {
+		k := tea.KeyPressMsg{Code: r, Text: string(r)}
+		if r == ' ' {
+			k = tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
+		}
+		m, _ = m.Update(k)
+	}
+	return m
+}
+
+func TestTypedThemeCommandSwitchesTheme(t *testing.T) {
+	m := New([]string{"Watch"})
+	m.Open()
+	m = typeKeys(m, "theme nord")
+	_, res := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if res.Action != ActionSetTheme || res.Arg != "nord" {
+		t.Errorf("got %+v, want SetTheme nord", res)
+	}
+}
+
+func TestBackspaceRemovesAWholeCharacter(t *testing.T) {
+	m := New([]string{"Watch"})
+	m.Open()
+	m = typeKeys(m, "wé")
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	if m.query != "w" {
+		t.Errorf("query %q after backspace, want %q", m.query, "w")
+	}
+}

@@ -143,7 +143,7 @@ Press `?` at any time for the active tab's keys.
 |-----|--------|
 | `j` / `k`, `↑` / `↓` | Navigate rows |
 | `g` / `G` | First / last row |
-| `/` | Fuzzy-search symbols (`enter` jumps, `esc` cancels, `ctrl+n`/`ctrl+p` move) |
+| `/` | Fuzzy-search symbols (`enter` jumps, `esc` cancels, arrows or `ctrl+n`/`ctrl+p` move; every letter, `j` and `k` included, is typed into the query) |
 | `s` | Cycle sort (config order → change% → volume → price) |
 | `[` / `]` | Switch watchlist group |
 | `enter` | Open the detail panel (quote, sparkline, notes, live order book for crypto) |
@@ -915,7 +915,7 @@ mkt/
         ├── palette/               # command palette (jump-to-tab, theme switch)
         ├── alertdialog/           # modal for creating alerts from a symbol
         ├── symbolinfo/            # modal symbol info overlay
-        ├── statusbar/             # connection status, theme name, help
+        ├── statusbar/             # provider status and disconnect reason, data age, alerts, theme, help
         └── format/                # price/volume formatting utilities
 ```
 

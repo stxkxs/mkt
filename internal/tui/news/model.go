@@ -218,6 +218,9 @@ func (m Model) View() string {
 			styleSource.Render(h.Source),
 			styleTime.Render(inews.TimeAgo(h.PubTime, now)),
 		)
+		if i == m.cursor {
+			meta = theme.HighlightRow(meta, m.width)
+		}
 		sb.WriteString(meta)
 		sb.WriteString("\n")
 
@@ -230,7 +233,11 @@ func (m Model) View() string {
 		if i == m.cursor {
 			titleStyle = titleStyle.Bold(true)
 		}
-		sb.WriteString("    " + titleStyle.Render(title))
+		line := "    " + titleStyle.Render(title)
+		if i == m.cursor {
+			line = theme.HighlightRow(line, m.width)
+		}
+		sb.WriteString(line)
 		sb.WriteString("\n")
 	}
 

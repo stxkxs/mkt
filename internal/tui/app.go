@@ -323,6 +323,19 @@ func spinnerTickCmd() tea.Cmd {
 	})
 }
 
+// clockInterval paces the status bar's data age, which is drawn to the
+// second. A tick repaints one row of the frame; without it the age is
+// computed only when other data arrives, so a feed that stops reads as
+// fresh at the moment it stopped.
+const clockInterval = time.Second
+
+// clockTickCmd schedules the next status bar clock tick.
+func clockTickCmd() tea.Cmd {
+	return tea.Every(clockInterval, func(t time.Time) tea.Msg {
+		return ClockTickMsg(t)
+	})
+}
+
 func (a *App) Init() tea.Cmd {
 	return spinnerTickCmd()
 }
@@ -332,9 +345,19 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
+		// The clock starts with the first frame and runs from then on; a
+		// later resize must not start a second one.
+		var cmd tea.Cmd
+		if !a.ready {
+			cmd = clockTickCmd()
+		}
 		a.ready = true
 		a.resize(msg.Width, msg.Height)
-		return a, nil
+		return a, cmd
+
+	case ClockTickMsg:
+		a.statusbar.SetNow(time.Time(msg))
+		return a, clockTickCmd()
 
 	case SpinnerTickMsg:
 		// The spinner is drawn only by the !a.ready branch of View. Once
@@ -397,7 +420,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case ConnectionStatusMsg:
-		a.statusbar.SetProviderStatus(msg.Provider, msg.Connected)
+		a.statusbar.SetProviderStatus(msg.Provider, msg.Connected, msg.Error)
 		return a, nil
 
 	case UnroutableSymbolsMsg:

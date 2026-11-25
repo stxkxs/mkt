@@ -347,3 +347,27 @@ func TestEveryLineFitsTheFrameWithUnicodeFreeText(t *testing.T) {
 		}
 	}
 }
+
+// While searching, j and k are letters: a symbol containing them has to be
+// typeable, and the arrows still move through the matches.
+func TestSearchTypesJAndK(t *testing.T) {
+	m := New([]Group{{Name: "Test", Symbols: []string{"JPM", "KO", "AAPL"}}}, market.NewCache(60))
+	m.SetSize(100, 40)
+	m = press(m, "/")
+	for _, k := range []string{"j", "p", "m"} {
+		m = press(m, k)
+	}
+	if m.searchQuery != "jpm" {
+		t.Fatalf("query %q, want %q", m.searchQuery, "jpm")
+	}
+	if len(m.filtered) != 1 || m.symbols[m.filtered[0]] != "JPM" {
+		t.Errorf("matches %v, want only JPM", m.filtered)
+	}
+
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = press(m, "/")
+	m = press(m, "k")
+	if m.searchQuery != "k" {
+		t.Errorf("query %q, want %q", m.searchQuery, "k")
+	}
+}

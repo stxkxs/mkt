@@ -128,3 +128,39 @@ func TestRowCountIsIndependentOfCellContent(t *testing.T) {
 		}
 	}
 }
+
+// The status bar is the last row of the frame, and every data message that
+// lengthens it (providers, their disconnect reasons, alerts, the theme
+// name) arrives after the first paint. With all of them applied the frame
+// still has to fit the terminal, row for row and cell for cell.
+func TestFrameFitsWithALiveStatusBar(t *testing.T) {
+	battery := dataBattery()
+	extra := []tea.Msg{
+		ConnectionStatusMsg{Provider: "binance", Connected: true},
+		ConnectionStatusMsg{Provider: "kraken", Connected: false},
+	}
+	for w := 20; w <= 200; w++ {
+		for _, h := range []int{12, 24} {
+			a := newTestApp()
+			m, _ := a.Update(tea.WindowSizeMsg{Width: w, Height: h})
+			a = m.(*App)
+			for _, msg := range append(battery, extra...) {
+				m, _ = a.Update(msg)
+				a = m.(*App)
+			}
+			for tab := 0; tab < 9; tab++ {
+				a.activeTab = Tab(tab)
+				lines := strings.Split(a.View().Content, "\n")
+				if len(lines) > h {
+					t.Fatalf("tab=%d w=%d h=%d: frame is %d rows; last rows:\n%q",
+						tab, w, h, len(lines), lines[len(lines)-2:])
+				}
+				for i, line := range lines {
+					if got := lipgloss.Width(strings.TrimRight(line, " ")); got > w {
+						t.Fatalf("tab=%d w=%d h=%d: row %d is %d cells", tab, w, h, i, got)
+					}
+				}
+			}
+		}
+	}
+}

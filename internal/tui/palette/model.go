@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/stxkxs/mkt/internal/tui/format"
 	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
@@ -74,16 +74,10 @@ func (m Model) Update(msg tea.KeyPressMsg) (Model, Result) {
 		m.query = ""
 		return m, res
 	case "backspace":
-		if len(m.query) > 0 {
-			m.query = m.query[:len(m.query)-1]
-		}
+		m.query = format.DropLastRune(m.query)
 		return m, Result{Action: ActionNone}
 	}
-	for _, r := range key {
-		if unicode.IsPrint(r) && !unicode.IsControl(r) {
-			m.query += string(r)
-		}
-	}
+	m.query = format.AppendTyped(m.query, msg.Text)
 	return m, Result{Action: ActionNone}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -416,7 +417,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.loading = false
-		m.errMsg = msg.err.Error()
+		m.errMsg = format.ErrorReason(msg.err)
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -539,35 +540,28 @@ func (m Model) View() string {
 	if m.mode == ModeLine {
 		modeStr = "Line"
 	}
-	title := styleTitle.Render(fmt.Sprintf("  %s  %s  %s", m.symbol, m.intervalLabel(), modeStr))
-	help := styleAxis.Render("  [/]: interval  +/-: zoom  f: fit  m: mode  i: indicators  esc: back")
-	sb.WriteString(title + "  " + help + "\n")
+	title := format.Truncate(fmt.Sprintf("  %s  %s  %s", m.symbol, m.intervalLabel(), modeStr), m.width)
+	sb.WriteString(styleTitle.Render(title))
+	if hints := fitHints(chartHints, m.width-lipgloss.Width(title)-2); hints != "" {
+		sb.WriteString("  " + styleAxis.Render(hints))
+	}
+	sb.WriteString("\n")
 
-	// Indicator menu overlay
-	if m.indicatorMenu {
-		sb.WriteString(lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true).Render("  Indicators: "))
-		for i := range indCount {
-			marker := "○"
-			if m.indicators[i] {
-				marker = "●"
-			}
-			sb.WriteString(fmt.Sprintf(" %s:%s%s", indicatorKeys[i], marker, indicatorNames[i]))
-		}
-		sb.WriteString(styleAxis.Render("  (toggle: 1-9, a, p, v, k; i/esc to close)"))
-		sb.WriteString("\n")
+	for _, line := range m.menuLines() {
+		sb.WriteString(line + "\n")
 	}
 	sb.WriteString("\n")
 
 	if m.loading {
-		sb.WriteString(styleAxis.Render("  Loading chart data..."))
+		sb.WriteString(styleAxis.Render(format.Truncate("  Loading chart data…", m.width)))
 		return sb.String()
 	}
 
 	if len(m.data) == 0 {
 		if m.errMsg != "" {
-			sb.WriteString(theme.StyleDown.Render(fmt.Sprintf("  Error loading chart: %s", m.errMsg)))
+			sb.WriteString(theme.StyleDown.Render(format.Truncate("  Error loading chart: "+m.errMsg, m.width)))
 		} else {
-			sb.WriteString(styleAxis.Render("  No data available"))
+			sb.WriteString(styleAxis.Render(format.Truncate("  No data available", m.width)))
 		}
 		return sb.String()
 	}
@@ -578,7 +572,7 @@ func (m Model) View() string {
 	set := computeIndicators(m.data, m.indicators)
 	v := newViewport(m.data, set, m.visibleCount(), m.candleStep())
 	if v.len() == 0 {
-		sb.WriteString(styleAxis.Render("  Terminal too small for chart"))
+		sb.WriteString(styleAxis.Render(format.Truncate("  Terminal too small for chart", m.width)))
 		return sb.String()
 	}
 
@@ -632,17 +626,16 @@ func (m Model) View() string {
 		}
 	}
 
-	sb.WriteString(m.renderReadout(v, mainH))
+	// The readout lists every active indicator's value and can outgrow any
+	// width; past the frame it would wrap into a row the grid already uses.
+	sb.WriteString(format.Truncate(m.renderReadout(v, mainH), m.width))
 	return sb.String()
 }
 
 // headerBudget is the number of terminal rows View reserves outside the
 // grid: the header lines plus the trailing readout.
 func (m Model) headerBudget() int {
-	if m.indicatorMenu {
-		return 5
-	}
-	return 4
+	return 4 + len(m.menuLines())
 }
 
 // renderReadout is the summary line under the chart. It describes the
@@ -923,10 +916,7 @@ func priceAxis(scale vscale, height int) func(int) string {
 // first grid row: the title line plus a blank line, and the indicator
 // menu line when it is open.
 func (m Model) hoverHeaderRows() int {
-	if m.indicatorMenu {
-		return 3
-	}
-	return 2
+	return 2 + len(m.menuLines())
 }
 
 // hoverCandleIdx returns the index into the visible candles that sits
@@ -965,4 +955,94 @@ func (m Model) drawCrosshair(p *panel, chartW int) {
 	for c := range min(chartW, p.w) {
 		p.paint(gy, c, '─', theme.ColorDim, paintIfEmpty)
 	}
+}
+
+// chartHints are the title line's key hints, most important first. The
+// title line keeps as many as fit, shown in their display order.
+var chartHints = []hint{
+	{order: 5, text: "esc: back"},
+	{order: 4, text: "i: indicators"},
+	{order: 0, text: "[/]: interval"},
+	{order: 1, text: "+/-: zoom"},
+	{order: 3, text: "m: mode"},
+	{order: 2, text: "f: fit"},
+}
+
+type hint struct {
+	order int
+	text  string
+}
+
+// fitHints joins the most important hints that fit in budget cells, in
+// display order. A hint that does not fit is dropped whole rather than
+// cut, since half a key binding is no binding.
+func fitHints(hints []hint, budget int) string {
+	const sep = "  "
+	kept := make([]hint, 0, len(hints))
+	used := 0
+	for _, h := range hints {
+		w := lipgloss.Width(h.text)
+		if len(kept) > 0 {
+			w += len(sep)
+		}
+		if used+w > budget {
+			continue
+		}
+		kept = append(kept, h)
+		used += w
+	}
+	slices.SortFunc(kept, func(a, b hint) int { return a.order - b.order })
+	parts := make([]string, len(kept))
+	for i, h := range kept {
+		parts[i] = h.text
+	}
+	return strings.Join(parts, sep)
+}
+
+// menuLines renders the open indicator menu, wrapped onto as many rows as
+// the width needs; none when the menu is closed. headerBudget and
+// hoverHeaderRows count these rows, so the grid and the mouse mapping move
+// down with the menu however many rows it takes.
+func (m Model) menuLines() []string {
+	if !m.indicatorMenu || m.width < 1 {
+		return nil
+	}
+	label := lipgloss.NewStyle().Foreground(theme.ColorAccent).Bold(true)
+	items := make([]string, 0, indCount+1)
+	for i := range indCount {
+		marker := "○"
+		if m.indicators[i] {
+			marker = "●"
+		}
+		items = append(items, fmt.Sprintf("%s:%s%s", indicatorKeys[i], marker, indicatorNames[i]))
+	}
+
+	const indent = "  "
+	var lines []string
+	line := label.Render(format.Truncate(indent+"Indicators:", m.width))
+	used := lipgloss.Width(line)
+	for _, it := range items {
+		it = format.Truncate(it, m.width-len(indent))
+		if used+1+lipgloss.Width(it) > m.width {
+			lines = append(lines, line)
+			line, used = indent+it, len(indent)+lipgloss.Width(it)
+			continue
+		}
+		line += " " + it
+		used += 1 + lipgloss.Width(it)
+	}
+	closeHint := "i/esc: close"
+	if used+2+len(closeHint) > m.width {
+		lines = append(lines, line)
+		line = ""
+		closeHint = format.Truncate(indent+closeHint, m.width)
+	} else {
+		closeHint = "  " + closeHint
+	}
+	lines = append(lines, line+styleAxis.Render(closeHint))
+	// A frame narrower than the indent cannot hold even one item.
+	for i, l := range lines {
+		lines[i] = format.Truncate(l, m.width)
+	}
+	return lines
 }
