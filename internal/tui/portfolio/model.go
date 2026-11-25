@@ -591,7 +591,11 @@ func (m Model) renderPosition(sb *strings.Builder, cols format.Layout, pos portf
 		}
 		cells = append(cells, style.Render(cell(c.Key, text, c.Width)))
 	}
-	sb.WriteString(cursor + strings.Join(cells, " ") + "\n")
+	row := cursor + strings.Join(cells, " ")
+	if selected {
+		row = theme.HighlightRow(row, m.width)
+	}
+	sb.WriteString(row + "\n")
 }
 
 // betaLabel renders the Beta readout, naming the benchmark so an

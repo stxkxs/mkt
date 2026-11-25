@@ -1167,8 +1167,18 @@ func TestSpinnerTickStopsOnceReady(t *testing.T) {
 	}
 	a = m.(*App)
 
-	if _, cmd = a.Update(tea.WindowSizeMsg{Width: 120, Height: 40}); cmd != nil {
-		t.Fatal("a size message should not arm a repaint loop")
+	// The first frame starts the status bar's one-second clock, and only
+	// that: a later resize must not start a second clock beside it.
+	m, cmd = a.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	a = m.(*App)
+	if cmd == nil {
+		t.Fatal("the first size message should start the status bar clock")
+	}
+	if _, ok := cmd().(ClockTickMsg); !ok {
+		t.Fatal("the first size message armed something other than the clock")
+	}
+	if _, cmd = a.Update(tea.WindowSizeMsg{Width: 100, Height: 30}); cmd != nil {
+		t.Fatal("a resize armed a second loop")
 	}
 
 	before := a.spinnerTick

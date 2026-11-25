@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"time"
+
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/news"
 	"github.com/stxkxs/mkt/internal/portfolio"
@@ -72,6 +74,10 @@ type CalendarUpdateMsg struct {
 
 // SpinnerTickMsg drives the braille loading spinner animation.
 type SpinnerTickMsg struct{}
+
+// ClockTickMsg advances the status bar's clock, so the data age keeps
+// counting while no data arrives.
+type ClockTickMsg time.Time
 
 // UnroutableSymbolsMsg carries the symbols the hub could not route to any
 // provider (the return value of market.Hub.Start). They will never quote,

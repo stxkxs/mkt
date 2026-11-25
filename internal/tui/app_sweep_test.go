@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -37,7 +38,8 @@ func dataBattery() []tea.Msg {
 		EquityMarkMsg{Mark: portfolio.EquityMark{PortfolioName: "Default", Value: 1000, Time: now}},
 		AlertTriggeredMsg{Alert: alert.TriggeredAlert{Rule: alert.Rule{Symbol: "AAPL"}, Price: 201.5, Message: "AAPL above 200", Timestamp: now}},
 		ConnectionStatusMsg{Provider: "coinbase", Connected: true},
-		ConnectionStatusMsg{Provider: "yahoo", Connected: false},
+		ConnectionStatusMsg{Provider: "yahoo", Connected: false, Error: errors.New("429 Too Many Requests")},
+		ClockTickMsg(now.Add(2 * time.Minute)),
 		UnroutableSymbolsMsg{Symbols: []string{"NOTREAL"}},
 		ConfigStatusMsg{Status: ConfigStatus{Degraded: true, Path: "config.yaml", Line: 9, WritesDisabled: true}},
 		unknownMsg{},

@@ -276,7 +276,11 @@ func (m Model) View() string {
 			sb.WriteString("\n")
 
 			for i, r := range rules[start:end] {
-				sb.WriteString(ruleLine(cols, r, i+start == m.cursor))
+				line := ruleLine(cols, r, i+start == m.cursor)
+				if i+start == m.cursor {
+					line = theme.HighlightRow(line, m.width)
+				}
+				sb.WriteString(line)
 				sb.WriteString("\n")
 			}
 
