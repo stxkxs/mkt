@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+
+	"github.com/stxkxs/mkt/internal/atomicfile"
 )
 
 // ErrWouldDestroy is returned when a write was refused to protect user data.
@@ -256,7 +258,9 @@ var stdinIsTerminal = func() bool {
 // directory (so the rename cannot cross a filesystem boundary), chmod, write,
 // fsync, rename, then fsync the directory so the rename itself is durable. A
 // crash at any point leaves either the old file or the new one, never a
-// truncated mix of the two.
+// truncated mix of the two. The rename goes through atomicfile.Replace, which
+// waits out a Windows reader holding config.yaml open instead of dropping the
+// write.
 func writeAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, ".mkt-config-*.tmp")
@@ -283,7 +287,7 @@ func writeAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close temp config: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := atomicfile.Replace(tmp, path); err != nil {
 		return fmt.Errorf("replace %s: %w", path, err)
 	}
 	// Best effort: the rename is already visible, this only makes it survive

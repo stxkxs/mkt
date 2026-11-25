@@ -35,6 +35,10 @@ govulncheck reaches from called code.
 
 ### Fixed
 
+- On Windows, saving the config or compacting the alert and equity
+  histories no longer fails with "Access is denied" while another process
+  (an editor, a virus scanner) has the file open; the replace waits up to
+  two seconds for the handle to close.
 - CPI releases from March through October 2026 show at 8:30 AM Eastern
   in the Macro tab's upcoming events; they were stored with the winter UTC
   offset and appeared an hour late.
