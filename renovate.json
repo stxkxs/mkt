@@ -15,7 +15,9 @@
   "commitMessageTopic": "{{depName}}",
   "commitMessageExtra": "to {{newValue}}",
   "configMigration": true,
-  "dependencyDashboard": true,
+  "dependencyDashboard": {
+    "enabled": true
+  },
   "dependencyDashboardApproval": false,
   "lockFileMaintenance": {
     "enabled": false
