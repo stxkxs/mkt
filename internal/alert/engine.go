@@ -84,9 +84,11 @@ type Engine struct {
 	onShortHistory func(RuleStatus)
 
 	// inflight counts notifications enqueued but not yet delivered;
-	// notifyDrops counts those the engine threw away.
-	inflight    atomic.Int64
-	notifyDrops atomic.Uint64
+	// notifyDrops counts those the engine threw away, and notifyFailures
+	// those a destination refused or timed out on.
+	inflight       atomic.Int64
+	notifyDrops    atomic.Uint64
+	notifyFailures atomic.Uint64
 }
 
 // compoundProgress tracks evaluation state for a single compound rule.
@@ -225,6 +227,11 @@ func (e *Engine) Flush(timeout time.Duration) bool {
 // either because a notifier's queue was full or because the per-notifier
 // rate limit was exceeded. Monotonic.
 func (e *Engine) NotifyDrops() uint64 { return e.notifyDrops.Load() }
+
+// NotifyFailures returns the number of deliveries a notifier attempted and
+// returned an error for: a refused request, an unreachable destination, or
+// a send that ran out its deadline. Monotonic.
+func (e *Engine) NotifyFailures() uint64 { return e.notifyFailures.Load() }
 
 // SetRules replaces all rules. Per-rule state (cooldown, edge baseline,
 // compound progress) is keyed by rule content, so rules that survive the

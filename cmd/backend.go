@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,6 +77,12 @@ type backend struct {
 	calEvents    []calendar.Event
 	pastTriggers []alert.TriggeredAlert
 	pastEquity   map[string][]portfolio.EquityMark
+
+	// persistDone is closed when the alert-persistence writer has written
+	// its final snapshot and exited; nil when persistence never started.
+	// Cleanup waits on it so an edit made inside the debounce window is on
+	// disk before the process exits.
+	persistDone chan struct{}
 }
 
 // backendOpts carries per-command hardening toggles (from CLI flags) into
@@ -187,6 +194,23 @@ func registerHubMetrics(hub *market.Hub) {
 		})
 }
 
+// registerAlertMetrics exports the notifier fan-out's outcomes, so an alert
+// that never reached its destination shows on /metrics instead of only in
+// the log of whichever process evaluated it.
+func registerAlertMetrics(engine *alert.Engine) {
+	observe.RegisterCounterFunc("mkt_alert_notify_drops_total",
+		"Notifications discarded before delivery because a notifier queue was full or its rate limit was exceeded",
+		engine.NotifyDrops)
+	observe.RegisterCounterFunc("mkt_alert_notify_failures_total",
+		"Notification deliveries a destination refused, failed or timed out on",
+		engine.NotifyFailures)
+}
+
+// apiShutdownTimeout bounds how long process exit waits for in-flight API
+// requests. Every handler answers from memory, so anything still open after
+// this is a stalled peer, not work worth waiting for.
+const apiShutdownTimeout = 5 * time.Second
+
 // startReadAPI starts the read-only HTTP surface when --listen is set. The
 // inbound webhook is mounted only with --enable-webhook and always requires a
 // token; --require-token forces a token even on loopback. Shared by the
@@ -209,9 +233,15 @@ func startReadAPI(cmd *cobra.Command, cache *market.Cache, engine *alert.Engine,
 		}
 	}
 	srv := api.New(addr, cache, engine).WithToken(token).WithWebhook(opts.enableWebhook)
-	_ = srv.Start()
-	fmt.Fprintf(os.Stderr, "api: listening on %s (webhook=%v)\n", addr, opts.enableWebhook)
-	return func() { _ = srv.Shutdown(context.Background()) }, nil
+	if err := srv.Start(); err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(os.Stderr, "api: listening on %s (webhook=%v)\n", srv.Addr(), opts.enableWebhook)
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), apiShutdownTimeout)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}, nil
 }
 
 // setupBackend wires providers, hub, alert engine, and portfolios and
@@ -286,6 +316,8 @@ func setupBackend(opts backendOpts) (*backend, func(), error) {
 		bc.Send(tui.AlertTriggeredMsg{Alert: a})
 	})
 
+	registerAlertMetrics(alertEngine)
+
 	// Load alert rules from config.
 	alertEngine.SetRules(engineRules(cfg.Alerts))
 
@@ -347,10 +379,20 @@ func setupBackend(opts backendOpts) (*backend, func(), error) {
 		pastEquity:   pastEquity,
 	}
 	cleanup := func() {
+		// The persistence writer flushes its last snapshot when the data
+		// plane's context ends; every surface cancels that context before
+		// this cleanup runs, so the wait is for one config write.
+		if b.persistDone != nil {
+			select {
+			case <-b.persistDone:
+			case <-time.After(alertPersistFinalTimeout):
+				log.Printf("alerts: gave up waiting for the final rule save after %s", alertPersistFinalTimeout)
+			}
+		}
 		// Notifier fan-out is asynchronous, so anything queued at exit is
 		// lost unless it is drained first.
 		if !alertEngine.Flush(alertFlushTimeout) {
-			fmt.Fprintf(os.Stderr, "alerts: gave up waiting for queued notifications after %s\n", alertFlushTimeout)
+			log.Printf("alerts: gave up waiting for queued notifications after %s", alertFlushTimeout)
 		}
 		for _, c := range closers {
 			c()
@@ -363,6 +405,11 @@ func setupBackend(opts backendOpts) (*backend, func(), error) {
 // to be delivered. Long enough for an HTTP webhook round trip, short enough
 // that quitting still feels instant when a destination is unreachable.
 const alertFlushTimeout = 3 * time.Second
+
+// alertPersistFinalTimeout bounds how long shutdown waits for the last alert
+// rule snapshot to reach config.yaml. One atomic write plus a backup takes
+// milliseconds; the bound exists for a wedged filesystem.
+const alertPersistFinalTimeout = 3 * time.Second
 
 // engineRules converts the config representation of alert rules into the
 // engine's. Shared by every surface that loads rules so a rule behaves the
@@ -563,7 +610,7 @@ func (b *backend) startDataPlane(ctx context.Context) {
 			}
 			m := portfolio.EquityMark{Time: now, PortfolioName: pf.Name, Value: sum.TotalValue}
 			if err := b.equityFile.Append(m); err != nil {
-				fmt.Fprintf(os.Stderr, "equity append: %v\n", err)
+				log.Printf("equity append: %v", err)
 				continue
 			}
 			b.bc.Send(tui.EquityMarkMsg{Mark: m})
@@ -647,7 +694,7 @@ func (b *backend) startAlertPersistence(ctx context.Context) {
 		return
 	}
 	if !b.writable {
-		fmt.Fprintf(os.Stderr, "alerts: changes made in the TUI will not be saved while %s does not parse\n", b.configPath)
+		log.Printf("alerts: changes made in the TUI will not be saved while %s does not parse", b.configPath)
 		return
 	}
 
@@ -668,7 +715,10 @@ func (b *backend) startAlertPersistence(ctx context.Context) {
 		}
 	})
 
+	done := make(chan struct{})
+	b.persistDone = done
 	go func() {
+		defer close(done)
 		timer := time.NewTimer(time.Hour)
 		if !timer.Stop() {
 			<-timer.C
@@ -727,10 +777,10 @@ func (b *backend) persistRules(rules []alert.Rule) {
 	})
 	if err != nil {
 		b.writable = false
-		fmt.Fprintf(os.Stderr, "alerts: not saved: %v\n", err)
+		log.Printf("alerts: not saved: %v", err)
 		if rep != nil {
 			for _, r := range rep.Removed {
-				fmt.Fprintf(os.Stderr, "  - %s\n", r)
+				log.Printf("alerts: not saved:   - %s", r)
 			}
 		}
 	}
