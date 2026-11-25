@@ -12,10 +12,11 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+
 	"github.com/stxkxs/mkt/internal/config"
 	"github.com/stxkxs/mkt/internal/symbol"
 	"github.com/stxkxs/mkt/internal/tui/theme"
-	"gopkg.in/yaml.v3"
 )
 
 func init() {

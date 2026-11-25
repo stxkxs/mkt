@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-
-	"github.com/stxkxs/mkt/internal/ndjson"
 	"sync"
 	"time"
+
+	"github.com/stxkxs/mkt/internal/ndjson"
 )
 
 // EquityMark is a single recorded portfolio value at a point in time.

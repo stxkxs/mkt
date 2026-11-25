@@ -1,7 +1,8 @@
 // Package calendar provides economic-release and earnings calendar data
-// types and a curated 2026 schedule for the major US macro events. The
-// earnings adapter is intentionally left as an interface for a focused
-// follow-up.
+// types and a curated 2026 schedule for the major US macro events.
+// Earnings dates come from an EarningsSource (yahoo.EarningsAdapter is
+// one). The economic schedule covers 2026 only: Upcoming finds
+// no economic events after the last 2026 release.
 package calendar
 
 import (
@@ -63,9 +64,8 @@ func Upcoming(events []Event, now time.Time, window time.Duration) []Event {
 	return out
 }
 
-// EarningsSource fetches upcoming earnings for the given tickers. A
-// concrete adapter (Yahoo, Nasdaq, etc.) is a follow-up; the calendar
-// tab can plug one in once available.
+// EarningsSource fetches upcoming earnings for the given tickers.
+// yahoo.EarningsAdapter implements it over Yahoo's quoteSummary module.
 type EarningsSource interface {
 	Fetch(ctx context.Context, tickers []string) ([]Event, error)
 }

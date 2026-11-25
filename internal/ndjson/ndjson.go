@@ -13,6 +13,8 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+
+	"github.com/stxkxs/mkt/internal/atomicfile"
 )
 
 // maxLineBytes bounds a single record. A line longer than this is a
@@ -97,5 +99,5 @@ func writeLines(path string, lines []string) (err error) {
 	if err = tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	return atomicfile.Replace(tmpName, path)
 }

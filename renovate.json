@@ -96,6 +96,16 @@
       ],
       "depNameTemplate": "golang.org/x/vuln",
       "datasourceTemplate": "go"
+    },
+    {
+      "description": "The goreleaser release the release workflow tells the action to run.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/release\\.yml$/"],
+      "matchStrings": [
+        "distribution:\\s*goreleaser[\\s\\S]*?version:\\s*(?<currentValue>v\\d\\S*)"
+      ],
+      "depNameTemplate": "goreleaser/goreleaser",
+      "datasourceTemplate": "github-releases"
     }
   ]
 }

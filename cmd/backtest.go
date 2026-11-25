@@ -11,11 +11,12 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/market"
 	"github.com/stxkxs/mkt/internal/provider"
 	"github.com/stxkxs/mkt/internal/provider/recording"
-	"gopkg.in/yaml.v3"
 )
 
 // backtestCacheSize is the ring depth the replay pushes quotes into. It

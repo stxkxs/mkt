@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
 	"github.com/stxkxs/mkt/internal/httpx"
 	"github.com/stxkxs/mkt/internal/observe"
 	"github.com/stxkxs/mkt/internal/provider"

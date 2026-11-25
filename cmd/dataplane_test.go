@@ -63,7 +63,7 @@ func TestSubscribeSymbolsCanonicalizesAndDedupes(t *testing.T) {
 }
 
 // The earnings endpoint only answers for plain equity tickers. Crypto, FRED
-// series and the index / futures / FX pseudo-tickers symbol.IsStock now
+// series and the index / futures / FX pseudo-tickers symbol.IsStock
 // routes to Yahoo would each cost a request and return nothing.
 func TestStockTickersFiltersNonEquities(t *testing.T) {
 	in := []string{"aapl", "BTC-USD", "FRED:DGS10", "^GSPC", "GC=F", "EURUSD=X", "brk-b"}

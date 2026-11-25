@@ -19,6 +19,7 @@ import (
 	"charm.land/wish/v2/bubbletea"
 	"charm.land/wish/v2/logging"
 	"github.com/spf13/cobra"
+
 	"github.com/stxkxs/mkt/internal/config"
 	"github.com/stxkxs/mkt/internal/news"
 )

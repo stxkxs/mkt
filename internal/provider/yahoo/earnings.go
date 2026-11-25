@@ -36,7 +36,7 @@ type rawTimestamp struct {
 // as calendar.Events. Looks up Yahoo's v10 quoteSummary calendarEvents
 // module concurrently per ticker. Failures on individual tickers are
 // skipped silently (logged via stderr would be too noisy for many
-// symbols). Use it with the EarningsSource interface from D5.
+// symbols). EarningsAdapter presents it as a calendar.EarningsSource.
 func (p *Provider) FetchEarnings(ctx context.Context, tickers []string) ([]calendar.Event, error) {
 	if len(tickers) == 0 {
 		return nil, nil

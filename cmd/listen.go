@@ -27,12 +27,12 @@ func listenGate(addr, token string, opts backendOpts) error {
 
 // checkListenSafety fails closed on an unsafe HTTP bind. A non-loopback
 // address (which includes the all-interfaces form ":9999" / 0.0.0.0) with
-// no token would expose /webhook/tradingview — which injects alerts that
-// fan out to desktop / push / webhook destinations — and /alerts, which
-// leaks configured destinations, to anyone reachable. Only an explicit
-// loopback host is allowed without a token; everything else must set
-// --listen-token. Returns an error the caller surfaces to refuse startup:
-// an unsafe bind must fail closed, not warn and serve.
+// no token would serve the watchlist's quotes, the alert rules and the
+// process metrics to anyone who can reach it. Only an explicit loopback
+// host is allowed without a token; everything else must set a listen
+// token. Returns an error the caller surfaces to refuse startup: an unsafe
+// bind must fail closed, not warn and serve. The webhook is gated
+// separately and needs a token on every address (listenGate).
 func checkListenSafety(addr, token string) error {
 	if token != "" {
 		return nil
@@ -46,8 +46,8 @@ func checkListenSafety(addr, token string) error {
 		return nil
 	}
 	return fmt.Errorf("refusing to bind --listen %s without a listen token: "+
-		"the TradingView webhook can inject alerts and /alerts leaks configured "+
-		"destinations to anyone reachable. Bind to 127.0.0.1:<port> for local use, "+
+		"the API would serve your quotes, alert rules and metrics to anyone who can reach it. "+
+		"Bind to 127.0.0.1:<port> for local use, "+
 		"or set MKT_LISTEN_TOKEN / --listen-token-file to serve on %s", addr, addr)
 }
 
@@ -67,6 +67,12 @@ func listenTokenFromSources(cmd *cobra.Command) (string, error) {
 		token := strings.TrimSpace(string(raw))
 		if token == "" {
 			return "", fmt.Errorf("listen token file %s (%s) is empty", path, from)
+		}
+		// The token is sent in an Authorization header, which cannot carry
+		// a line break, so a second line would make every request fail
+		// authentication rather than fail here where the cause is visible.
+		if strings.ContainsAny(token, "\r\n") {
+			return "", fmt.Errorf("listen token file %s (%s) holds more than one line; it must contain only the token", path, from)
 		}
 		return token, nil
 	}

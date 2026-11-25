@@ -17,7 +17,7 @@ Built with Go, [Bubbletea v2](https://charm.land/bubbletea), and [Lipgloss v2](h
 Every tag publishes signed `tar.gz` / `zip` archives for **linux, darwin and windows × amd64 and arm64**, plus a `checksums.txt`, a cosign signature over it, and a per-archive SBOM — see [Releases](https://github.com/stxkxs/mkt/releases).
 
 ```sh
-VERSION=0.1.0            # without the leading v
+VERSION=0.3.0            # a tag from Releases, without the leading v
 OS=darwin ARCH=arm64     # linux|darwin|windows × amd64|arm64
 BASE=https://github.com/stxkxs/mkt/releases/download/v$VERSION
 
@@ -54,7 +54,7 @@ go install github.com/stxkxs/mkt@latest
 
 ### Build from source
 
-Requires Go 1.25+ and [Task](https://taskfile.dev) (`brew install go-task` or `go install github.com/go-task/task/v3/cmd/task@latest`).
+Requires the Go version on the `go` line of `go.mod` (1.27.4) or newer, and [Task](https://taskfile.dev) (`brew install go-task` or `go install github.com/go-task/task/v3/cmd/task@latest`).
 
 ```sh
 git clone https://github.com/stxkxs/mkt.git
@@ -95,9 +95,9 @@ Seven flags are **persistent** — they parse on every subcommand — but only `
 
 | Flag | Env | What it does |
 |---|---|---|
-| `--listen <addr>` | `MKT_LISTEN` | start a read-only HTTP server exposing `/quotes`, `/quotes/{symbol}`, `/alerts` and `/metrics`. |
+| `--listen <addr>` | `MKT_LISTEN` | start a read-only HTTP server exposing `/quotes`, `/quotes/{symbol}`, `/alerts` and `/metrics`, plus the unauthenticated `/healthz` and `/readyz` probes. |
 | `--listen-token <token>` | `MKT_LISTEN_TOKEN` | require `Authorization: Bearer <token>` (header only; query-string tokens are rejected so secrets don't leak into logs) on every HTTP request. Passing it on argv warns, because argv is world-readable via `ps`. |
-| `--listen-token-file <path>` | `MKT_LISTEN_TOKEN_FILE` | read the token from a file's first line instead, keeping it off argv. |
+| `--listen-token-file <path>` | `MKT_LISTEN_TOKEN_FILE` | read the token from a file instead, keeping it off argv. The file holds the token on one line; surrounding whitespace is trimmed, and a file with a second line is refused at startup. |
 | `--require-token` | — | require a token even on a loopback bind. |
 | `--enable-webhook` | — | additionally mount `POST /webhook/tradingview`. Off by default; requires a listen token **even on loopback**. |
 | `--no-desktop-notify` | — | suppress the desktop popup + terminal bell (already off under `mkt serve`). |
@@ -105,7 +105,7 @@ Seven flags are **persistent** — they parse on every subcommand — but only `
 
 Token precedence is `--listen-token` > `--listen-token-file` > `MKT_LISTEN_TOKEN_FILE` > `MKT_LISTEN_TOKEN`.
 
-A token **is mandatory for any non-loopback bind**: a loopback bind (`127.0.0.1:9999`) may omit it, but `mkt` **refuses to start** on any other address (including the all-interfaces form `:9999` / `0.0.0.0`) without one, since `/alerts` names your configured destinations. `--enable-webhook` demands a token unconditionally — even on loopback — because `/webhook/tradingview` can inject alerts; it is also rate-limited to guard against notification spam.
+A token **is mandatory for any non-loopback bind**: a loopback bind (`127.0.0.1:9999`) may omit it, but `mkt` **refuses to start** on any other address (including the all-interfaces form `:9999` / `0.0.0.0`) without one, since the API would otherwise serve your quotes, alert rules and metrics to anyone who can reach it. `--enable-webhook` demands a token unconditionally — even on loopback — because `/webhook/tradingview` can inject alerts; it is also rate-limited to guard against notification spam.
 
 Non-persistent flags:
 
@@ -203,7 +203,7 @@ Totals cover **priced holdings only**. A holding with no quote is not folded in 
   2 of 19 holdings not quoted (PRIVCO, DELISTED) — totals cover 91% of cost basis
 ```
 
-`mkt portfolio stats` reports the same portfolio's Sharpe, Sortino, max drawdown, volatility, CAGR and beta from the recorded equity curve (`--rf` sets the risk-free rate per mark interval, `--benchmark` the beta reference, default `SPY`, empty string skips the fetch). Annualized figures derived from less than a week of marks are labelled as extrapolations rather than presented as fact.
+`mkt portfolio stats` reports each portfolio's Sharpe, Sortino, max drawdown, volatility, CAGR and beta from the recorded equity curve (`--portfolio <name>` limits it to one, `--rf` sets the risk-free rate per mark interval, `--benchmark` the beta reference, default `SPY`, empty string skips the fetch). Annualized figures derived from less than a week of marks are labelled as extrapolations rather than presented as fact.
 
 ### Alerts Tab
 
@@ -301,7 +301,7 @@ From the watchlist, press `a` on up to 3 symbols to add them to a comparison set
 
 ### Macro Dashboard
 
-Fixed set of macro indicators updated on the same poll interval: 10Y Treasury, 13W T-Bill, VIX, Dollar (DXY), Gold, WTI Crude, S&P 500, and Bitcoin. Below them: a computed **10Y-3M yield spread** (`^TNX - ^IRX` — `^IRX` is the 13-week bill, so this is the 10Y-3M curve, not the 2s10s), Crypto Futures, Upcoming Economic Events (30d), and DeFi TVL. The tab scrolls with `j` / `k`, `pgup` / `pgdn`, `g` / `G` and the wheel.
+Fixed set of macro indicators updated on the same poll interval: 10Y Treasury, 13W T-Bill, VIX, Dollar (DXY), Gold, WTI Crude, S&P 500, and Bitcoin. Below them: a computed **10Y-3M yield spread** (`^TNX - ^IRX` — `^IRX` is the 13-week bill, so this is the 10Y-3M curve, not the 2s10s), Crypto Futures, Upcoming Economic Events (30d), and DeFi TVL. The economic events are a curated 2026 schedule (FOMC, CPI, payrolls, GDP) compiled into the binary, so the panel lists none after the last 2026 release; earnings for watched tickers are fetched live. The tab scrolls with `j` / `k`, `pgup` / `pgdn`, `g` / `G` and the wheel.
 
 ### News Feed
 
@@ -552,7 +552,7 @@ claude mcp add --transport stdio mkt -- mkt mcp
 
 ### HTTP data surface (`--listen`)
 
-`--listen` exposes a read-only HTTP API — `/quotes`, `/quotes/{symbol}`, `/alerts` and `/metrics` (any non-loopback bind requires a token). `POST /webhook/tradingview` is **not** mounted unless you also pass `--enable-webhook`, which additionally requires a token even on loopback. `/quotes` carries price, change, and a pre-computed direction; `/metrics` emits per-symbol gauges, process counters and duration histograms in Prometheus text format.
+`--listen` exposes a read-only HTTP API — `/quotes`, `/quotes/{symbol}`, `/alerts` and `/metrics` (any non-loopback bind requires a token). Two probes answer without a token, since an orchestrator holds none and neither discloses anything: `/healthz` returns `{"status":"ok"}` whenever the process is serving, and `/readyz` returns 200 with `symbols_cached` once any quote has arrived and 503 `{"status":"warming"}` until then. `POST /webhook/tradingview` is **not** mounted unless you also pass `--enable-webhook`, which additionally requires a token even on loopback. `/quotes` carries price, change, and a pre-computed direction; `/metrics` emits per-symbol gauges, process counters and duration histograms in Prometheus text format.
 
 ```sh
 mkt --listen 127.0.0.1:9999
@@ -765,6 +765,8 @@ attached.
 
 ## Hardening
 
+What each surface defends, against whom, and what is left to the operator is set out in [docs/threat-model.md](docs/threat-model.md). Report a vulnerability privately as described in [SECURITY.md](SECURITY.md).
+
 `mkt`'s sharp surfaces are **off by default** — the HTTP API (`--listen`), the SSH dashboard (`mkt serve`), the MCP server (`mkt mcp`), and the webhook/ntfy/Pushover notifiers all require explicit opt-in. When you do enable them, these knobs scope them down:
 
 | To disable / restrict | Do this |
@@ -790,7 +792,7 @@ Notifiers are additionally capped at ~20/min each, so a webhook flood can't drai
 advanced-trade-ws.coinbase.com  api.exchange.coinbase.com
 query1.finance.yahoo.com  query2.finance.yahoo.com  finance.yahoo.com
 fapi.binance.com  api.llama.fi  feeds.marketwatch.com  search.cnbc.com
-www.sec.gov  fred.stlouisfed.org  api.stlouisfed.org
+www.sec.gov  fred.stlouisfed.org
 ntfy.sh  api.pushover.net                       # notifiers, only if configured
 ```
 
@@ -807,7 +809,7 @@ Quote providers (Coinbase WS, Yahoo HTTP, recording/replay)
         ▼
        Hub ─────► cache.Push()  (ring buffer per symbol, seeded from history at startup)
         │
-        ├──► observers  (reliable, never dropped) ──► alertEngine.Check()
+        ├──► observers  (reliable, queued per observer) ──► alertEngine.Check()
         │                                              └► Notifiers (desktop, webhook,
         │                                                 ntfy, Pushover, history)
         │
@@ -837,13 +839,13 @@ External integrations:
 The data plane is program-agnostic: a **broadcaster** fans every quote/update out to all attached `tea.Program`s, so `mkt` (one local program) and `mkt serve` (one per SSH session) share the exact same hub, cache, alert engine, and pollers — built once in `cmd/backend.go`. `mkt daemon` runs the identical data plane with no program attached.
 
 - **Providers** stream/poll quotes into a shared channel. `Hub.Start` returns the symbols no provider can serve, so an unroutable ticker is reported rather than silently never pricing.
-- **Two fan-out paths.** Observers (alert evaluation) are reliable and never dropped; the TUI dispatch is bounded and sheds on back-pressure, counted by `mkt_quote_drops_total`. A stalled terminal cannot cost you an alert.
+- **Two fan-out paths.** Observers (alert evaluation) each get every quote in order through their own queue; only an observer more than 2^20 quotes behind loses the oldest, counted by `mkt_observer_drops_total`. The TUI dispatch is bounded and sheds on back-pressure, counted by `mkt_quote_drops_total`. A stalled terminal cannot cost you an alert.
 - **Cache seeding.** Every subscribed symbol is backfilled from daily history at startup, so sparklines are populated on the first frame and `RSI(14)` / SMA-cross rules evaluate over days rather than over however many poll ticks have accumulated.
 - **Alert engine** is edge-triggered with a per-rule cooldown; the notifier fan-out is asynchronous, so a wedged webhook cannot stall quote processing. Queued notifications are flushed (up to 3s) on exit.
 - **Config write layer** is atomic (temp + rename), takes a timestamped backup before any change, diffs old against new to name what a write would drop, and refuses every write while the file on disk does not parse.
 - **Indicator package** provides pure-math SMA, EMA, RSI, MACD, Bollinger, VWAP, OBV, ATR, Stochastic, ADX, Pivots, VolumeProfile, Patterns calculations
-- **Portfolio package** is stateless math: transactions → holdings, realized P&L (FIFO/LIFO/HIFO/Average), dividends, risk metrics (Sharpe, Sortino, Beta, MaxDD), correlation matrix, position sizing
-- **Bubbletea** serializes all UI updates — no mutexes in the TUI layer
+- **Portfolio package** is pure functions over transactions and prices — holdings, realized P&L (FIFO/LIFO/HIFO/Average), dividends, risk metrics (Sharpe, Sortino, Beta, MaxDD), correlation matrix, position sizing — plus `EquityFile`, which persists the equity curve
+- **Bubbletea** serializes every model update on its event loop. The TUI's two locks guard state other goroutines reach: the chart's history cache, shared with in-flight fetches, and the program handle the order-book streamer sends to
 - **Webhook receiver** (`/webhook/tradingview`, opt-in) injects TradingView alerts through the same notifier fan-out, bypassing rule evaluation
 
 ### Project Layout
@@ -889,7 +891,7 @@ mkt/
     │   └── history.go             # multi-provider history routing
     ├── broadcast/                 # fan bubbletea messages out to N attached programs (dashboard + serve sessions)
     ├── alert/                     # rule engine, conditions, cooldown, notifier fan-out (desktop/webhook/ntfy/Pushover/history)
-    ├── portfolio/                 # stateless math: P&L, tax lots, dividends, equity curve, risk, correlation, sizing
+    ├── portfolio/                 # P&L, tax lots, dividends, risk, correlation, sizing; equity-curve file
     ├── indicator/                 # SMA, EMA, RSI, MACD, Bollinger, VWAP, OBV, ATR, Stoch, ADX, Pivots, VolProfile, Patterns
     ├── importer/                  # broker CSV formats (generic, Schwab) with header auto-detect
     ├── news/                      # RSS + SEC EDGAR feed parsing, browser URL opener

@@ -12,9 +12,10 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/stxkxs/mkt/internal/httpx"
 	"github.com/stxkxs/mkt/internal/observe"
-	"golang.org/x/time/rate"
 )
 
 // Pacing counters surfaced on /metrics.

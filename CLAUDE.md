@@ -16,6 +16,8 @@ task run               # build + run
 task test              # go test ./...
 task cover             # race tests + scripts/coverage-gate.sh (total floor, trust-boundary files fully covered)
 task lint              # golangci-lint run ./...
+task vuln              # govulncheck ./...
+task install           # go install with version ldflags
 task tidy              # go mod tidy
 task demo              # build, then render demo/mkt.gif via vhs
 task release-snapshot  # local goreleaser build of all 6 targets, no publish
@@ -41,7 +43,7 @@ Providers (Coinbase WS, Yahoo HTTP) → chan Quote → Hub ─┬─► cache.Pu
 - **`cmd/`** — Cobra CLI. `backend.go` is the single wiring point (`setupBackend` → `buildApp` → `startDataPlane`); `dashboard.go`, `serve.go` and `daemon.go` are thin shells over it, so all three surfaces share one hub, cache, alert engine and poller set. `dataplane_seed.go` backfills history into the cache at startup; `dataplane_wiring.go` hands degraded-config / unroutable-symbol state to the TUI through optional interfaces.
 - **`internal/symbol/`** — the one place symbols are canonicalized and routed. `Canonical` normalizes (`btc`/`BTCUSDT`/`btc-usd` → `BTC-USD`, `aapl` → `AAPL`, `MATIC` → `POL`) and is idempotent. Never re-implement this loop; call it.
 - **`internal/provider/`** — `QuoteProvider` and `HistoryProvider` interfaces (`provider.go`). Implementations: `coinbase/` (WebSocket streaming + REST candles), `yahoo/` (HTTP polling + chart history), plus `fred/`, `defillama/`, `binance/`, `calendar/`, `recording/`.
-- **`internal/market/`** — `hub.go` multiplexes providers. It has **two** fan-out paths: `AddObserver` is reliable and never drops (alert evaluation lives here), while the TUI dispatch is bounded and sheds under back-pressure (`Drops()`, exported as `mkt_quote_drops_total`). `Start` returns the symbols no provider can serve. `cache.go` is a ring buffer per symbol, seedable from history via `SeedCandles`.
+- **`internal/market/`** — `hub.go` multiplexes providers. It has **two** fan-out paths: `AddObserver` is reliable — each observer gets every quote in order through its own queue, and loses the oldest only past a 2^20-quote backlog (`ObserverDrops`) — and alert evaluation lives there, while the TUI dispatch is bounded and sheds under back-pressure (`Drops()`, exported as `mkt_quote_drops_total`). `Start` returns the symbols no provider can serve. `cache.go` is a ring buffer per symbol, seedable from history via `SeedCandles`.
 - **`internal/tui/`** — `app.go` is the root Bubbletea model that routes messages and manages 9 tabs. Each tab is its own package (watchlist, portfolio, alerts, chart, macro, news, heatmap, options, correlation) with Model/Update/View, plus the overlay packages (detail, alertdialog, symbolinfo, palette, help, statusbar). `tabs.go` holds the contract the root routes by: each tab package keeps value semantics and is adapted to `tabModel`, and `bindSurfaces` declares the tab set, the theme and async fan-outs, and the sizing groups. The routers iterate those declarations — adding a tab is one `tabEntry`, not an edit to every switch.
 - **`internal/alert/`** — Rule engine with cooldown. Conditions are **edge-triggered**: the engine remembers the previous evaluation of each rule and fires on the transition into the condition, and the first evaluation after startup establishes that baseline without firing. Notifier fan-out is asynchronous — call `Flush` before process exit or queued notifications are lost.
 - **`internal/indicator/`** — Pure math functions: RSI(14), SMA, EMA, MACD(12,26,9), Bollinger, VWAP, OBV, ATR, Stochastic, ADX, Pivots, VolumeProfile, Patterns.
@@ -49,14 +51,14 @@ Providers (Coinbase WS, Yahoo HTTP) → chan Quote → Hub ─┬─► cache.Pu
 
 **Config write safety (`internal/config/save.go`, `backup.go`, `diff.go`):** every write is atomic (temp + rename), takes a timestamped backup (`config.yaml.bak.<ts>`, newest 10 kept), and diffs old against new to name what would be dropped. `LoadWithResult` reports a *degraded* load — the file exists but does not parse — in which case `Config` holds defaults and `SaveSafely` refuses every write, returning a `*DestroyError` recoverable with `errors.As`. `--force` overrides; `--yes` skips only the confirmation prompt. Never add a write path that bypasses `SaveSafely`.
 
-**Concurrency model:** Providers run as goroutines writing to a shared quote channel. Hub reads the channel, calls observers synchronously, and dispatches to the broadcaster. Bubbletea serializes all UI updates — no mutexes in the TUI layer. Mutexes only exist in the market cache, the alert engine and the broadcaster.
+**Concurrency model:** Providers run as goroutines writing to a shared quote channel. Hub reads the channel, hands each quote to every observer's queue (one goroutine per observer), and dispatches to the broadcaster. Bubbletea serializes model updates on its event loop; the TUI's locks guard only what other goroutines reach (the chart history cache, the detail panel's program handle). The data plane locks its shared state: market cache, hub, alert engine and history, broadcaster, metrics registry, the providers' caches and the equity file.
 
 **Symbol routing:** Symbols with the `symbol.FREDPrefix` (`FRED:`) prefix route to the FRED economic-data provider (history only); symbols with `-USD`/`-USDT` suffixes route to Coinbase; bare tickers and the index/futures/FX pseudo-tickers (`^GSPC`, `^TNX`, `DX-Y.NYB`, `GC=F`, `EURUSD=X`, …) route to Yahoo.
 
 ## Key Patterns
 
 - All TUI state changes happen via Bubbletea messages (`messages.go`), not direct mutation
-- Indicator and portfolio packages are stateless — pure functions over data
+- The indicator package is pure functions over data; so is the portfolio package, apart from `EquityFile`, which persists the equity curve
 - Theme system (`tui/theme/`) has 7 presets; pressing `T` rebuilds all styles in-place, no restart
 - Config persists to YAML; CLI commands (`mkt config set/add/remove`), `mkt config repair` and the TUI (alert edits) all go through the same safe-write layer
 - Portfolio totals cover priced positions only — `Summary.Unpriced` / `Coverage()` exist so an unquoted holding is reported, never folded in at break-even

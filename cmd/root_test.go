@@ -175,6 +175,18 @@ func TestResolveListenTokenFileErrors(t *testing.T) {
 			t.Errorf("error = %v", err)
 		}
 	})
+
+	t.Run("more than one line", func(t *testing.T) {
+		clearListenEnv(t)
+		cmd := listenFlagCmd()
+		if err := cmd.Flags().Set("listen-token-file", tokenFile(t, "first\nsecond\n")); err != nil {
+			t.Fatalf("set flag: %v", err)
+		}
+		err := resolveListenToken(cmd, nil)
+		if err == nil || !strings.Contains(err.Error(), "more than one line") {
+			t.Fatalf("err = %v, want a refusal naming the extra line", err)
+		}
+	})
 }
 
 // TestResolveListenFallsBackToEnv covers the address itself, so a service
