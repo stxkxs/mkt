@@ -532,11 +532,13 @@ Alerts an SSH guest creates, toggles or deletes are **not** written back to the 
 | Tool | Returns |
 |---|---|
 | `get_quote(symbol)` | live price when a dashboard is listening on `--listen`, otherwise the last daily close. `source` is `"live"` or `"daily-close"`, with a `note` on the fallback. |
-| `query_history(symbol, limit)` | daily OHLCV via the active history provider |
+| `query_history(symbol, limit)` | daily OHLCV via the active history provider; `limit` is 1–1000 (default 30), and a value outside that range is refused rather than clamped |
 | `get_alerts()` | configured alert rules (webhook URLs redacted) |
 | `get_portfolio(name)` | portfolio summary — plus `fullyPriced`, `coverage`, `unpriced`, `unpricedCost` and `fetchErrors`. **Off unless `--expose-portfolio`.** |
 
 Resources: `mkt://watchlist`, `mkt://config` (only with `--expose-config`, secrets always redacted), `mkt://portfolios` (only with `--expose-portfolio`). Prompts: `analyze_symbol`, `portfolio_review`.
+
+Every tool is annotated read-only and declares a `title` and an `outputSchema`; results arrive as `structuredContent` matching that schema, with a text copy for clients that read only `content`. The server speaks MCP revisions 2025-06-18 and 2025-03-26 and answers `initialize` with the client's revision when it is one of those. Each `tools/call` runs under a 30-second deadline; a call that overruns returns `isError` naming the timeout, and the session keeps serving.
 
 ```sh
 # Claude Code

@@ -12,22 +12,45 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"time"
 )
 
-// ProtocolVersion advertised in initialize responses.
-const ProtocolVersion = "2025-03-26"
+// ProtocolVersion is the newest MCP revision this server implements, and
+// the one initialize answers with when the client asks for a revision the
+// server does not know. It is the revision that defines a tool's title,
+// outputSchema and structuredContent.
+const ProtocolVersion = "2025-06-18"
+
+// SupportedProtocolVersions lists every revision initialize accepts from a
+// client, newest first. A client asking for one of these gets it echoed
+// back; MCP leaves it to the client to disconnect when the answer is a
+// revision it cannot speak.
+var SupportedProtocolVersions = []string{ProtocolVersion, "2025-03-26"}
+
+// DefaultToolTimeout bounds one tools/call when the server is built without
+// WithToolTimeout. Requests are served one at a time, so an unbounded call
+// would hold every later request, ping included, behind it.
+const DefaultToolTimeout = 30 * time.Second
 
 // Tool is one callable in the MCP server.
 //
 // Annotations carries the MCP tool hints (readOnlyHint, destructiveHint,
 // openWorldHint). They are what lets a caller tell a read from a write
 // before it calls, so a server that mutates anything has to populate them.
+//
+// OutputSchema, when set, is the JSON Schema of the object the handler
+// returns, which the server emits as structuredContent; a client validates
+// the result against it and a function-calling adapter reads it to know
+// the shape before calling.
 type Tool struct {
-	Name        string                                                      `json:"name"`
-	Description string                                                      `json:"description"`
-	InputSchema map[string]any                                              `json:"inputSchema"`
-	Annotations map[string]any                                              `json:"annotations,omitempty"`
-	Handler     func(ctx context.Context, args map[string]any) (any, error) `json:"-"`
+	Name         string                                                      `json:"name"`
+	Title        string                                                      `json:"title,omitempty"`
+	Description  string                                                      `json:"description"`
+	InputSchema  map[string]any                                              `json:"inputSchema"`
+	OutputSchema map[string]any                                              `json:"outputSchema,omitempty"`
+	Annotations  map[string]any                                              `json:"annotations,omitempty"`
+	Handler      func(ctx context.Context, args map[string]any) (any, error) `json:"-"`
 }
 
 // ReadOnlyTool is the annotation set for a tool that reads and never
@@ -86,18 +109,29 @@ type Server struct {
 	name         string
 	version      string
 	instructions string
+	toolTimeout  time.Duration
 }
 
 // New constructs an empty Server. Use the With… registration helpers to
 // populate it.
 func New(name, version string) *Server {
 	return &Server{
-		tools:     map[string]Tool{},
-		resources: map[string]Resource{},
-		prompts:   map[string]Prompt{},
-		name:      name,
-		version:   version,
+		tools:       map[string]Tool{},
+		resources:   map[string]Resource{},
+		prompts:     map[string]Prompt{},
+		name:        name,
+		version:     version,
+		toolTimeout: DefaultToolTimeout,
 	}
+}
+
+// WithToolTimeout sets the deadline each tools/call runs under. A handler
+// sees it on the context it is passed; one that overruns is reported to
+// the client as a failed call (isError) naming the timeout, and the server
+// moves on to the next request.
+func (s *Server) WithToolTimeout(d time.Duration) *Server {
+	s.toolTimeout = d
+	return s
 }
 
 // WithInstructions sets the guidance returned by initialize. A client reads
@@ -371,7 +405,14 @@ func normalizeID(raw json.RawMessage) (json.RawMessage, bool) {
 func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 	switch rq.Method {
 	case "initialize":
-		return resp{JSONRPC: "2.0", ID: rq.ID, Result: s.initializeResult()}, false
+		var params struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		// A missing or malformed params object is answered with the newest
+		// revision rather than refused: the client still learns what the
+		// server speaks and can disconnect if it cannot.
+		_ = json.Unmarshal(rq.Params, &params)
+		return resp{JSONRPC: "2.0", ID: rq.ID, Result: s.initializeResult(params.ProtocolVersion)}, false
 
 	case "notifications/initialized", "notifications/cancelled", "notifications/progress":
 		// Notification-only methods: silent even if a confused client
@@ -390,6 +431,12 @@ func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 				"description": t.Description,
 				"inputSchema": t.InputSchema,
 			}
+			if t.Title != "" {
+				entry["title"] = t.Title
+			}
+			if len(t.OutputSchema) > 0 {
+				entry["outputSchema"] = t.OutputSchema
+			}
 			if len(t.Annotations) > 0 {
 				entry["annotations"] = t.Annotations
 			}
@@ -398,29 +445,7 @@ func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 		return resp{JSONRPC: "2.0", ID: rq.ID, Result: map[string]any{"tools": tools}}, false
 
 	case "tools/call":
-		var params struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-		}
-		if err := json.Unmarshal(rq.Params, &params); err != nil {
-			return errReply(rq.ID, errInvalidParams, "invalid params"), false
-		}
-		t, ok := s.tools[params.Name]
-		if !ok {
-			// Asking for a tool that was never listed is a client fault,
-			// so it stays a protocol error (the code the MCP spec uses for
-			// an unknown tool name).
-			return errReply(rq.ID, errInvalidParams, fmt.Sprintf("unknown tool %q", params.Name)), false
-		}
-		out, err := callTool(ctx, t, params.Arguments)
-		if err != nil {
-			// A tool that ran and failed is not a protocol fault: the MCP
-			// spec wants it reported as an ordinary result carrying
-			// isError, so the calling model can read what went wrong and
-			// retry instead of seeing the transport blow up.
-			return resp{JSONRPC: "2.0", ID: rq.ID, Result: toolError(err)}, false
-		}
-		return resp{JSONRPC: "2.0", ID: rq.ID, Result: toolResult(out)}, false
+		return s.callToolRequest(ctx, rq), false
 
 	case "resources/list":
 		rs := make([]map[string]any, 0, len(s.resourceOrder))
@@ -502,13 +527,57 @@ func (s *Server) dispatch(ctx context.Context, rq req) (resp, bool) {
 	return errReply(rq.ID, errMethodNotFound, fmt.Sprintf("method %q not found", rq.Method)), false
 }
 
+// callToolRequest serves one tools/call under the server's tool deadline.
+func (s *Server) callToolRequest(ctx context.Context, rq req) resp {
+	var params struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	if err := json.Unmarshal(rq.Params, &params); err != nil {
+		return errReply(rq.ID, errInvalidParams, "invalid params")
+	}
+	t, ok := s.tools[params.Name]
+	if !ok {
+		// Asking for a tool that was never listed is a client fault, so it
+		// stays a protocol error (the code the MCP spec uses for an unknown
+		// tool name).
+		return errReply(rq.ID, errInvalidParams, fmt.Sprintf("unknown tool %q", params.Name))
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.toolTimeout)
+	out, err := callTool(callCtx, t, params.Arguments)
+	if err == nil && callCtx.Err() != nil {
+		// The handler returned a value after its deadline passed; what it
+		// computed may rest on calls that were cut short.
+		err = callCtx.Err()
+	}
+	cancel()
+	if errors.Is(err, context.DeadlineExceeded) {
+		err = fmt.Errorf("tool %q did not finish within %s; retry, or narrow the request: %w", t.Name, s.toolTimeout, err)
+	}
+	if err != nil {
+		// A tool that ran and failed is not a protocol fault: the MCP spec
+		// wants it reported as an ordinary result carrying isError, so the
+		// calling model can read what went wrong and retry instead of
+		// seeing the transport blow up.
+		return resp{JSONRPC: "2.0", ID: rq.ID, Result: toolError(err)}
+	}
+	return resp{JSONRPC: "2.0", ID: rq.ID, Result: toolResult(out)}
+}
+
 // initializeResult is the handshake payload. Capabilities name only what
 // dispatch actually serves: a capability the client is told about and the
 // server does not implement is a claim it has no way to check except by
 // calling and trusting the reply.
-func (s *Server) initializeResult() map[string]any {
+//
+// The protocol version is the client's requested one when the server
+// supports it, and ProtocolVersion otherwise.
+func (s *Server) initializeResult(requested string) map[string]any {
+	version := ProtocolVersion
+	if slices.Contains(SupportedProtocolVersions, requested) {
+		version = requested
+	}
 	return map[string]any{
-		"protocolVersion": ProtocolVersion,
+		"protocolVersion": version,
 		"capabilities": map[string]any{
 			"tools":     map[string]any{"listChanged": false},
 			"resources": map[string]any{"listChanged": false, "subscribe": false},

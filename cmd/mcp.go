@@ -145,114 +145,23 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	// the materialized ones.
 	portfolios := portfoliosFromConfig(cfg.Portfolios)
 
-	tools := []mcp.Tool{
-		{
-			Name:        "get_quote",
-			Annotations: mcp.ReadOnlyTool(),
-			Description: "Fetch the price for a symbol. Returns source=\"live\" when a running mkt " +
-				"dashboard's HTTP API is reachable, and source=\"daily-close\" when it falls back to " +
-				"the most recent daily candle — which is a close, not a live price.",
-			InputSchema: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{"symbol": map[string]any{"type": "string"}},
-				"required":   []string{"symbol"},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (any, error) {
-				sym, _ := args["symbol"].(string)
-				if sym == "" {
-					return nil, fmt.Errorf("symbol required")
-				}
-				return quoteFor(ctx, live, histProvider, sym)
-			},
-		},
-		{
-			Name:        "query_history",
-			Annotations: mcp.ReadOnlyTool(),
-			Description: "Fetch up to N most-recent daily OHLCV bars for a symbol, oldest " +
-				"first. Bars are daily closes: the newest one is the previous session " +
-				"until today's close is published. Caps at 1000 bars.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"symbol": map[string]any{"type": "string"},
-					"limit":  map[string]any{"type": "integer", "default": 30},
-				},
-				"required": []string{"symbol"},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (any, error) {
-				sym, _ := args["symbol"].(string)
-				if sym == "" {
-					return nil, fmt.Errorf("symbol required")
-				}
-				limit := 30
-				if v, ok := args["limit"].(float64); ok && v > 0 {
-					limit = int(v)
-				}
-				if limit > maxHistoryLimit {
-					limit = maxHistoryLimit
-				}
-				bars, err := histProvider.History(ctx, provider.HistoryParams{Symbol: sym, Interval: provider.Interval1d, Limit: limit})
-				if err != nil {
-					return nil, err
-				}
-				res := historyResult{Symbol: sym, Count: len(bars), Bars: make([]ohlcvBar, 0, len(bars))}
-				for _, b := range bars {
-					res.Bars = append(res.Bars, ohlcvBar{
-						Date:   b.Time.Format("2006-01-02"),
-						Open:   b.Open,
-						High:   b.High,
-						Low:    b.Low,
-						Close:  b.Close,
-						Volume: b.Volume,
-					})
-				}
-				return res, nil
-			},
-		},
-		{
-			Name:        "get_alerts",
-			Annotations: mcp.ReadOnlyTool(),
-			Description: "List the configured alert rules and whether each is enabled. " +
-				"Notification destinations are omitted — the result says whether a rule " +
-				"has webhooks, never where they point.",
-			InputSchema: map[string]any{"type": "object"},
-			Handler: func(ctx context.Context, args map[string]any) (any, error) {
-				res := alertsResult{Count: len(cfg.Alerts), Rules: make([]alertRuleResult, 0, len(cfg.Alerts))}
-				for _, r := range cfg.Alerts {
-					res.Rules = append(res.Rules, alertRuleResult{
-						Symbol:    r.Symbol,
-						Condition: r.Condition,
-						Value:     r.Value,
-						Enabled:   r.Enabled,
-					})
-				}
-				return res, nil
-			},
-		},
-		{
-			Name: "get_portfolio",
-			Description: "Get portfolio summary by name. Positions are priced concurrently; " +
-				"the result reports coverage and lists any symbol that could not be priced, so " +
-				"a partial valuation is never mistaken for a complete one.",
-			InputSchema: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{"name": map[string]any{"type": "string"}},
-				"required":   []string{"name"},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (any, error) {
-				name, _ := args["name"].(string)
-				for _, pf := range portfolios {
-					if pf.Name != name {
-						continue
-					}
-					return summarizePortfolio(ctx, live, histProvider, pf), nil
-				}
-				return nil, fmt.Errorf("portfolio %q not found", name)
-			},
-		},
-	}
+	exposeConfig, _ := cmd.Flags().GetBool("expose-config")
+	exposePortfolio, _ := cmd.Flags().GetBool("expose-portfolio")
+	filteredTools, filteredRes := filterMCPSurfaces(
+		mcpTools(cfg, live, histProvider, portfolios), mcpResources(cfg), exposeConfig, exposePortfolio)
 
-	resources := []mcp.Resource{
+	srv := mcp.New("mkt", version).
+		WithInstructions(mcpInstructions).
+		WithTools(filteredTools...).
+		WithResources(filteredRes...).
+		WithPrompts(mcpPrompts()...)
+	return srv.Serve(context.Background(), os.Stdin, os.Stdout)
+}
+
+// mcpResources builds the resources `mkt mcp` serves. mkt://config and
+// mkt://portfolios are filtered out later unless the operator exposes them.
+func mcpResources(cfg *config.Config) []mcp.Resource {
+	return []mcp.Resource{
 		{
 			URI:         "mkt://config",
 			Name:        "Configuration",
@@ -322,8 +231,11 @@ func runMCP(cmd *cobra.Command, args []string) error {
 			},
 		},
 	}
+}
 
-	prompts := []mcp.Prompt{
+// mcpPrompts builds the prompt templates `mkt mcp` serves.
+func mcpPrompts() []mcp.Prompt {
+	return []mcp.Prompt{
 		{
 			Name:        "analyze_symbol",
 			Description: "Suggest an analysis of a symbol's recent price action using mkt tools.",
@@ -363,17 +275,6 @@ func runMCP(cmd *cobra.Command, args []string) error {
 			},
 		},
 	}
-
-	exposeConfig, _ := cmd.Flags().GetBool("expose-config")
-	exposePortfolio, _ := cmd.Flags().GetBool("expose-portfolio")
-	filteredTools, filteredRes := filterMCPSurfaces(tools, resources, exposeConfig, exposePortfolio)
-
-	srv := mcp.New("mkt", version).
-		WithInstructions(mcpInstructions).
-		WithTools(filteredTools...).
-		WithResources(filteredRes...).
-		WithPrompts(prompts...)
-	return srv.Serve(context.Background(), os.Stdin, os.Stdout)
 }
 
 // mcpInstructions is returned by initialize, before a client has listed
