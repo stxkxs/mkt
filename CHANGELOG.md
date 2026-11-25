@@ -32,6 +32,20 @@ govulncheck reaches from called code.
 
 ### Fixed
 
+- The command palette is drawn over the full-screen chart, the comparison
+  chart and the detail panel. Opened from any of them it took every key
+  with nothing on screen, so the keyboard appeared dead until `esc`.
+- A palette jump, a tab key or a tab click closes the detail panel and
+  either chart, so the chosen tab is the one on screen. A palette jump
+  left the detail panel covering the tab it switched to.
+- Opening the palette no longer pushes the frame one row past the
+  terminal height; the content panel gives up the row the prompt takes.
+- A palette command that matches no tab, theme or action, including an
+  unknown theme name, is reported in a notice row until the next key
+  instead of closing the prompt silently.
+- `enter` on a headline opens it on Windows (`rundll32
+  url.dll,FileProtocolHandler`; `open` does not exist there), and the
+  handler process is reaped once it exits on every platform.
 - A buy or sell with a zero or negative quantity is ignored by every
   portfolio fold. The weighted-average method let a negative buy shrink a
   position with no realized P&L and folded a zero-quantity buy's fee into

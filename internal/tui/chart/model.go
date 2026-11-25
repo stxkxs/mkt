@@ -196,6 +196,11 @@ func (m Model) Active() bool {
 	return m.active
 }
 
+// Close hides the chart, as esc does.
+func (m *Model) Close() {
+	m.active = false
+}
+
 // interval is the currently selected interval.
 func (m Model) interval() provider.Interval {
 	if m.intervalIdx < 0 || m.intervalIdx >= len(intervals) {

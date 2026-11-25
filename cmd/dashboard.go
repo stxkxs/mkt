@@ -35,17 +35,6 @@ func stockTickers(symbols []string) []string {
 	return out
 }
 
-// dedupeUnion flattens every group's symbols into a deduplicated slice,
-// canonicalized so a hand-typed `btc` or `AAPL ` lines up with the quotes
-// the providers emit.
-func dedupeUnion(groups []watchlistview.Group) []string {
-	var flat []string
-	for _, g := range groups {
-		flat = append(flat, g.Symbols...)
-	}
-	return canonicalDedupe(flat)
-}
-
 // subscribeSymbols returns every symbol the data plane must subscribe to:
 // the watchlist union plus every symbol named by a portfolio — both the
 // snapshot holdings and the transaction ledger.
@@ -70,26 +59,7 @@ func subscribeSymbols(groups []watchlistview.Group, portfolios []config.Portfoli
 			flat = append(flat, t.Symbol)
 		}
 	}
-	return canonicalDedupe(flat)
-}
-
-// canonicalDedupe canonicalizes every symbol, drops blanks, and removes
-// duplicates while preserving first-seen order.
-func canonicalDedupe(in []string) []string {
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		c := symbol.Canonical(s)
-		if c == "" {
-			continue
-		}
-		if _, ok := seen[c]; ok {
-			continue
-		}
-		seen[c] = struct{}{}
-		out = append(out, c)
-	}
-	return out
+	return symbol.CanonicalSet(flat)
 }
 
 // runDashboard is the default command: build the shared backend, attach a

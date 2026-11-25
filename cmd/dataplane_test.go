@@ -62,17 +62,6 @@ func TestSubscribeSymbolsCanonicalizesAndDedupes(t *testing.T) {
 	}
 }
 
-func TestDedupeUnionCanonicalizes(t *testing.T) {
-	groups := []watchlistview.Group{
-		{Name: "A", Symbols: []string{"aapl", "AAPL"}},
-		{Name: "B", Symbols: []string{"nvda"}},
-	}
-	got := dedupeUnion(groups)
-	if !reflect.DeepEqual(got, []string{"AAPL", "NVDA"}) {
-		t.Errorf("dedupeUnion() = %v, want [AAPL NVDA]", got)
-	}
-}
-
 // The earnings endpoint only answers for plain equity tickers. Crypto, FRED
 // series and the index / futures / FX pseudo-tickers symbol.IsStock now
 // routes to Yahoo would each cost a request and return nothing.

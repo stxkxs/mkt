@@ -203,6 +203,27 @@ func Canonical(s string) string {
 	return c
 }
 
+// CanonicalSet canonicalizes every symbol, drops blanks, and removes
+// duplicates while preserving first-seen order. Canonicalizing before
+// comparing is what makes "btc" and "BTC-USD" one entry rather than two
+// rows for the same instrument. It returns nil when no symbol survives.
+func CanonicalSet(in []string) []string {
+	var out []string
+	seen := make(map[string]struct{}, len(in))
+	for _, s := range in {
+		c := Canonical(s)
+		if c == "" {
+			continue
+		}
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	return out
+}
+
 // IsFRED reports whether the symbol addresses a FRED economic series.
 func IsFRED(s string) bool {
 	c, _ := classify(s)

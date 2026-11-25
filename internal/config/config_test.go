@@ -204,28 +204,6 @@ notes:
 	}
 }
 
-func TestCanonicalSymbols(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		in   []string
-		want []string
-	}{
-		{"nil stays nil", nil, nil},
-		{"canonicalizes", []string{"btc", "aapl"}, []string{"BTC-USD", "AAPL"}},
-		{"dedupes across spellings", []string{"btc", "BTC-USD", "BTCUSDT"}, []string{"BTC-USD"}},
-		{"drops blanks", []string{"AAPL", "", "  "}, []string{"AAPL"}},
-		{"preserves order", []string{"c", "b", "a"}, []string{"C", "B", "A"}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := canonicalSymbols(tc.in); !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("canonicalSymbols(%v) = %v, want %v", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
 // TestLoadCreatesDefaultsWhenMissing isolates HOME to a tempdir so the
 // real ~/.config/mkt/config.yaml is not touched. The first Load on a
 // fresh dir writes defaults; the second Load reads what was written.

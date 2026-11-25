@@ -360,9 +360,9 @@ func yamlErrorLine(err error) int {
 // viper lowercases all map keys, so this doubles as the fix-up for note
 // keys, which are symbols and are uppercase everywhere else.
 func (c *Config) normalize() {
-	c.Watchlist = canonicalSymbols(c.Watchlist)
+	c.Watchlist = symbol.CanonicalSet(c.Watchlist)
 	for i := range c.Watchlists {
-		c.Watchlists[i].Symbols = canonicalSymbols(c.Watchlists[i].Symbols)
+		c.Watchlists[i].Symbols = symbol.CanonicalSet(c.Watchlists[i].Symbols)
 	}
 	for i := range c.Alerts {
 		c.Alerts[i].Symbol = symbol.Canonical(c.Alerts[i].Symbol)
@@ -383,25 +383,6 @@ func (c *Config) normalize() {
 		}
 		c.Notes = notes
 	}
-}
-
-// canonicalSymbols canonicalizes a symbol list, dropping blanks and
-// duplicates while preserving the user's ordering.
-func canonicalSymbols(in []string) []string {
-	if len(in) == 0 {
-		return in
-	}
-	seen := make(map[string]bool, len(in))
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		c := symbol.Canonical(s)
-		if c == "" || seen[c] {
-			continue
-		}
-		seen[c] = true
-		out = append(out, c)
-	}
-	return out
 }
 
 // tightenPerms best-effort restricts the config dir to 0700 and config.yaml
