@@ -2,6 +2,30 @@ package cmd
 
 import "testing"
 
+func TestListenGate(t *testing.T) {
+	cases := []struct {
+		name    string
+		addr    string
+		token   string
+		opts    backendOpts
+		wantErr bool
+	}{
+		{"loopback, nothing required", "127.0.0.1:9999", "", backendOpts{}, false},
+		{"require-token without token", "127.0.0.1:9999", "", backendOpts{requireToken: true}, true},
+		{"require-token with token", "127.0.0.1:9999", "t", backendOpts{requireToken: true}, false},
+		{"webhook on loopback without token", "127.0.0.1:9999", "", backendOpts{enableWebhook: true}, true},
+		{"webhook with token", "0.0.0.0:9999", "t", backendOpts{enableWebhook: true}, false},
+		{"non-loopback without token", "0.0.0.0:9999", "", backendOpts{}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if err := listenGate(c.addr, c.token, c.opts); (err != nil) != c.wantErr {
+				t.Errorf("listenGate(%q, %q, %+v) = %v, wantErr %v", c.addr, c.token, c.opts, err, c.wantErr)
+			}
+		})
+	}
+}
+
 func TestCheckListenSafety(t *testing.T) {
 	tests := []struct {
 		name    string

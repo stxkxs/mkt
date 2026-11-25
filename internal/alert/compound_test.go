@@ -15,6 +15,18 @@ func newCaptureEngine(cooldown time.Duration) (*Engine, *[]TriggeredAlert) {
 	return e, &fired
 }
 
+// manualClock is an engine clock a test advances explicitly, so a cooldown
+// elapses because the test says so rather than because the test slept.
+type manualClock struct{ t time.Time }
+
+func newManualClock(e *Engine) *manualClock {
+	c := &manualClock{t: time.Date(2026, 3, 2, 15, 0, 0, 0, time.UTC)}
+	e.SetClock(func() time.Time { return c.t })
+	return c
+}
+
+func (c *manualClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+
 func TestLegacyRuleStillFires(t *testing.T) {
 	e, fired := newCaptureEngine(time.Hour)
 	e.AddRule(Rule{Symbol: "BTC", Condition: CondAbove, Value: 50000, Enabled: true})
@@ -160,7 +172,8 @@ func TestCompoundSequenceIgnoresOutOfOrderMatches(t *testing.T) {
 }
 
 func TestCompoundFireResetsState(t *testing.T) {
-	e, fired := newCaptureEngine(1 * time.Millisecond) // short cooldown for test speed
+	e, fired := newCaptureEngine(time.Minute)
+	clock := newManualClock(e)
 	e.AddRule(Rule{
 		Symbol:  "BTC",
 		Enabled: true,
@@ -176,8 +189,7 @@ func TestCompoundFireResetsState(t *testing.T) {
 		t.Fatalf("first fire expected, got %d", len(*fired))
 	}
 
-	// Wait for cooldown
-	time.Sleep(5 * time.Millisecond)
+	clock.advance(time.Minute + time.Second)
 
 	// Should fire again because state was cleared on fire
 	e.Check(provider.Quote{Symbol: "BTC", Price: 56000})

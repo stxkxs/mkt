@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/broadcast"
 	"github.com/stxkxs/mkt/internal/config"
@@ -383,29 +386,147 @@ func TestSetupBackendRegistersAlertMetrics(t *testing.T) {
 	}
 }
 
-// Under `mkt serve` the engine is shared by every SSH session, so a guest
-// must not be able to rewrite the host's config.
-func TestServeModeDoesNotPersistAlerts(t *testing.T) {
-	writeConfig(t, "watchlist:\n  - AAPL\n")
+// parseCommandFlags parses args into one of the real commands, so a test
+// reads the flags exactly as registered, and restores every flag it touched.
+func parseCommandFlags(t *testing.T, cmd *cobra.Command, args ...string) *cobra.Command {
+	t.Helper()
+	if err := cmd.ParseFlags(args); err != nil {
+		t.Fatalf("parse %v: %v", args, err)
+	}
+	t.Cleanup(func() {
+		cmd.Flags().VisitAll(func(f *pflag.Flag) {
+			if f.Changed {
+				_ = f.Value.Set(f.DefValue)
+				f.Changed = false
+			}
+		})
+	})
+	return cmd
+}
 
-	b, cleanup, err := setupBackend(backendOpts{noNotify: true, serveMode: true})
+// Under `mkt serve` the engine is shared by every SSH session, so a guest
+// must not be able to rewrite the host's config. The options come from the
+// serve command's own flags, and cleanup is the path that would flush a
+// pending save (TestCleanupWaitsForFinalAlertSave is the positive control).
+func TestServeModeDoesNotPersistAlerts(t *testing.T) {
+	path := writeConfig(t, "watchlist:\n  - AAPL\n")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	opts := optsFromFlags(parseCommandFlags(t, serveCmd, "--no-notify"), true)
+	b, cleanup, err := setupBackend(opts)
 	if err != nil {
 		t.Fatalf("setupBackend: %v", err)
 	}
-	defer cleanup()
-
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	b.startAlertPersistence(ctx)
 	b.alertEngine.AddRule(alert.Rule{Symbol: "AAPL", Condition: alert.CondAbove, Value: 1, Enabled: true})
+	cancel()
+	cleanup()
 
-	time.Sleep(2 * alertPersistDebounce)
-	reloaded, err := config.Load()
+	after, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("reload: %v", err)
+		t.Fatal(err)
 	}
-	if len(reloaded.Alerts) != 0 {
-		t.Errorf("serve mode persisted %d alert(s); an SSH guest must not write the host's config", len(reloaded.Alerts))
+	if string(after) != string(before) {
+		t.Errorf("serve mode rewrote the host's config; an SSH guest must not:\n%s", after)
+	}
+}
+
+func TestOptsFromFlags(t *testing.T) {
+	t.Run("serve without --persist-alerts", func(t *testing.T) {
+		o := optsFromFlags(parseCommandFlags(t, serveCmd), true)
+		if !o.serveMode || o.persistAlerts {
+			t.Errorf("opts = %+v, want serveMode and no persistence", o)
+		}
+	})
+	t.Run("serve with --persist-alerts", func(t *testing.T) {
+		o := optsFromFlags(parseCommandFlags(t, serveCmd, "--persist-alerts"), true)
+		if !o.persistAlerts {
+			t.Errorf("opts = %+v, want persistence", o)
+		}
+	})
+	t.Run("dashboard persists by default", func(t *testing.T) {
+		o := optsFromFlags(parseCommandFlags(t, rootCmd), false)
+		if o.serveMode || !o.persistAlerts {
+			t.Errorf("opts = %+v, want persistence outside serve", o)
+		}
+	})
+	t.Run("hardening flags", func(t *testing.T) {
+		cmd := parseCommandFlags(t, rootCmd,
+			"--no-notify", "--no-desktop-notify", "--enable-webhook", "--require-token", "--force")
+		o := optsFromFlags(cmd, false)
+		if !o.noNotify || !o.noDesktopNotify || !o.enableWebhook || !o.requireToken || !o.force {
+			t.Errorf("opts = %+v, want every hardening flag set", o)
+		}
+	})
+}
+
+// listenCmd is a command carrying the two flags startReadAPI reads.
+func listenCmd(t *testing.T, addr, token string) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("listen", addr, "")
+	cmd.Flags().String("listen-token", token, "")
+	return cmd
+}
+
+func TestStartReadAPIWithoutListenIsANoop(t *testing.T) {
+	stop, err := startReadAPI(listenCmd(t, "", ""), market.NewCache(8), alert.NewEngine(0, nil), backendOpts{})
+	if err != nil || stop == nil {
+		t.Fatalf("stop is nil: %t, err = %v; want a no-op shutdown", stop == nil, err)
+	}
+	stop()
+}
+
+// Every refusal in listenGate must stop startReadAPI before it binds.
+func TestStartReadAPIRefusesBeforeBinding(t *testing.T) {
+	cases := []struct {
+		name string
+		addr string
+		opts backendOpts
+	}{
+		{"non-loopback without token", "0.0.0.0:0", backendOpts{}},
+		{"require-token without token", "127.0.0.1:0", backendOpts{requireToken: true}},
+		{"webhook without token", "127.0.0.1:0", backendOpts{enableWebhook: true}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			stop, err := startReadAPI(listenCmd(t, c.addr, ""), market.NewCache(8), alert.NewEngine(0, nil), c.opts)
+			if err == nil {
+				stop()
+				t.Fatal("started without a token")
+			}
+		})
+	}
+}
+
+func TestStartReadAPIServesAndShutsDown(t *testing.T) {
+	stop, err := startReadAPI(listenCmd(t, "127.0.0.1:0", "s3cret"), market.NewCache(8), alert.NewEngine(0, nil),
+		backendOpts{requireToken: true, enableWebhook: true})
+	if err != nil {
+		t.Fatalf("startReadAPI: %v", err)
+	}
+	done := make(chan struct{})
+	go func() { stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(apiShutdownTimeout + time.Second):
+		t.Fatal("shutdown did not return within its bound")
+	}
+}
+
+func TestStartReadAPIReturnsBindError(t *testing.T) {
+	stop, err := startReadAPI(listenCmd(t, "127.0.0.1:0", ""), market.NewCache(8), alert.NewEngine(0, nil), backendOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	_, err = startReadAPI(listenCmd(t, "127.0.0.1:-1", ""), market.NewCache(8), alert.NewEngine(0, nil), backendOpts{})
+	if err == nil {
+		t.Fatal("an unbindable address started")
 	}
 }
 

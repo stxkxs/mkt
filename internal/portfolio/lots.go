@@ -34,11 +34,11 @@ func RealizedByMethod(txs []Transaction, method TaxMethod) float64 {
 	state := make(map[string][]lot, len(txs))
 	var total float64
 	for _, t := range txs {
+		if !t.trades() {
+			continue
+		}
 		switch t.Type {
 		case TxBuy:
-			if t.Quantity <= 0 {
-				continue
-			}
 			perUnit := t.Price + t.Fee/t.Quantity
 			state[t.Symbol] = append(state[t.Symbol], lot{
 				Quantity: t.Quantity,

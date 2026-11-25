@@ -221,16 +221,8 @@ func startReadAPI(cmd *cobra.Command, cache *market.Cache, engine *alert.Engine,
 		return func() {}, nil
 	}
 	token, _ := cmd.Flags().GetString("listen-token")
-	if opts.requireToken && token == "" {
-		return nil, fmt.Errorf("--require-token set but --listen-token is empty")
-	}
-	if opts.enableWebhook && token == "" {
-		return nil, fmt.Errorf("--enable-webhook requires --listen-token: the inbound webhook injects alerts into the notifier fan-out and must never be unauthenticated, even on loopback")
-	}
-	if !opts.requireToken {
-		if err := checkListenSafety(addr, token); err != nil {
-			return nil, err
-		}
+	if err := listenGate(addr, token, opts); err != nil {
+		return nil, err
 	}
 	srv := api.New(addr, cache, engine).WithToken(token).WithWebhook(opts.enableWebhook)
 	if err := srv.Start(); err != nil {

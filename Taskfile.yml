@@ -31,6 +31,12 @@ tasks:
     cmds:
       - go test ./...
 
+  cover:
+    desc: Run tests with the race detector and apply the coverage gate CI applies
+    cmds:
+      - go test -race -count=1 -coverprofile=cover.out ./...
+      - scripts/coverage-gate.sh cover.out
+
   lint:
     desc: Run linter
     cmds:
@@ -50,7 +56,7 @@ tasks:
   clean:
     desc: Remove build artifacts
     cmds:
-      - rm -f {{.BINARY}}
+      - rm -f {{.BINARY}} cover.out
       - rm -rf dist/
 
   tidy:

@@ -14,6 +14,7 @@ Uses [Task](https://taskfile.dev) runner (Taskfile.yml):
 task build             # go build with version ldflags → ./mkt
 task run               # build + run
 task test              # go test ./...
+task cover             # race tests + scripts/coverage-gate.sh (total floor, trust-boundary files fully covered)
 task lint              # golangci-lint run ./...
 task tidy              # go mod tidy
 task demo              # build, then render demo/mkt.gif via vhs

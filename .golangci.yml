@@ -151,7 +151,7 @@ linters:
       # the user's own MKT_RECORD path and their own --listen-token-file /
       # MKT_LISTEN_TOKEN_FILE path — files they asked mkt to read or write on
       # their own command line. Same reasoning as the G304 note above.
-      - path: (cmd/backend_record\.go|cmd/root\.go)
+      - path: (cmd/backend_record\.go|cmd/listen\.go)
         text: "G703"
         linters:
           - gosec

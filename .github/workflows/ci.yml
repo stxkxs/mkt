@@ -54,21 +54,13 @@ jobs:
         shell: bash
         run: go test ${{ matrix.race }} -count=1 -coverprofile=cover.out ./...
 
-      # A ratchet, not a target. 82% is what the tree carries; the gate
-      # stops a change from quietly trading coverage for features. Raise
-      # the floor when the number moves up, never lower it to go green.
-      - name: coverage floor
+      # The total must stay at or above a ratcheted floor, and every
+      # trust-boundary file listed in the script must be fully covered.
+      # scripts/coverage-gate.sh holds both thresholds and the file list.
+      - name: coverage gate
         if: matrix.os == 'ubuntu-latest'
         shell: bash
-        run: |
-          floor=80.0
-          total=$(go tool cover -func=cover.out | awk '/^total:/ {print $3}' | tr -d '%')
-          echo "total coverage: ${total}% (floor ${floor}%)"
-          awk -v t="$total" -v f="$floor" 'BEGIN { exit !(t < f) }' && {
-            echo "::error::coverage ${total}% is below the ${floor}% floor"
-            exit 1
-          }
-          exit 0
+        run: scripts/coverage-gate.sh cover.out
 
   # Compile every target .goreleaser.yaml publishes. Catches per-OS build
   # constraints that the three test legs above cannot reach (linux/arm64,

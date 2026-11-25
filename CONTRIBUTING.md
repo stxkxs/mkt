@@ -15,6 +15,7 @@ git clone https://github.com/stxkxs/mkt.git
 cd mkt
 task build      # → ./mkt
 task test       # go test ./...
+task cover      # race-enabled tests plus the coverage gate CI applies
 task lint       # golangci-lint run ./...
 ```
 
@@ -54,6 +55,10 @@ A tab that departs from the common path says so in its entry rather than by bein
 
 ## Pull requests
 
-- Run `task lint` and `task test` locally first.
+- Run `task lint` and `task cover` locally first. `task cover` fails when
+  total coverage drops below the floor in `scripts/coverage-gate.sh`, or
+  when a file on its trust-boundary list (listen gate, SSH allowlist, API
+  token check, notifier redaction and argv, webhook delivery, terminal
+  sanitizer) has a statement no test runs.
 - Keep commits focused; commit messages should explain the *why*, not just the *what*.
 - Update `CHANGELOG.md` under `## Unreleased`.

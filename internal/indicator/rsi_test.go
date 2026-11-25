@@ -20,6 +20,9 @@ func TestRSI(t *testing.T) {
 
 	t.Run("period<=0 returns all NaN", func(t *testing.T) {
 		got := RSI([]float64{1, 2, 3, 4, 5}, 0)
+		if len(got) != 5 {
+			t.Fatalf("length %d, want one output per input (5)", len(got))
+		}
 		for _, v := range got {
 			if !math.IsNaN(v) {
 				t.Fatalf("want NaN, got %v", v)

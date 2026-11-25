@@ -3,38 +3,11 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 )
-
-// checkListenSafety fails closed on an unsafe HTTP bind. A non-loopback
-// address (which includes the all-interfaces form ":9999" / 0.0.0.0) with
-// no token would expose /webhook/tradingview — which injects alerts that
-// fan out to desktop / push / webhook destinations — and /alerts, which
-// leaks configured destinations, to anyone reachable. Only an explicit
-// loopback host is allowed without a token; everything else must set
-// --listen-token. Returns an error the caller surfaces to refuse startup:
-// an unsafe bind must fail closed, not warn and serve.
-func checkListenSafety(addr, token string) error {
-	if token != "" {
-		return nil
-	}
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		host = "" // unparseable → treat as non-loopback and require a token
-	}
-	switch host {
-	case "localhost", "127.0.0.1", "::1":
-		return nil
-	}
-	return fmt.Errorf("refusing to bind --listen %s without a listen token: "+
-		"the TradingView webhook can inject alerts and /alerts leaks configured "+
-		"destinations to anyone reachable. Bind to 127.0.0.1:<port> for local use, "+
-		"or set MKT_LISTEN_TOKEN / --listen-token-file to serve on %s", addr, addr)
-}
 
 // Environment variables that supply the listen bearer token out of band.
 // A token on argv is readable by every other user on the host (ps, /proc),
@@ -134,28 +107,6 @@ func resolveListenToken(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("set listen token: %w", err)
 	}
 	return nil
-}
-
-// listenTokenFromSources returns the first token found in the out-of-band
-// sources, or "" when none is configured.
-func listenTokenFromSources(cmd *cobra.Command) (string, error) {
-	path, _ := cmd.Flags().GetString("listen-token-file")
-	from := "--listen-token-file"
-	if path == "" {
-		path, from = os.Getenv(EnvListenTokenFile), EnvListenTokenFile
-	}
-	if path != "" {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("read listen token from %s (%s): %w", path, from, err)
-		}
-		token := strings.TrimSpace(string(raw))
-		if token == "" {
-			return "", fmt.Errorf("listen token file %s (%s) is empty", path, from)
-		}
-		return token, nil
-	}
-	return strings.TrimSpace(os.Getenv(EnvListenToken)), nil
 }
 
 var versionCmd = &cobra.Command{
