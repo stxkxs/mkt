@@ -105,9 +105,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		switch msg.String() {
-		case "j", "down", "l", "]":
+		case "j", "down", "l", "right", "]":
 			m.offset = m.clamp(m.offset + 1)
-		case "k", "up", "h", "[":
+		case "k", "up", "h", "left", "[":
 			m.offset = m.clamp(m.offset - 1)
 		case "pgdown":
 			m.offset = m.clamp(m.offset + m.visible())

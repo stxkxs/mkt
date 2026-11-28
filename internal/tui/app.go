@@ -634,13 +634,25 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		a.switchTab(tab)
 		return a, nil
 	}
+	// The arrows step through tabs, except on the two grid tabs, where
+	// ← and → move across the grid as h and l do; tab and shift+tab step
+	// through tabs everywhere.
 	switch msg.String() {
-	case "tab", "right":
+	case "tab":
 		a.switchTab((a.activeTab + 1) % Tab(len(tabNames)))
 		return a, nil
-	case "shift+tab", "left":
+	case "shift+tab":
 		a.switchTab((a.activeTab - 1 + Tab(len(tabNames))) % Tab(len(tabNames)))
 		return a, nil
+	case "right", "left":
+		if !gridTab(a.activeTab) {
+			step := Tab(1)
+			if msg.String() == "left" {
+				step = Tab(len(tabNames) - 1)
+			}
+			a.switchTab((a.activeTab + step) % Tab(len(tabNames)))
+			return a, nil
+		}
 	}
 
 	// Watchlist shortcuts open other views, so they are handled
@@ -1026,6 +1038,12 @@ const (
 	tabBarHeight    = 1
 	statusBarHeight = 1
 )
+
+// gridTab reports whether a tab lays its content out in two dimensions,
+// so that ← and → move across it rather than to the neighbouring tab.
+func gridTab(t Tab) bool {
+	return t == TabHeatmap || t == TabCorrel
+}
 
 // helpCard names the help card for what is on screen: the full-screen
 // chart or comparison, the detail panel, or else the active tab.

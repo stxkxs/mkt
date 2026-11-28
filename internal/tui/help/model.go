@@ -23,6 +23,7 @@ type binding struct {
 var globalBindings = []binding{
 	{"1-9", "jump to tab"},
 	{"tab / shift+tab", "next / previous tab"},
+	{"→ / ←", "next / previous tab, except on Heatmap and Correl"},
 	{":", "command palette (tab name, theme <name>, q)"},
 	{"T", "cycle color theme"},
 	{"?", "toggle this help"},
@@ -110,7 +111,7 @@ var tabBindings = map[string][]binding{
 		{"enter", "open link in browser"},
 	},
 	"Heatmap": {
-		{"j/k/h/l", "navigate sectors"},
+		{"j/k/h/l, arrows", "navigate sectors"},
 		{"enter", "drill into sector"},
 		{"esc", "back to overview"},
 	},
@@ -119,7 +120,7 @@ var tabBindings = map[string][]binding{
 		{"O (on Watch tab)", "load chain for selected symbol"},
 	},
 	"Correl": {
-		{"h/l or [ / ]", "scroll the visible symbol window"},
+		{"h/l, arrows, [ / ]", "scroll the visible symbol window"},
 		{"g / G", "first / last symbols"},
 		{"b", "cycle resampling bucket (30s → 15m)"},
 	},

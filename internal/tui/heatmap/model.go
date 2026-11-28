@@ -204,12 +204,12 @@ func (m Model) updateOverview(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		if m.cursor > 0 {
 			m.cursor--
 		}
-	case "l":
+	case "l", "right":
 		m.cursor += 3
 		if m.cursor >= len(m.sectors) {
 			m.cursor = len(m.sectors) - 1
 		}
-	case "h":
+	case "h", "left":
 		m.cursor -= 3
 		if m.cursor < 0 {
 			m.cursor = 0
@@ -302,11 +302,11 @@ func (m Model) updateDrilldown(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-	case "l":
+	case "l", "right":
 		if m.cursor < len(sect.Symbols)-1 {
 			m.cursor++
 		}
-	case "h":
+	case "h", "left":
 		if m.cursor > 0 {
 			m.cursor--
 		}

@@ -1,6 +1,7 @@
 package theme
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -76,6 +77,26 @@ func TestHeatmapColorClamps(t *testing.T) {
 	for _, pct := range []float64{-1e9, -100, -5, 0, 5, 100, 1e9} {
 		if HeatmapColor(pct) == nil {
 			t.Errorf("HeatmapColor(%v) returned nil", pct)
+		}
+	}
+}
+
+// A move and its opposite sit the same number of steps from neutral, small
+// moves either way are neutral, and the ends clamp. Truncating toward zero
+// painted -0.1% red and +0.1% neutral.
+func TestHeatmapStepIsSymmetric(t *testing.T) {
+	for p := 0.0; p <= 8; p += 0.01 {
+		if up, down := heatmapStep(p), heatmapStep(-p); up != -down {
+			t.Fatalf("%.2f%% is %d steps, %.2f%% is %d", p, up, -p, down)
+		}
+	}
+	for _, c := range []struct {
+		pct  float64
+		want int
+	}{{0, 0}, {0.1, 0}, {-0.1, 0}, {0.6, 0}, {-0.6, 0}, {0.7, 1}, {-0.7, -1},
+		{5, 4}, {-5, -4}, {50, 4}, {-50, -4}, {math.NaN(), 0}, {math.Inf(1), 4}, {math.Inf(-1), -4}} {
+		if got := heatmapStep(c.pct); got != c.want {
+			t.Errorf("heatmapStep(%v) = %d, want %d", c.pct, got, c.want)
 		}
 	}
 }

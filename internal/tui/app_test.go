@@ -1284,3 +1284,29 @@ func TestHelpOpensOverEveryView(t *testing.T) {
 		}
 	}
 }
+
+// The arrows step through tabs, except on the grid tabs, where they move
+// across the grid; tab steps through tabs everywhere.
+func TestArrowsStayOnGridTabs(t *testing.T) {
+	for _, c := range []struct {
+		from Tab
+		key  rune
+		want Tab
+	}{
+		{TabWatchlist, tea.KeyRight, TabPortfolio},
+		{TabWatchlist, tea.KeyLeft, TabCorrel},
+		{TabHeatmap, tea.KeyRight, TabHeatmap},
+		{TabHeatmap, tea.KeyLeft, TabHeatmap},
+		{TabCorrel, tea.KeyRight, TabCorrel},
+		{TabCorrel, tea.KeyLeft, TabCorrel},
+		{TabHeatmap, tea.KeyTab, TabOptions},
+		{TabCorrel, tea.KeyTab, TabWatchlist},
+	} {
+		a := sizedApp(t, 120, 40)
+		a.switchTab(c.from)
+		a, _ = send(t, a, keyCode(c.key))
+		if a.activeTab != c.want {
+			t.Errorf("%v + key %d: on %v, want %v", c.from, c.key, a.activeTab, c.want)
+		}
+	}
+}

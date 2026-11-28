@@ -3,6 +3,7 @@ package theme
 import (
 	"fmt"
 	"image/color"
+	"math"
 
 	"charm.land/lipgloss/v2"
 )
@@ -11,19 +12,36 @@ const heatmapSteps = 9
 
 var heatmapGradient [heatmapSteps]color.Color
 
+// heatmapSpan is the change percentage that reaches either end of the
+// gradient; anything further out clamps to the end.
+const heatmapSpan = 5.0
+
 // HeatmapColor returns the gradient color for a change-percentage value,
-// interpolating between the current theme's red / neutral / green at roughly ±5%.
-// Out-of-range inputs clamp to the gradient endpoints.
+// interpolating between the current theme's red / neutral / green across
+// ±heatmapSpan. Out-of-range inputs clamp to the gradient endpoints, and NaN
+// reads as neutral.
+//
+// The step is chosen from the magnitude and then signed, so a move and its
+// opposite land the same number of steps either side of neutral: moves
+// smaller than 0.625% either way share the neutral tile.
 func HeatmapColor(pct float64) color.Color {
-	// Map [-5, +5] onto [0, heatmapSteps-1].
-	idx := int((pct + 5) / 10 * float64(heatmapSteps-1))
-	if idx < 0 {
-		idx = 0
+	return heatmapGradient[(heatmapSteps-1)/2+heatmapStep(pct)]
+}
+
+// heatmapStep is how many gradient steps pct sits from neutral, negative
+// for a fall.
+func heatmapStep(pct float64) int {
+	const mid = (heatmapSteps - 1) / 2
+	if math.IsNaN(pct) {
+		return 0
 	}
-	if idx > heatmapSteps-1 {
-		idx = heatmapSteps - 1
+	// Clamped before the conversion: int(+Inf) is not defined, and amd64
+	// makes it the most negative int.
+	step := int(math.Min(math.Round(math.Abs(pct)/heatmapSpan*mid), mid))
+	if pct < 0 {
+		return -step
 	}
-	return heatmapGradient[idx]
+	return step
 }
 
 func rebuildHeatmapGradient(redHex, neutralHex, greenHex string) {
