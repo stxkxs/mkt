@@ -333,3 +333,39 @@ func SpinnerFrame(tick int) string {
 	}
 	return BrailleSpinner[i]
 }
+
+// Wrap breaks s into lines of at most width display cells, at spaces
+// where it can and inside a word only when the word alone is wider than
+// width. Text a reader has no other way to see — a key's description, an
+// instruction — is wrapped rather than cut, since an ellipsis there hides
+// the part that was needed.
+//
+// Every returned line is re-measured and clipped to width, so the ceiling
+// holds where ansi.Wrap and StringWidth disagree about a grapheme cluster.
+func Wrap(s string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	lines := strings.Split(ansi.Wrap(s, width, ""), "\n")
+	for i, l := range lines {
+		l = strings.TrimRight(l, " ")
+		if ansi.StringWidth(l) > width {
+			l = Clip(l, width)
+		}
+		lines[i] = l
+	}
+	return lines
+}
+
+// FirstFit returns the first variant that fits in width display cells, or
+// "" when none does. A line with a fixed row budget offers its wordings
+// longest first, so a narrow frame reads a shorter sentence rather than a
+// cut one.
+func FirstFit(width int, variants ...string) string {
+	for _, v := range variants {
+		if ansi.StringWidth(v) <= width {
+			return v
+		}
+	}
+	return ""
+}

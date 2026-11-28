@@ -157,7 +157,7 @@ func TestSignpostTabIsNotSizedByItsTab(t *testing.T) {
 
 	visited := mk()
 	visited, _ = send(t, visited, keyPress("4"))
-	if got := render(visited); !strings.Contains(got, "press 'c' for chart") {
+	if got := render(visited); !strings.Contains(got, "press 'c' to chart it") {
 		t.Errorf("the Chart tab did not render its signpost:\n%s", got)
 	}
 	visited, _ = send(t, visited, keyPress("1"))

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestTruncate(t *testing.T) {
@@ -254,6 +255,42 @@ func TestFormatVolumeLadder(t *testing.T) {
 	} {
 		if got := FormatVolume(tc.in); got != tc.want {
 			t.Errorf("FormatVolume(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestWrapKeepsEveryWordInsideTheWidth(t *testing.T) {
+	text := "Select a symbol on the Watchlist tab and press 'O' to load its options chain."
+	for w := 1; w <= 90; w++ {
+		lines := Wrap(text, w)
+		for _, l := range lines {
+			if ansi.StringWidth(l) > w {
+				t.Fatalf("width %d: line %q is %d cells", w, l, ansi.StringWidth(l))
+			}
+			if strings.Contains(l, "…") {
+				t.Fatalf("width %d: line %q carries an ellipsis", w, l)
+			}
+		}
+		if got := strings.Join(strings.Fields(strings.Join(lines, " ")), ""); got != strings.Join(strings.Fields(text), "") {
+			t.Fatalf("width %d: wrapped text lost characters:\n%q", w, lines)
+		}
+	}
+	if got := Wrap("x", 0); got != nil {
+		t.Errorf("Wrap at width 0 = %q, want nil", got)
+	}
+	if got := Wrap("one two", 20); len(got) != 1 || got[0] != "one two" {
+		t.Errorf("text that fits was wrapped: %q", got)
+	}
+}
+
+func TestFirstFitTakesTheLongestThatFits(t *testing.T) {
+	v := []string{"a long wording", "short", "s"}
+	for _, c := range []struct {
+		w    int
+		want string
+	}{{20, "a long wording"}, {14, "a long wording"}, {13, "short"}, {5, "short"}, {4, "s"}, {0, ""}} {
+		if got := FirstFit(c.w, v...); got != c.want {
+			t.Errorf("FirstFit(%d) = %q, want %q", c.w, got, c.want)
 		}
 	}
 }

@@ -1086,7 +1086,9 @@ func TestOverlaysRenderCentered(t *testing.T) {
 		a, _ = send(t, a, keyCode(tea.KeyEsc))
 
 		a, _ = send(t, a, keyPress("?"))
-		if got := render(a); !strings.Contains(got, "press any key to close") {
+		// A roomy frame holds the whole card; a short one scrolls it.
+		if got := render(a); !strings.Contains(got, "press any key to close") &&
+			!strings.Contains(got, "j/k: scroll") {
 			t.Errorf("%dx%d: help overlay not composited:\n%s", sz.w, sz.h, got)
 		}
 		a, _ = send(t, a, keyPress("x"))
@@ -1232,4 +1234,53 @@ func TestUnsharedSessionKeepsThemeControls(t *testing.T) {
 		t.Fatalf("theme did not advance from %q", before)
 	}
 	theme.Apply(before)
+}
+
+// The chart, the comparison and the detail panel take every key, so the
+// help binding is read ahead of them: `?` opens the card for the view on
+// screen, composited over it, and the next key closes the card without
+// reaching the view.
+func TestHelpOpensOverEveryView(t *testing.T) {
+	views := []struct {
+		card string
+		open func(t *testing.T, a *App) *App
+		up   func(a *App) bool
+	}{
+		{"Chart", func(t *testing.T, a *App) *App {
+			a, cmd := send(t, a, keyPress("c"))
+			if cmd != nil {
+				a, _ = send(t, a, cmd())
+			}
+			return a
+		}, func(a *App) bool { return a.chart.Active() }},
+		{"Compare", func(t *testing.T, a *App) *App {
+			a, _ = send(t, a, keyPress("a"))
+			a, _ = send(t, a, keyPress("C"))
+			return a
+		}, func(a *App) bool { return a.compare.Active() }},
+		{"Detail", func(t *testing.T, a *App) *App {
+			a, _ = send(t, a, keyCode(tea.KeyEnter))
+			return a
+		}, func(a *App) bool { return a.detail.Active() }},
+	}
+	for _, v := range views {
+		a := v.open(t, sizedApp(t, 120, 40))
+		if !v.up(a) {
+			t.Fatalf("%s: view did not open", v.card)
+		}
+		a, _ = send(t, a, keyPress("?"))
+		if !a.help.Active() {
+			t.Fatalf("%s: ? did not open the help card", v.card)
+		}
+		if got := render(a); !strings.Contains(got, "Help — "+v.card) {
+			t.Fatalf("%s: help card not drawn over the view:\n%s", v.card, got)
+		}
+		a, _ = send(t, a, keyCode(tea.KeyEsc))
+		if a.help.Active() {
+			t.Fatalf("%s: esc left the help card open", v.card)
+		}
+		if !v.up(a) {
+			t.Fatalf("%s: the key that closed the card also closed the view", v.card)
+		}
+	}
 }

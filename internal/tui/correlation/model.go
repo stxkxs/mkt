@@ -186,12 +186,12 @@ func (m Model) View() string {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString(theme.SectionHeaderHint("Correlation Matrix (watchlist)",
+	sb.WriteString(theme.SectionHeaderTitles([]string{"Correlation Matrix (watchlist)", "Correlation Matrix", "Correlation"},
 		fmt.Sprintf("log returns @ %s  h/l:scroll  b:bucket", m.Bucket()), m.width))
 	sb.WriteString("\n\n")
 
 	if len(m.symbols) == 0 {
-		sb.WriteString(theme.StyleDim.Render(format.Truncate("  No symbols in watchlist.", m.width)))
+		sb.WriteString(theme.Note("  No symbols in watchlist.", m.width))
 		return sb.String()
 	}
 
@@ -226,13 +226,18 @@ func (m Model) View() string {
 	// fit, and a wrapped line costs a row of the matrix and shifts every
 	// row below it.
 	if len(syms) < len(m.symbols) {
-		sb.WriteString(theme.StyleDim.Render(format.Truncate(fmt.Sprintf(
-			"  showing %d-%d of %d symbols  ·  h/l or [/] to scroll, g/G for ends",
-			start+1, start+len(syms), len(m.symbols)), m.width)))
+		shown := fmt.Sprintf("%d-%d of %d", start+1, start+len(syms), len(m.symbols))
+		sb.WriteString(theme.StyleDim.Render(format.FirstFit(m.width,
+			"  showing "+shown+" symbols  ·  h/l or [/] to scroll, g/G for ends",
+			"  showing "+shown+" symbols  ·  h/l: scroll",
+			"  "+shown+"  h/l: scroll",
+			"  "+shown)))
 		sb.WriteString("\n")
 	}
-	sb.WriteString(theme.StyleDim.Render(
-		format.Truncate("  Positive = green; negative = red; intensity by magnitude.", m.width)))
+	sb.WriteString(theme.StyleDim.Render(format.FirstFit(m.width,
+		"  Positive = green; negative = red; intensity by magnitude.",
+		"  Positive = green; negative = red.",
+		"  + green  − red")))
 	return sb.String()
 }
 

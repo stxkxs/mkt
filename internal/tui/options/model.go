@@ -256,7 +256,7 @@ func (m Model) View() string {
 	if m.symbol == "" {
 		sb.WriteString(theme.SectionHeader("Options", m.width))
 		sb.WriteString("\n\n")
-		sb.WriteString(dim("  Select a symbol on the Watchlist tab and press 'O' to load its options chain."))
+		sb.WriteString(theme.Note("  Select a symbol on the Watchlist tab and press 'O' to load its options chain.", m.width))
 		return sb.String()
 	}
 
@@ -275,7 +275,7 @@ func (m Model) View() string {
 		return sb.String()
 	}
 	if m.errMsg != "" {
-		sb.WriteString(theme.StyleDown.Render(format.Truncate("  "+m.errMsg, m.width)))
+		sb.WriteString(strings.Join(theme.WrapStyled("  "+m.errMsg, m.width, theme.StyleDown), "\n"))
 		return sb.String()
 	}
 	if len(m.chain.Calls) == 0 && len(m.chain.Puts) == 0 {

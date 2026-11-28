@@ -1,6 +1,8 @@
 package theme
 
 import (
+	"strings"
+
 	"charm.land/lipgloss/v2"
 
 	"github.com/stxkxs/mkt/internal/tui/format"
@@ -117,19 +119,73 @@ func SectionHeader(title string, width int) string {
 // the next line; pass it here instead. Too narrow for both drops the
 // hint, then truncates the title.
 func SectionHeaderHint(title, hint string, width int) string {
-	if width <= headerLead+headerGap {
+	return SectionHeaderTitles([]string{title}, hint, width)
+}
+
+// SectionHeaderTitles is SectionHeaderHint with shorter wordings of the
+// title, longest first. A narrow frame takes the longest title that fits
+// beside the hint, then the longest that fits alone, and truncates the
+// shortest only when none does: a hint can carry state the frame shows
+// nowhere else, and a shorter title reads better than a cut one.
+func SectionHeaderTitles(titles []string, hint string, width int) string {
+	if width <= headerLead+headerGap || len(titles) == 0 {
 		return StyleBorderChar.Render(format.Repeat("─", width))
 	}
-
-	titleStr := StylePanelTitle.Render(format.Truncate(title, width-headerLead-headerGap))
-	prefix := StyleBorderChar.Render("  ── ") + titleStr + " "
-	rule := width - headerLead - headerGap - lipgloss.Width(titleStr)
-
+	room := width - headerLead - headerGap
 	if hint != "" {
-		if r := rule - headerHintGap - lipgloss.Width(hint); r >= headerMinRule {
-			return prefix + StyleBorderChar.Render(format.Repeat("─", r)) +
-				StyleDim.Render(format.Spaces(headerHintGap)+hint)
+		for _, t := range titles {
+			if r := room - lipgloss.Width(t) - headerHintGap - lipgloss.Width(hint); r >= headerMinRule {
+				return sectionPrefix(t) + StyleBorderChar.Render(format.Repeat("─", r)) +
+					StyleDim.Render(format.Spaces(headerHintGap)+hint)
+			}
 		}
 	}
-	return prefix + StyleBorderChar.Render(format.Repeat("─", rule))
+	title := format.Truncate(titles[len(titles)-1], room)
+	for _, t := range titles {
+		if lipgloss.Width(t) <= room {
+			title = t
+			break
+		}
+	}
+	return sectionPrefix(title) + StyleBorderChar.Render(format.Repeat("─", room-lipgloss.Width(title)))
+}
+
+// sectionPrefix is a section header's lead-in and title.
+func sectionPrefix(title string) string {
+	return StyleBorderChar.Render("  ── ") + StylePanelTitle.Render(title) + " "
+}
+
+// Note renders dim instructional text inside width cells, wrapped rather
+// than cut: an instruction on an empty or idle view is the only place the
+// reader learns what to press. The text's own leading spaces are kept on
+// its first row, and its continuation rows hang two cells further in.
+func Note(text string, width int) string {
+	return strings.Join(NoteLines(text, width), "\n")
+}
+
+// NoteLines is Note's rows, for a view that counts them against a height
+// budget. Every row is wrapped at the continuation width, so the first row
+// may end two cells short of the frame; it never ends past it.
+func NoteLines(text string, width int) []string {
+	return WrapStyled(text, width, StyleDim)
+}
+
+// WrapStyled is NoteLines in any style: an error that stands in for a
+// view's content is wrapped the same way, in the error color.
+func WrapStyled(text string, width int, style lipgloss.Style) []string {
+	body := strings.TrimLeft(text, " ")
+	lead := len(text) - len(body)
+	hang := lead + 2
+	if width-hang < 8 {
+		lead, hang = 0, 0
+	}
+	var rows []string
+	for i, l := range format.Wrap(body, width-hang) {
+		pad := hang
+		if i == 0 {
+			pad = lead
+		}
+		rows = append(rows, format.Spaces(pad)+style.Render(l))
+	}
+	return rows
 }

@@ -362,7 +362,7 @@ func (m Model) View() string {
 
 func (m Model) viewOverview() string {
 	var sb strings.Builder
-	sb.WriteString(theme.SectionHeaderHint("Sector Heatmap", "j/k/h/l:nav  enter:drill down", m.width))
+	sb.WriteString(theme.SectionHeaderTitles([]string{"Sector Heatmap", "Heatmap"}, "j/k/h/l:nav  enter:drill down", m.width))
 	sb.WriteString("\n\n")
 
 	if len(m.quotes) == 0 {

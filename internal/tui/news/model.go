@@ -181,7 +181,7 @@ func (m Model) View() string {
 
 	vis := m.visible()
 	var sb strings.Builder
-	sb.WriteString(theme.SectionHeaderHint("News Feed ["+m.filter.String()+"]",
+	sb.WriteString(theme.SectionHeaderTitles([]string{"News Feed [" + m.filter.String() + "]", "News [" + m.filter.String() + "]", "[" + m.filter.String() + "]"},
 		"j/k:nav  enter:open  g/G:top/bottom  f:filter", m.width))
 	sb.WriteString("\n\n")
 

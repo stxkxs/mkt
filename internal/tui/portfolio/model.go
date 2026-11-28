@@ -420,8 +420,8 @@ func (m Model) View() string {
 	}
 
 	if len(m.portfolios) == 0 {
-		return theme.StyleDim.Render(format.Truncate("  No portfolios configured.", m.width)) + "\n" +
-			theme.StyleDim.Render(format.Truncate("  Add portfolios in ~/.config/mkt/config.yaml", m.width))
+		return theme.Note("  No portfolios configured.", m.width) + "\n" +
+			theme.Note("  Add portfolios in ~/.config/mkt/config.yaml", m.width)
 	}
 
 	p := m.activePortfolio()

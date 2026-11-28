@@ -580,6 +580,15 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 	}
 
+	// The keybinding reference opens over the detail panel and the
+	// full-screen charts as well as over a tab, naming the view it is
+	// opened from: those views take every other key, and the chart's
+	// title line sheds hints a narrow frame cannot hold.
+	if msg.String() == "?" {
+		a.help.Open(a.helpCard())
+		return a, nil
+	}
+
 	// If detail panel is active, route to it
 	if a.detail.Active() {
 		var cmd tea.Cmd
@@ -618,12 +627,6 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		theme.Apply(name)
 		a.statusbar.SetThemeName(name)
 		return a, func() tea.Msg { return theme.ChangedMsg{Name: name} }
-	}
-
-	// Keybinding reference for the active tab
-	if msg.String() == "?" {
-		a.help.Open(tabNames[a.activeTab])
-		return a, nil
 	}
 
 	// Tab switching
@@ -904,6 +907,9 @@ func (a *App) View() tea.View {
 		if a.palette.Active() {
 			s = a.overlayLastRow(s, a.palette.View(a.width))
 		}
+		if a.help.Active() {
+			s = a.overlayCenter(s, a.help.View())
+		}
 		v := tea.NewView(s)
 		v.AltScreen = true
 		return withMouseAllMotion(v)
@@ -1020,6 +1026,20 @@ const (
 	tabBarHeight    = 1
 	statusBarHeight = 1
 )
+
+// helpCard names the help card for what is on screen: the full-screen
+// chart or comparison, the detail panel, or else the active tab.
+func (a *App) helpCard() string {
+	switch {
+	case a.chart.Active():
+		return "Chart"
+	case a.compare.Active():
+		return "Compare"
+	case a.detail.Active():
+		return "Detail"
+	}
+	return tabNames[a.activeTab]
+}
 
 // usePanelBorders returns true if the terminal is large enough for panel borders.
 func (a *App) usePanelBorders() bool {
@@ -1235,6 +1255,12 @@ func (a *App) tabSegments() []tabSegment {
 	if full > budget {
 		// Some labels are hidden, so the count marker has to be paid for.
 		budget -= lipgloss.Width(a.tabOverflowMarker(1))
+		// The active tab's name outranks the branding: where the two do
+		// not fit together, the bar gives the branding's cells to the
+		// name, and renderTabBar leaves the branding off.
+		if lipgloss.Width(a.tabLabel(active)) > budget {
+			budget += lipgloss.Width(tabBarBranding())
+		}
 		if budget <= 0 {
 			return nil
 		}

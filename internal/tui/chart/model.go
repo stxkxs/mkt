@@ -553,15 +553,15 @@ func (m Model) View() string {
 	sb.WriteString("\n")
 
 	if m.loading {
-		sb.WriteString(styleAxis.Render(format.Truncate("  Loading chart data…", m.width)))
+		sb.WriteString(theme.Note("  Loading chart data…", m.width))
 		return sb.String()
 	}
 
 	if len(m.data) == 0 {
 		if m.errMsg != "" {
-			sb.WriteString(theme.StyleDown.Render(format.Truncate("  Error loading chart: "+m.errMsg, m.width)))
+			sb.WriteString(strings.Join(theme.WrapStyled("  Error loading chart: "+m.errMsg, m.width, theme.StyleDown), "\n"))
 		} else {
-			sb.WriteString(styleAxis.Render(format.Truncate("  No data available", m.width)))
+			sb.WriteString(theme.Note("  No data available", m.width))
 		}
 		return sb.String()
 	}

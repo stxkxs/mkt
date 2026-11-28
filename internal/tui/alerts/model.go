@@ -249,7 +249,7 @@ func (m Model) View() string {
 
 	if len(rules) == 0 && len(m.history) == 0 {
 		for _, line := range emptyState {
-			sb.WriteString(theme.StyleDim.Render(format.Truncate(line, m.width)))
+			sb.WriteString(theme.Note(line, m.width))
 			sb.WriteString("\n")
 		}
 		return sb.String()
@@ -372,20 +372,45 @@ func (m Model) footerLine(rules []alert.Rule, start, end, ruleRows int) string {
 		}
 		// The prompt and its keys share one screen line, so they are
 		// budgeted against the frame together.
-		prompt := format.Truncate(fmt.Sprintf("  Delete %s %s?", r.Symbol, what), m.width)
-		line := styleOff.Render(prompt)
-		if left := m.width - lipgloss.Width(prompt); left > 0 {
-			line += theme.StyleDim.Render(
-				format.Truncate("  y: confirm  any other key: cancel", left))
+		// The keys that answer the prompt come first, the rule's name
+		// next, the long wordings last: a narrow frame shortens the keys'
+		// wording before it drops the symbol, and drops the symbol before
+		// the keys.
+		full := fmt.Sprintf("  Delete %s %s?", r.Symbol, what)
+		short := fmt.Sprintf("  Delete %s?", r.Symbol)
+		prompt, keys := "", "  y/n"
+		for _, c := range [][2]string{
+			{full, "  y: confirm  any other key: cancel"},
+			{short, "  y: confirm  any other key: cancel"},
+			{short, "  y: confirm  other: cancel"},
+			{short, "  y: yes  other: no"},
+			{short, "  y/n"},
+			{"  Delete?", "  y/n"},
+		} {
+			if lipgloss.Width(c[0])+lipgloss.Width(c[1]) <= m.width {
+				prompt, keys = c[0], c[1]
+				break
+			}
 		}
-		return line
+		if prompt == "" && lipgloss.Width(keys) > m.width {
+			keys = format.Clip("y/n", m.width)
+		}
+		return styleOff.Render(prompt) + theme.StyleDim.Render(keys)
 	}
 
-	hint := "  t: toggle  d: delete  j/k: navigate"
-	if ruleRows < len(rules) {
-		hint += fmt.Sprintf("   showing %d-%d of %d", start+1, end, len(rules))
+	// The keys repeat what the help card lists, so a narrow frame drops
+	// whole hints rather than cutting one; the scroll position is kept
+	// longest, since nothing else says rows are off screen.
+	keys := []string{"  t: toggle  d: delete  j/k: navigate", "  t: toggle  d: delete", ""}
+	if ruleRows >= len(rules) {
+		return theme.StyleDim.Render(format.FirstFit(m.width, keys...))
 	}
-	return theme.StyleDim.Render(format.Truncate(hint, m.width))
+	pos := fmt.Sprintf("%d-%d of %d", start+1, end, len(rules))
+	var variants []string
+	for _, k := range keys {
+		variants = append(variants, k+"   showing "+pos, k+"  "+pos)
+	}
+	return theme.StyleDim.Render(format.FirstFit(m.width, variants...))
 }
 
 // conditionText names the condition, qualified by its lookback when the
