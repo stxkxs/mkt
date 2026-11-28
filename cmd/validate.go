@@ -429,10 +429,10 @@ func configFilePath() string {
 	return filepath.Join(config.ConfigDir(), "config.yaml")
 }
 
-// validTheme reports whether name is a known theme preset ("dark" is a
-// backwards-compat alias for tokyonight).
+// validTheme reports whether name is a known theme preset, "auto", or
+// "dark" (an alias for tokyonight).
 func validTheme(name string) bool {
-	if name == "dark" {
+	if name == "dark" || name == theme.Auto {
 		return true
 	}
 	for _, n := range theme.ThemeNames {

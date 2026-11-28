@@ -3,6 +3,7 @@ package detail
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -397,7 +398,8 @@ func (m Model) View() string {
 	}
 	sb.WriteString(fmt.Sprintf("  %s  %s\n\n",
 		styleValue.Bold(true).Render(format.FormatPrice(q.Price)),
-		changeStyle.Render(fmt.Sprintf("%s %.2f (%.2f%%)", arrow, q.Change, q.ChangePct)),
+		changeStyle.Render(fmt.Sprintf("%s %s (%s)", arrow, format.FormatPrice(math.Abs(q.Change)),
+			format.SignedPct(q.ChangePct, 2))),
 	))
 
 	// Details grid
@@ -466,12 +468,12 @@ func (m Model) View() string {
 		for i := 0; i < rows; i++ {
 			var bidStr, askStr string
 			if i < n {
-				bidStr = fmt.Sprintf("%10.2f x %.4f", m.book.Bids[i].Price, m.book.Bids[i].Size)
+				bidStr = fmt.Sprintf("%10s x %.4f", format.FormatPrice(m.book.Bids[i].Price), m.book.Bids[i].Size)
 			} else {
 				bidStr = format.Spaces(21)
 			}
 			if i < na {
-				askStr = fmt.Sprintf("%10.2f x %.4f", m.book.Asks[i].Price, m.book.Asks[i].Size)
+				askStr = fmt.Sprintf("%10s x %.4f", format.FormatPrice(m.book.Asks[i].Price), m.book.Asks[i].Size)
 			}
 			sb.WriteString(fmt.Sprintf("  %s    %s\n",
 				theme.StyleUp.Render(bidStr),

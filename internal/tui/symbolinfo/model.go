@@ -51,6 +51,11 @@ func New(prov *yahoo.Provider) Model {
 	return Model{provider: prov}
 }
 
+// Loading reports whether the card is waiting on the company summary.
+func (m Model) Loading() bool {
+	return m.active && m.loading
+}
+
 // Active returns whether the overlay is visible.
 func (m Model) Active() bool {
 	return m.active
@@ -121,9 +126,9 @@ func (m Model) View() string {
 	lines = append(lines, "")
 
 	if m.loading {
-		lines = append(lines, "  "+styleHint.Render("Loading..."))
+		lines = append(lines, strings.Split(theme.Loading("Loading", w-2), "\n")...)
 	} else if m.errMsg != "" {
-		lines = append(lines, "  "+styleError.Render("Error: "+m.errMsg))
+		lines = append(lines, theme.WrapStyled("  Error: "+m.errMsg, w-2, styleError)...)
 	} else {
 		s := m.summary
 		lines = append(lines, "  "+row("Market Cap", formatLargeNum(s.MarketCap)))

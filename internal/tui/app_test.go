@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"image/color"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -1086,7 +1087,9 @@ func TestOverlaysRenderCentered(t *testing.T) {
 		a, _ = send(t, a, keyCode(tea.KeyEsc))
 
 		a, _ = send(t, a, keyPress("?"))
-		if got := render(a); !strings.Contains(got, "press any key to close") {
+		// A roomy frame holds the whole card; a short one scrolls it.
+		if got := render(a); !strings.Contains(got, "press any key to close") &&
+			!strings.Contains(got, "j/k: scroll") {
 			t.Errorf("%dx%d: help overlay not composited:\n%s", sz.w, sz.h, got)
 		}
 		a, _ = send(t, a, keyPress("x"))
@@ -1232,4 +1235,165 @@ func TestUnsharedSessionKeepsThemeControls(t *testing.T) {
 		t.Fatalf("theme did not advance from %q", before)
 	}
 	theme.Apply(before)
+}
+
+// The chart, the comparison and the detail panel take every key, so the
+// help binding is read ahead of them: `?` opens the card for the view on
+// screen, composited over it, and the next key closes the card without
+// reaching the view.
+func TestHelpOpensOverEveryView(t *testing.T) {
+	views := []struct {
+		card string
+		open func(t *testing.T, a *App) *App
+		up   func(a *App) bool
+	}{
+		{"Chart", func(t *testing.T, a *App) *App {
+			a, cmd := send(t, a, keyPress("c"))
+			if cmd != nil {
+				a, _ = send(t, a, cmd())
+			}
+			return a
+		}, func(a *App) bool { return a.chart.Active() }},
+		{"Compare", func(t *testing.T, a *App) *App {
+			a, _ = send(t, a, keyPress("a"))
+			a, _ = send(t, a, keyPress("C"))
+			return a
+		}, func(a *App) bool { return a.compare.Active() }},
+		{"Detail", func(t *testing.T, a *App) *App {
+			a, _ = send(t, a, keyCode(tea.KeyEnter))
+			return a
+		}, func(a *App) bool { return a.detail.Active() }},
+	}
+	for _, v := range views {
+		a := v.open(t, sizedApp(t, 120, 40))
+		if !v.up(a) {
+			t.Fatalf("%s: view did not open", v.card)
+		}
+		a, _ = send(t, a, keyPress("?"))
+		if !a.help.Active() {
+			t.Fatalf("%s: ? did not open the help card", v.card)
+		}
+		if got := render(a); !strings.Contains(got, "Help — "+v.card) {
+			t.Fatalf("%s: help card not drawn over the view:\n%s", v.card, got)
+		}
+		a, _ = send(t, a, keyCode(tea.KeyEsc))
+		if a.help.Active() {
+			t.Fatalf("%s: esc left the help card open", v.card)
+		}
+		if !v.up(a) {
+			t.Fatalf("%s: the key that closed the card also closed the view", v.card)
+		}
+	}
+}
+
+// The arrows step through tabs, except on the grid tabs, where they move
+// across the grid; tab steps through tabs everywhere.
+func TestArrowsStayOnGridTabs(t *testing.T) {
+	for _, c := range []struct {
+		from Tab
+		key  rune
+		want Tab
+	}{
+		{TabWatchlist, tea.KeyRight, TabPortfolio},
+		{TabWatchlist, tea.KeyLeft, TabCorrel},
+		{TabHeatmap, tea.KeyRight, TabHeatmap},
+		{TabHeatmap, tea.KeyLeft, TabHeatmap},
+		{TabCorrel, tea.KeyRight, TabCorrel},
+		{TabCorrel, tea.KeyLeft, TabCorrel},
+		{TabHeatmap, tea.KeyTab, TabOptions},
+		{TabCorrel, tea.KeyTab, TabWatchlist},
+	} {
+		a := sizedApp(t, 120, 40)
+		a.switchTab(c.from)
+		a, _ = send(t, a, keyCode(c.key))
+		if a.activeTab != c.want {
+			t.Errorf("%v + key %d: on %v, want %v", c.from, c.key, a.activeTab, c.want)
+		}
+	}
+}
+
+// The loading spinner runs only while a loading line is on screen: the
+// clock arms it on a tab still waiting for data, it re-arms while the wait
+// lasts, and it stops on the first tick after the data lands. A tab with
+// nothing loading never arms it.
+func TestLoadingSpinnerRunsOnlyWhileLoading(t *testing.T) {
+	a := sizedApp(t, 120, 40)
+	a.switchTab(TabWatchlist)
+	a, _ = send(t, a, ClockTickMsg(time.Now()))
+	if a.spinning {
+		t.Fatal("the clock armed the spinner on a tab with nothing loading")
+	}
+
+	a.switchTab(TabMacro)
+	if !a.loadingOnScreen() {
+		t.Fatal("the macro tab with no quotes is not loading")
+	}
+	a, _ = send(t, a, ClockTickMsg(time.Now()))
+	if !a.spinning {
+		t.Fatal("the clock did not arm the spinner for a loading line")
+	}
+	if got := render(a); !strings.Contains(got, "Loading macro data…") {
+		t.Fatalf("macro tab does not show its loading line:\n%s", got)
+	}
+	a, cmd := send(t, a, SpinnerTickMsg{})
+	if cmd == nil || !a.spinning {
+		t.Fatal("the spinner stopped while the loading line was still on screen")
+	}
+	a, _ = send(t, a, ClockTickMsg(time.Now()))
+	if !a.spinning {
+		t.Fatal("a second clock tick disarmed a running spinner")
+	}
+
+	a, _ = send(t, a, MacroUpdateMsg{Quotes: []provider.Quote{{Symbol: "^VIX", Price: 14}}})
+	a, cmd = send(t, a, SpinnerTickMsg{})
+	if cmd != nil || a.spinning {
+		t.Fatal("the spinner kept running after the data landed")
+	}
+}
+
+// With the auto theme, the app asks the terminal for its background and
+// applies the light preset on a light one. A theme picked by hand ends
+// the following, and a shared process never follows.
+func TestAutoThemeFollowsTheBackground(t *testing.T) {
+	defer theme.Apply(theme.CurrentName)
+	light := tea.BackgroundColorMsg{Color: color.RGBA{0xfa, 0xfa, 0xfa, 0xff}}
+	dark := tea.BackgroundColorMsg{Color: color.RGBA{0x10, 0x10, 0x10, 0xff}}
+
+	theme.Apply(theme.Auto)
+	a := sizedApp(t, 120, 40)
+	a.SetAutoTheme(true)
+	if a.Init() == nil {
+		t.Fatal("Init returned no command")
+	}
+	a, cmd := send(t, a, dark)
+	if theme.CurrentName != theme.Dark || cmd != nil {
+		t.Fatalf("a dark terminal changed the theme to %q", theme.CurrentName)
+	}
+	a, cmd = send(t, a, light)
+	if theme.CurrentName != theme.Light || cmd == nil {
+		t.Fatalf("a light terminal left the theme at %q, cmd %v", theme.CurrentName, cmd)
+	}
+	if _, ok := cmd().(theme.ChangedMsg); !ok {
+		t.Fatal("switching to the light preset did not broadcast ChangedMsg")
+	}
+
+	a, _ = send(t, a, keyPress("T"))
+	picked := theme.CurrentName
+	if _, cmd = send(t, a, dark); theme.CurrentName != picked || cmd != nil {
+		t.Fatalf("a background reply overrode the theme picked with T: %q → %q", picked, theme.CurrentName)
+	}
+
+	theme.Apply(theme.Auto)
+	guest := sizedApp(t, 120, 40)
+	guest.SetShared(true)
+	guest.SetAutoTheme(true)
+	if _, cmd = send(t, guest, light); theme.CurrentName != theme.Dark || cmd != nil {
+		t.Fatalf("a shared session restyled the process to %q", theme.CurrentName)
+	}
+
+	theme.Apply(theme.Auto)
+	fixed := sizedApp(t, 120, 40)
+	if _, cmd = send(t, fixed, light); theme.CurrentName != theme.Dark || cmd != nil {
+		t.Fatalf("a configured theme followed the background to %q", theme.CurrentName)
+	}
 }

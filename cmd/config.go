@@ -65,7 +65,7 @@ func init() {
 				cfg.PollInterval = args[1]
 			case "theme":
 				if !validTheme(args[1]) {
-					return fmt.Errorf("unknown theme %q (valid: %v)", args[1], theme.ThemeNames)
+					return fmt.Errorf("unknown theme %q (valid: %s or one of %v)", args[1], theme.Auto, theme.ThemeNames)
 				}
 				cfg.Theme = args[1]
 			default:

@@ -94,6 +94,7 @@ type App struct {
 	height      int
 	ready       bool
 	spinnerTick int
+	spinning    bool // a spinner tick is scheduled for an on-screen loading line
 
 	// shared is set when several sessions run against one process, as
 	// under mkt serve. The theme lives in package-level vars in
@@ -101,6 +102,11 @@ type App struct {
 	// session — and would write those vars from its own goroutine while
 	// the others render from them. Guests keep the host's theme.
 	shared bool
+
+	// autoTheme follows the terminal's background: the app asks for it at
+	// start and applies the light preset if the reply is light. Choosing a
+	// theme by hand ends it, so a late reply cannot undo the choice.
+	autoTheme bool
 
 	watchlist watchlist.Model
 	detail    detail.Model
@@ -337,7 +343,56 @@ func clockTickCmd() tea.Cmd {
 }
 
 func (a *App) Init() tea.Cmd {
+	if a.autoTheme {
+		return tea.Batch(spinnerTickCmd(), tea.RequestBackgroundColor)
+	}
 	return spinnerTickCmd()
+}
+
+// SetAutoTheme makes the theme follow the terminal's background. A shared
+// process keeps the host's theme, so it has no effect there.
+func (a *App) SetAutoTheme(auto bool) {
+	a.autoTheme = auto && !a.shared
+}
+
+// followBackground applies the preset for the terminal's reported
+// background, when the theme follows it.
+func (a *App) followBackground(dark bool) tea.Cmd {
+	if !a.autoTheme {
+		return nil
+	}
+	name := theme.ForBackground(dark)
+	if name == theme.CurrentName {
+		return nil
+	}
+	theme.Apply(name)
+	a.statusbar.SetThemeName(name)
+	return func() tea.Msg { return theme.ChangedMsg{Name: name} }
+}
+
+// loadingOnScreen reports whether the frame shows a loading line: the
+// full-screen chart or comparison waiting on history, the symbol card
+// waiting on its summary, or the active tab waiting on its first data.
+func (a *App) loadingOnScreen() bool {
+	switch {
+	case a.chart.Active():
+		return a.chart.Loading()
+	case a.compare.Active():
+		return a.compare.Loading()
+	case a.symbolInfo.Loading():
+		return true
+	case a.detail.Active():
+		return false
+	}
+	switch a.activeTab {
+	case TabMacro:
+		return a.macro.Loading()
+	case TabNews:
+		return a.news.Loading()
+	case TabOptions:
+		return a.options.Loading()
+	}
+	return false
 }
 
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -355,21 +410,36 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.resize(msg.Width, msg.Height)
 		return a, cmd
 
+	case tea.BackgroundColorMsg:
+		return a, a.followBackground(msg.IsDark())
+
 	case ClockTickMsg:
 		a.statusbar.SetNow(time.Time(msg))
+		// A loading line animates while it is on screen. The clock arms
+		// the spinner the first second one is showing, and the spinner
+		// stops itself once none is, so an idle frame is never repainted
+		// to animate a glyph it does not show.
+		if !a.spinning && a.loadingOnScreen() {
+			a.spinning = true
+			return a, tea.Batch(clockTickCmd(), spinnerTickCmd())
+		}
 		return a, clockTickCmd()
 
 	case SpinnerTickMsg:
-		// The spinner is drawn only by the !a.ready branch of View. Once
-		// the first WindowSizeMsg has landed nothing reads spinnerTick, so
-		// re-arming would repaint every frame at spinnerInterval for the
-		// life of the process — on every attached SSH session — to animate
-		// a glyph that is no longer on screen.
-		if a.ready {
-			return a, nil
+		// Before the first frame the tick animates the pre-ready spinner.
+		// After it, the tick only repaints while a loading line is on
+		// screen, and stops once none is: re-arming for an idle frame
+		// would repaint every attached SSH session at spinnerInterval for
+		// the life of the process.
+		if !a.ready {
+			a.spinnerTick++
+			return a, spinnerTickCmd()
 		}
-		a.spinnerTick++
-		return a, spinnerTickCmd()
+		if a.loadingOnScreen() {
+			return a, spinnerTickCmd()
+		}
+		a.spinning = false
+		return a, nil
 
 	case tea.KeyPressMsg:
 		return a.handleKey(msg)
@@ -507,6 +577,7 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if a.shared {
 				return a, nil
 			}
+			a.autoTheme = false
 			theme.Apply(res.Arg)
 			a.statusbar.SetThemeName(theme.CurrentName)
 			return a, func() tea.Msg { return theme.ChangedMsg{Name: theme.CurrentName} }
@@ -580,6 +651,15 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 	}
 
+	// The keybinding reference opens over the detail panel and the
+	// full-screen charts as well as over a tab, naming the view it is
+	// opened from: those views take every other key, and the chart's
+	// title line sheds hints a narrow frame cannot hold.
+	if msg.String() == "?" {
+		a.help.Open(a.helpCard())
+		return a, nil
+	}
+
 	// If detail panel is active, route to it
 	if a.detail.Active() {
 		var cmd tea.Cmd
@@ -614,16 +694,11 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// so each sub-model can rebuild its cached styles in its own Update.
 	// Withheld for a shared process — see App.shared.
 	if msg.String() == "T" && !a.shared {
+		a.autoTheme = false
 		name := theme.NextTheme()
 		theme.Apply(name)
 		a.statusbar.SetThemeName(name)
 		return a, func() tea.Msg { return theme.ChangedMsg{Name: name} }
-	}
-
-	// Keybinding reference for the active tab
-	if msg.String() == "?" {
-		a.help.Open(tabNames[a.activeTab])
-		return a, nil
 	}
 
 	// Tab switching
@@ -631,13 +706,25 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		a.switchTab(tab)
 		return a, nil
 	}
+	// The arrows step through tabs, except on the two grid tabs, where
+	// ← and → move across the grid as h and l do; tab and shift+tab step
+	// through tabs everywhere.
 	switch msg.String() {
-	case "tab", "right":
+	case "tab":
 		a.switchTab((a.activeTab + 1) % Tab(len(tabNames)))
 		return a, nil
-	case "shift+tab", "left":
+	case "shift+tab":
 		a.switchTab((a.activeTab - 1 + Tab(len(tabNames))) % Tab(len(tabNames)))
 		return a, nil
+	case "right", "left":
+		if !gridTab(a.activeTab) {
+			step := Tab(1)
+			if msg.String() == "left" {
+				step = Tab(len(tabNames) - 1)
+			}
+			a.switchTab((a.activeTab + step) % Tab(len(tabNames)))
+			return a, nil
+		}
 	}
 
 	// Watchlist shortcuts open other views, so they are handled
@@ -890,7 +977,7 @@ func (a *App) forwardMouseToActiveTab(msg tea.Msg) tea.Cmd {
 func (a *App) View() tea.View {
 	if !a.ready {
 		spinner := format.SpinnerFrame(a.spinnerTick)
-		return tea.NewView(theme.StyleAccentText(spinner + " Loading..."))
+		return tea.NewView(theme.StyleAccentText(spinner + " Loading…"))
 	}
 
 	// The full-screen charts own every row and draw no tab bar or status
@@ -903,6 +990,9 @@ func (a *App) View() tea.View {
 		}
 		if a.palette.Active() {
 			s = a.overlayLastRow(s, a.palette.View(a.width))
+		}
+		if a.help.Active() {
+			s = a.overlayCenter(s, a.help.View())
 		}
 		v := tea.NewView(s)
 		v.AltScreen = true
@@ -1020,6 +1110,26 @@ const (
 	tabBarHeight    = 1
 	statusBarHeight = 1
 )
+
+// gridTab reports whether a tab lays its content out in two dimensions,
+// so that ← and → move across it rather than to the neighbouring tab.
+func gridTab(t Tab) bool {
+	return t == TabHeatmap || t == TabCorrel
+}
+
+// helpCard names the help card for what is on screen: the full-screen
+// chart or comparison, the detail panel, or else the active tab.
+func (a *App) helpCard() string {
+	switch {
+	case a.chart.Active():
+		return "Chart"
+	case a.compare.Active():
+		return "Compare"
+	case a.detail.Active():
+		return "Detail"
+	}
+	return tabNames[a.activeTab]
+}
 
 // usePanelBorders returns true if the terminal is large enough for panel borders.
 func (a *App) usePanelBorders() bool {
@@ -1235,6 +1345,12 @@ func (a *App) tabSegments() []tabSegment {
 	if full > budget {
 		// Some labels are hidden, so the count marker has to be paid for.
 		budget -= lipgloss.Width(a.tabOverflowMarker(1))
+		// The active tab's name outranks the branding: where the two do
+		// not fit together, the bar gives the branding's cells to the
+		// name, and renderTabBar leaves the branding off.
+		if lipgloss.Width(a.tabLabel(active)) > budget {
+			budget += lipgloss.Width(tabBarBranding())
+		}
 		if budget <= 0 {
 			return nil
 		}

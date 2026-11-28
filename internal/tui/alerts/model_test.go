@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/stxkxs/mkt/internal/alert"
 	"github.com/stxkxs/mkt/internal/tui/format"
@@ -446,6 +447,34 @@ func TestClickBelowTheTableIsInert(t *testing.T) {
 		click, _ = click.Update(tea.MouseClickMsg{X: 1, Y: rulesHeaderLines + row})
 		if want := format.ViewportStart(m.cursor, 40, ruleRows) + row; click.cursor != want {
 			t.Errorf("click on painted row %d selected rule %d, want %d", row, click.cursor, want)
+		}
+	}
+}
+
+// The footer sheds whole hints and the delete prompt shortens its question
+// before it drops the keys that answer it: no width shows a cut word, and
+// every width that holds "y/n" shows the confirm key.
+func TestFooterShedsWholeHints(t *testing.T) {
+	for w := 1; w <= 100; w++ {
+		m := newTestModel(t)
+		m.SetSize(w, 40)
+		foot := ansi.Strip(m.footerLine(m.engine.Rules(), 0, 1, 1))
+		if strings.Contains(foot, "…") || ansi.StringWidth(foot) > w {
+			t.Fatalf("width %d: footer %q", w, foot)
+		}
+		if w >= 10 && !strings.Contains(foot, "1-1 of 2") {
+			t.Fatalf("width %d: footer dropped the scroll position: %q", w, foot)
+		}
+		m = press(m, "d")
+		prompt := ansi.Strip(m.footerLine(m.engine.Rules(), 0, 2, 2))
+		if ansi.StringWidth(prompt) > w {
+			t.Fatalf("width %d: prompt %q is %d cells", w, prompt, ansi.StringWidth(prompt))
+		}
+		if w >= 7 && !strings.Contains(prompt, "y") {
+			t.Fatalf("width %d: prompt dropped its confirm key: %q", w, prompt)
+		}
+		if w >= 50 && !strings.Contains(prompt, "Delete BTC-USD") {
+			t.Fatalf("width %d: prompt does not name the rule: %q", w, prompt)
 		}
 	}
 }

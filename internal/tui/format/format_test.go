@@ -2,10 +2,12 @@ package format
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestTruncate(t *testing.T) {
@@ -206,12 +208,16 @@ func TestTruncateNeverExceedsBudget(t *testing.T) {
 // every cell, so both sides of each threshold are pinned.
 func TestFormatPriceLadder(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{"99.999", "99.9990"},
+		{"99.999", "99.999"},
 		{"100", "100.00"},
-		{"0.999", "0.999000"},
-		{"1", "1.0000"},
-		{"0.00999", "0.00999000"},
-		{"0.01", "0.010000"},
+		{"0.999", "0.999"},
+		{"1", "1.00"},
+		{"12.34", "12.34"},
+		{"2.1345", "2.1345"},
+		{"0.00999", "0.00999"},
+		{"0.01", "0.01"},
+		{"0.12345678", "0.123457"},
+		{"0.00000123", "0.00000123"},
 	} {
 		var f float64
 		fmt.Sscanf(tc.in, "%g", &f)
@@ -254,6 +260,83 @@ func TestFormatVolumeLadder(t *testing.T) {
 	} {
 		if got := FormatVolume(tc.in); got != tc.want {
 			t.Errorf("FormatVolume(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestWrapKeepsEveryWordInsideTheWidth(t *testing.T) {
+	text := "Select a symbol on the Watchlist tab and press 'O' to load its options chain."
+	for w := 1; w <= 90; w++ {
+		lines := Wrap(text, w)
+		for _, l := range lines {
+			if ansi.StringWidth(l) > w {
+				t.Fatalf("width %d: line %q is %d cells", w, l, ansi.StringWidth(l))
+			}
+			if strings.Contains(l, "…") {
+				t.Fatalf("width %d: line %q carries an ellipsis", w, l)
+			}
+		}
+		if got := strings.Join(strings.Fields(strings.Join(lines, " ")), ""); got != strings.Join(strings.Fields(text), "") {
+			t.Fatalf("width %d: wrapped text lost characters:\n%q", w, lines)
+		}
+	}
+	if got := Wrap("x", 0); got != nil {
+		t.Errorf("Wrap at width 0 = %q, want nil", got)
+	}
+	if got := Wrap("one two", 20); len(got) != 1 || got[0] != "one two" {
+		t.Errorf("text that fits was wrapped: %q", got)
+	}
+}
+
+func TestFirstFitTakesTheLongestThatFits(t *testing.T) {
+	v := []string{"a long wording", "short", "s"}
+	for _, c := range []struct {
+		w    int
+		want string
+	}{{20, "a long wording"}, {14, "a long wording"}, {13, "short"}, {5, "short"}, {4, "s"}, {0, ""}} {
+		if got := FirstFit(c.w, v...); got != c.want {
+			t.Errorf("FirstFit(%d) = %q, want %q", c.w, got, c.want)
+		}
+	}
+}
+
+func TestSignedPct(t *testing.T) {
+	for _, c := range []struct {
+		pct  float64
+		prec int
+		want string
+	}{
+		{1.234, 2, "+1.23%"}, {-0.5, 2, "-0.50%"}, {0, 2, "0.00%"},
+		{-0.001, 2, "0.00%"}, {0.004, 2, "0.00%"}, {-0.04, 1, "0.0%"},
+		{12.36, 1, "+12.4%"}, {math.NaN(), 2, "—"}, {math.Inf(-1), 2, "—"},
+	} {
+		if got := SignedPct(c.pct, c.prec); got != c.want {
+			t.Errorf("SignedPct(%v, %d) = %q, want %q", c.pct, c.prec, got, c.want)
+		}
+	}
+}
+
+func TestMoney(t *testing.T) {
+	for _, c := range []struct {
+		v            float64
+		money, signd string
+	}{
+		{0, "$0.00", "$0.00"},
+		{-0.001, "$0.00", "$0.00"},
+		{12.3, "$12.30", "+$12.30"},
+		{-12.3, "-$12.30", "-$12.30"},
+		{999.99, "$999.99", "+$999.99"},
+		{1000, "$1,000.00", "+$1,000.00"},
+		{-1234567.891, "-$1,234,567.89", "-$1,234,567.89"},
+		{123456, "$123,456.00", "+$123,456.00"},
+		{999999.999, "$1,000,000.00", "+$1,000,000.00"},
+		{math.NaN(), "—", "—"},
+	} {
+		if got := Money(c.v); got != c.money {
+			t.Errorf("Money(%v) = %q, want %q", c.v, got, c.money)
+		}
+		if got := SignedMoney(c.v); got != c.signd {
+			t.Errorf("SignedMoney(%v) = %q, want %q", c.v, got, c.signd)
 		}
 	}
 }

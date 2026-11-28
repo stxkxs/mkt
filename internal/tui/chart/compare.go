@@ -91,6 +91,11 @@ func NewCompare(hp HistoryProvider) CompareModel {
 	}
 }
 
+// Loading reports whether the comparison is waiting on its histories.
+func (m CompareModel) Loading() bool {
+	return m.active && m.loading
+}
+
 // Active returns whether comparison chart is showing.
 func (m CompareModel) Active() bool {
 	return m.active
@@ -440,11 +445,10 @@ func (m CompareModel) View() string {
 	}
 	sb.WriteString(title + "  " + strings.Join(legend, "  "))
 	sb.WriteString("\n")
-	help := styleAxis.Render("  [/]: interval  +/-: zoom  f: fit  x: remove  esc: back")
-	sb.WriteString(help + "\n\n")
+	sb.WriteString("  " + styleAxis.Render(fitHints(compareHints, m.width-2)) + "\n\n")
 
 	if m.loading {
-		sb.WriteString(styleAxis.Render("  Loading..."))
+		sb.WriteString(theme.Loading("Loading comparison", m.width))
 		return sb.String()
 	}
 
@@ -512,4 +516,15 @@ func (m CompareModel) View() string {
 	}))
 
 	return sb.String()
+}
+
+// compareHints are the comparison view's key hints, most important first.
+// The line keeps as many as fit, in display order; the help card lists
+// every one.
+var compareHints = []hint{
+	{order: 4, text: "esc: back"},
+	{order: 3, text: "x: remove"},
+	{order: 0, text: "[/]: interval"},
+	{order: 1, text: "+/-: zoom"},
+	{order: 2, text: "f: fit"},
 }

@@ -487,6 +487,7 @@ func (b *backend) buildApp(ctx context.Context) *tui.App {
 	// Under serve every session shares this process, so controls backed by
 	// package-level state are withheld from guests.
 	app.SetShared(b.opts.serveMode)
+	app.SetAutoTheme(b.cfg.Theme == theme.Auto)
 	if len(b.pastTriggers) > 0 {
 		app.LoadPastAlerts(b.pastTriggers)
 	}

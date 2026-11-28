@@ -58,6 +58,12 @@ func (m *Model) SetSize(w, h int) {
 	m.height = h
 }
 
+// Loading reports whether no headline has arrived yet, which is when the
+// loading line is on screen.
+func (m Model) Loading() bool {
+	return len(m.headlines) == 0
+}
+
 // UpdateHeadlines replaces the headline list.
 func (m *Model) UpdateHeadlines(headlines []inews.Headline) {
 	m.headlines = headlines
@@ -181,13 +187,13 @@ func (m Model) View() string {
 
 	vis := m.visible()
 	var sb strings.Builder
-	sb.WriteString(theme.SectionHeaderHint("News Feed ["+m.filter.String()+"]",
+	sb.WriteString(theme.SectionHeaderTitles([]string{"News Feed [" + m.filter.String() + "]", "News [" + m.filter.String() + "]", "[" + m.filter.String() + "]"},
 		"j/k:nav  enter:open  g/G:top/bottom  f:filter", m.width))
 	sb.WriteString("\n\n")
 
 	if len(vis) == 0 {
 		if len(m.headlines) == 0 {
-			sb.WriteString(theme.StyleDim.Render("  Loading news..."))
+			sb.WriteString(theme.Loading("Loading news", m.width))
 		} else {
 			sb.WriteString(theme.StyleDim.Render("  No items match the current filter."))
 		}

@@ -110,9 +110,12 @@ func TestValidateConfigCatchesProblems(t *testing.T) {
 	}
 }
 
-func TestValidThemeAcceptsDarkAlias(t *testing.T) {
+func TestValidThemeAcceptsDarkAliasAndAuto(t *testing.T) {
 	if !validTheme("dark") {
 		t.Error("dark alias rejected")
+	}
+	if !validTheme("auto") {
+		t.Error("auto rejected")
 	}
 	if validTheme("light") {
 		t.Error("unknown theme accepted")

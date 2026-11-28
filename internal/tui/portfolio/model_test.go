@@ -530,3 +530,28 @@ func TestWideFrameShowsWholePnL(t *testing.T) {
 		}
 	}
 }
+
+// Money in the footer carries its sign before the dollar sign and groups
+// its thousands: a loss read "$-1250.00" when the sign was only written
+// for a gain.
+func TestFooterMoneyReadsAsMoney(t *testing.T) {
+	m := New([]portfolio.Portfolio{{
+		Name:     "Losing",
+		Holdings: []portfolio.Holding{{Symbol: "AAA", Quantity: 50, CostBasis: 125}},
+	}})
+	m.SetSize(140, 30)
+	m.UpdateQuote(provider.Quote{Symbol: "AAA", Price: 100})
+	out := plain(m.View())
+	for _, want := range []string{"Total Cost: $6,250.00", "Value: $5,000.00", "P&L: -$1,250.00 (-20.0%)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("footer is missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "$-") {
+		t.Errorf("a negative amount puts its sign after the dollar sign:\n%s", out)
+	}
+	m.UpdateQuote(provider.Quote{Symbol: "AAA", Price: 150})
+	if out := plain(m.View()); !strings.Contains(out, "P&L: +$1,250.00 (+20.0%)") {
+		t.Errorf("a gain is not signed:\n%s", out)
+	}
+}

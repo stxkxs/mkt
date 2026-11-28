@@ -204,12 +204,12 @@ func (m Model) updateOverview(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		if m.cursor > 0 {
 			m.cursor--
 		}
-	case "l":
+	case "l", "right":
 		m.cursor += 3
 		if m.cursor >= len(m.sectors) {
 			m.cursor = len(m.sectors) - 1
 		}
-	case "h":
+	case "h", "left":
 		m.cursor -= 3
 		if m.cursor < 0 {
 			m.cursor = 0
@@ -302,11 +302,11 @@ func (m Model) updateDrilldown(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-	case "l":
+	case "l", "right":
 		if m.cursor < len(sect.Symbols)-1 {
 			m.cursor++
 		}
-	case "h":
+	case "h", "left":
 		if m.cursor > 0 {
 			m.cursor--
 		}
@@ -362,7 +362,7 @@ func (m Model) View() string {
 
 func (m Model) viewOverview() string {
 	var sb strings.Builder
-	sb.WriteString(theme.SectionHeaderHint("Sector Heatmap", "j/k/h/l:nav  enter:drill down", m.width))
+	sb.WriteString(theme.SectionHeaderTitles([]string{"Sector Heatmap", "Heatmap"}, "j/k/h/l:nav  enter:drill down", m.width))
 	sb.WriteString("\n\n")
 
 	if len(m.quotes) == 0 {
@@ -442,7 +442,7 @@ func (m Model) viewOverview() string {
 			nameRow = rect.Y + 1
 		}
 		if nameRow < chartH && rect.W >= 3 {
-			label := fmt.Sprintf("%s %.1f%%", s.Name, chg)
+			label := s.Name + " " + format.SignedPct(chg, 1)
 			if quoted == 0 {
 				label = s.Name + " n/a"
 			}
@@ -522,7 +522,7 @@ func (m Model) viewDrilldown() string {
 	}
 	title := lipgloss.NewStyle().Foreground(sectorColor).Bold(true).
 		Render(fmt.Sprintf("  %s", sect.Name))
-	chgStr := fmt.Sprintf(" %.2f%%", sectorChg)
+	chgStr := " " + format.SignedPct(sectorChg, 2)
 	chgStyle := theme.StyleUp
 	if quoted == 0 {
 		chgStr = " n/a"

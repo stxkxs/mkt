@@ -89,6 +89,12 @@ func (m *Model) SetSize(w, h int) {
 	m.height = h
 }
 
+// Loading reports whether no macro quote has arrived yet, which is when
+// the loading line is on screen.
+func (m Model) Loading() bool {
+	return len(m.quotes) == 0
+}
+
 // UpdateQuotes replaces all macro quotes.
 func (m *Model) UpdateQuotes(quotes []provider.Quote) {
 	for _, q := range quotes {
@@ -217,7 +223,7 @@ func (m Model) View() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(theme.SectionHeaderHint("Macro Dashboard", hint, m.width))
+	sb.WriteString(theme.SectionHeaderTitles([]string{"Macro Dashboard", "Macro"}, hint, m.width))
 	sb.WriteString("\n\n")
 	// Each row is clipped to the frame: the content panel word-wraps a row
 	// it cannot fit, and a wrapped row costs a line the window did not
@@ -235,7 +241,7 @@ func (m Model) View() string {
 // can window it. Every row is one terminal line.
 func (m Model) contentLines() []string {
 	if len(m.quotes) == 0 {
-		return []string{theme.StyleDim.Render("  Loading macro data...")}
+		return strings.Split(theme.Loading("Loading macro data", m.width), "\n")
 	}
 
 	var sb strings.Builder
@@ -344,7 +350,7 @@ func (m Model) contentLines() []string {
 	// Upcoming economic events (next 30 days)
 	{
 		sb.WriteString("\n")
-		sb.WriteString(theme.SectionHeader("Upcoming Economic Events (30d)", m.width))
+		sb.WriteString(theme.SectionHeaderTitles([]string{"Upcoming Economic Events (30d)", "Economic Events (30d)", "Events (30d)"}, "", m.width))
 		sb.WriteString("\n")
 		if len(m.upcoming) == 0 {
 			sb.WriteString(theme.StyleDim.Render("    waiting for data…") + "\n")
@@ -371,7 +377,7 @@ func (m Model) contentLines() []string {
 	// DeFi TVL (top 8 chains)
 	if m.defiOn || len(m.defi) > 0 {
 		sb.WriteString("\n")
-		sb.WriteString(theme.SectionHeader("DeFi TVL (top 8 chains)", m.width))
+		sb.WriteString(theme.SectionHeaderTitles([]string{"DeFi TVL (top 8 chains)", "DeFi TVL (top 8)", "DeFi TVL"}, "", m.width))
 		sb.WriteString("\n")
 		if len(m.defi) == 0 {
 			sb.WriteString(theme.StyleDim.Render("    waiting for data…") + "\n")

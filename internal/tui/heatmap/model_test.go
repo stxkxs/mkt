@@ -261,3 +261,34 @@ func TestDrilldownOrderRefreshesWhenSectorChanges(t *testing.T) {
 		}
 	}
 }
+
+// ← and → move across the grid exactly as h and l do, in the overview and
+// in a drilled-in sector.
+func TestArrowsMoveLikeHAndL(t *testing.T) {
+	sectors := []Sector{
+		{Name: "A", Symbols: []string{"A1", "A2", "A3", "A4", "A5"}},
+		{Name: "B"}, {Name: "C"}, {Name: "D"}, {Name: "E"},
+	}
+	arrow := map[string]tea.KeyPressMsg{"l": {Code: tea.KeyRight}, "h": {Code: tea.KeyLeft}}
+	for _, drill := range []bool{false, true} {
+		for _, k := range []string{"l", "h"} {
+			mk := func() Model {
+				m := New()
+				m.SetSectors(sectors)
+				m.SetSize(120, 40)
+				if drill {
+					m = press(m, "enter", "l", "l")
+				} else {
+					m = press(m, "l")
+				}
+				return m
+			}
+			want := press(mk(), k)
+			got, _ := mk().Update(arrow[k])
+			if got.cursor != want.cursor || got.sectorIdx != want.sectorIdx {
+				t.Errorf("drill=%v %s: arrow left cursor %d sector %d, %s left %d sector %d",
+					drill, k, got.cursor, got.sectorIdx, k, want.cursor, want.sectorIdx)
+			}
+		}
+	}
+}

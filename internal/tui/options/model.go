@@ -41,6 +41,12 @@ func New(source ChainSource) Model {
 	return Model{source: source}
 }
 
+// Loading reports whether a chain is being fetched, which is when the
+// loading line is on screen.
+func (m Model) Loading() bool {
+	return m.symbol != "" && m.loading
+}
+
 // SetSize updates dimensions.
 func (m *Model) SetSize(w, h int) {
 	m.width = w
@@ -256,7 +262,7 @@ func (m Model) View() string {
 	if m.symbol == "" {
 		sb.WriteString(theme.SectionHeader("Options", m.width))
 		sb.WriteString("\n\n")
-		sb.WriteString(dim("  Select a symbol on the Watchlist tab and press 'O' to load its options chain."))
+		sb.WriteString(theme.Note("  Select a symbol on the Watchlist tab and press 'O' to load its options chain.", m.width))
 		return sb.String()
 	}
 
@@ -271,11 +277,11 @@ func (m Model) View() string {
 	sb.WriteString("\n\n")
 
 	if m.loading {
-		sb.WriteString(dim("  Loading…"))
+		sb.WriteString(theme.Loading("Loading options chain", m.width))
 		return sb.String()
 	}
 	if m.errMsg != "" {
-		sb.WriteString(theme.StyleDown.Render(format.Truncate("  "+m.errMsg, m.width)))
+		sb.WriteString(strings.Join(theme.WrapStyled("  "+m.errMsg, m.width, theme.StyleDown), "\n"))
 		return sb.String()
 	}
 	if len(m.chain.Calls) == 0 && len(m.chain.Puts) == 0 {

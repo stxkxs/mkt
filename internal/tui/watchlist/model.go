@@ -637,17 +637,13 @@ func changeCell(q provider.Quote, hasQuote bool, w int) string {
 	if !hasQuote {
 		return theme.StyleNeutral.Render(cell("—", w, true))
 	}
-	sign := "+"
-	if q.ChangePct < 0 {
-		sign = ""
-	}
 	style := theme.StyleNeutral
 	if q.ChangePct > 0 {
 		style = theme.StyleUp
 	} else if q.ChangePct < 0 {
 		style = theme.StyleDown
 	}
-	return style.Render(cell(fmt.Sprintf("%s%.2f%%", sign, q.ChangePct), w, true))
+	return style.Render(cell(format.SignedPct(q.ChangePct, 2), w, true))
 }
 
 // rangeCell draws where the price sits between the day's low and high.

@@ -3,7 +3,6 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/stxkxs/mkt/internal/tui/format"
 	"github.com/stxkxs/mkt/internal/tui/theme"
 )
 
@@ -124,7 +123,7 @@ func (a *App) bindSurfaces() {
 // over the whole frame once a symbol is chosen, so the tab names the key
 // that gets there rather than rendering an empty chart.
 func chartSignpost(width int) string {
-	return theme.StyleDim.Render(format.Truncate("  Select a symbol from Watchlist and press 'c' for chart", width))
+	return theme.Note("  Select a symbol on the Watchlist tab and press 'c' to chart it.", width)
 }
 
 // fanOut offers msg to each surface and collects the commands they return.
