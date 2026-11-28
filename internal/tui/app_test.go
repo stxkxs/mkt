@@ -1310,3 +1310,42 @@ func TestArrowsStayOnGridTabs(t *testing.T) {
 		}
 	}
 }
+
+// The loading spinner runs only while a loading line is on screen: the
+// clock arms it on a tab still waiting for data, it re-arms while the wait
+// lasts, and it stops on the first tick after the data lands. A tab with
+// nothing loading never arms it.
+func TestLoadingSpinnerRunsOnlyWhileLoading(t *testing.T) {
+	a := sizedApp(t, 120, 40)
+	a.switchTab(TabWatchlist)
+	a, _ = send(t, a, ClockTickMsg(time.Now()))
+	if a.spinning {
+		t.Fatal("the clock armed the spinner on a tab with nothing loading")
+	}
+
+	a.switchTab(TabMacro)
+	if !a.loadingOnScreen() {
+		t.Fatal("the macro tab with no quotes is not loading")
+	}
+	a, _ = send(t, a, ClockTickMsg(time.Now()))
+	if !a.spinning {
+		t.Fatal("the clock did not arm the spinner for a loading line")
+	}
+	if got := render(a); !strings.Contains(got, "Loading macro data…") {
+		t.Fatalf("macro tab does not show its loading line:\n%s", got)
+	}
+	a, cmd := send(t, a, SpinnerTickMsg{})
+	if cmd == nil || !a.spinning {
+		t.Fatal("the spinner stopped while the loading line was still on screen")
+	}
+	a, _ = send(t, a, ClockTickMsg(time.Now()))
+	if !a.spinning {
+		t.Fatal("a second clock tick disarmed a running spinner")
+	}
+
+	a, _ = send(t, a, MacroUpdateMsg{Quotes: []provider.Quote{{Symbol: "^VIX", Price: 14}}})
+	a, cmd = send(t, a, SpinnerTickMsg{})
+	if cmd != nil || a.spinning {
+		t.Fatal("the spinner kept running after the data landed")
+	}
+}

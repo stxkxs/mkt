@@ -193,6 +193,12 @@ func (m *Model) SetSize(w, h int) {
 	}
 }
 
+// Loading reports whether the chart is waiting on its history, which is
+// when its loading line is on screen.
+func (m Model) Loading() bool {
+	return m.active && m.loading
+}
+
 // Active returns whether the chart is showing.
 func (m Model) Active() bool {
 	return m.active
@@ -553,7 +559,7 @@ func (m Model) View() string {
 	sb.WriteString("\n")
 
 	if m.loading {
-		sb.WriteString(theme.Note("  Loading chart data…", m.width))
+		sb.WriteString(theme.Loading("Loading chart data", m.width))
 		return sb.String()
 	}
 

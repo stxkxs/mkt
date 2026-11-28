@@ -89,6 +89,12 @@ func (m *Model) SetSize(w, h int) {
 	m.height = h
 }
 
+// Loading reports whether no macro quote has arrived yet, which is when
+// the loading line is on screen.
+func (m Model) Loading() bool {
+	return len(m.quotes) == 0
+}
+
 // UpdateQuotes replaces all macro quotes.
 func (m *Model) UpdateQuotes(quotes []provider.Quote) {
 	for _, q := range quotes {
@@ -235,7 +241,7 @@ func (m Model) View() string {
 // can window it. Every row is one terminal line.
 func (m Model) contentLines() []string {
 	if len(m.quotes) == 0 {
-		return []string{theme.StyleDim.Render("  Loading macro data...")}
+		return strings.Split(theme.Loading("Loading macro data", m.width), "\n")
 	}
 
 	var sb strings.Builder

@@ -3,6 +3,7 @@ package theme
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -52,5 +53,29 @@ func TestSectionHeaderTitlesShortensBeforeDropping(t *testing.T) {
 	}
 	if got := ansi.Strip(SectionHeaderTitles(nil, "", 10)); got != strings.Repeat("─", 10) {
 		t.Errorf("no titles: %q", got)
+	}
+}
+
+// The spinner's frame comes from the clock, so two renders a frame apart
+// differ only in the glyph, and the text is laid out where a Note's is.
+func TestLoadingFrameFollowsTheClock(t *testing.T) {
+	defer func(prev func() time.Time) { SpinnerClock = prev }(SpinnerClock)
+	at := time.UnixMilli(0)
+	SpinnerClock = func() time.Time { return at }
+	first := ansi.Strip(Loading("Loading news", 80))
+	at = at.Add(spinnerFrameEvery)
+	second := ansi.Strip(Loading("Loading news", 80))
+	if first == second {
+		t.Fatalf("the frame did not advance: %q", first)
+	}
+	if first[len("  ⠋"):] != second[len("  ⠙"):] || !strings.HasSuffix(first, "Loading news…") {
+		t.Fatalf("frames differ beyond the glyph: %q / %q", first, second)
+	}
+	for w := 1; w <= 40; w++ {
+		for _, r := range strings.Split(ansi.Strip(Loading("Loading options chain", w)), "\n") {
+			if ansi.StringWidth(r) > w {
+				t.Fatalf("width %d: %q", w, r)
+			}
+		}
 	}
 }

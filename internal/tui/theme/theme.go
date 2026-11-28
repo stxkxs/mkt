@@ -2,6 +2,7 @@ package theme
 
 import (
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 
@@ -188,4 +189,27 @@ func WrapStyled(text string, width int, style lipgloss.Style) []string {
 		rows = append(rows, format.Spaces(pad)+style.Render(l))
 	}
 	return rows
+}
+
+// SpinnerClock is the time the loading spinner reads its frame from. A
+// frame drawn from the wall clock keeps one pace however many sessions
+// share the process; tests pin it.
+var SpinnerClock = time.Now
+
+// spinnerFrameEvery is how long each spinner frame shows.
+const spinnerFrameEvery = 100 * time.Millisecond
+
+// Loading renders a view's loading line: the spinner and what is loading,
+// wrapped like a Note. Every view that waits on a fetch shows this line,
+// so the wait reads the same everywhere and visibly moves.
+func Loading(what string, width int) string {
+	frame := format.SpinnerFrame(int(SpinnerClock().UnixMilli() / spinnerFrameEvery.Milliseconds()))
+	// The text is laid out four cells in, where "  ⠋ " ends, and the
+	// spinner is drawn into those cells; a frame too narrow for that
+	// indent gets the text alone.
+	rows := NoteLines("    "+what+"…", width)
+	if len(rows) > 0 && strings.HasPrefix(rows[0], "    ") {
+		rows[0] = "  " + StyleAccentText(frame) + " " + rows[0][4:]
+	}
+	return strings.Join(rows, "\n")
 }

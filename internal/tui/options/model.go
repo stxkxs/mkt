@@ -41,6 +41,12 @@ func New(source ChainSource) Model {
 	return Model{source: source}
 }
 
+// Loading reports whether a chain is being fetched, which is when the
+// loading line is on screen.
+func (m Model) Loading() bool {
+	return m.symbol != "" && m.loading
+}
+
 // SetSize updates dimensions.
 func (m *Model) SetSize(w, h int) {
 	m.width = w
@@ -271,7 +277,7 @@ func (m Model) View() string {
 	sb.WriteString("\n\n")
 
 	if m.loading {
-		sb.WriteString(dim("  Loading…"))
+		sb.WriteString(theme.Loading("Loading options chain", m.width))
 		return sb.String()
 	}
 	if m.errMsg != "" {

@@ -94,6 +94,7 @@ type App struct {
 	height      int
 	ready       bool
 	spinnerTick int
+	spinning    bool // a spinner tick is scheduled for an on-screen loading line
 
 	// shared is set when several sessions run against one process, as
 	// under mkt serve. The theme lives in package-level vars in
@@ -340,6 +341,31 @@ func (a *App) Init() tea.Cmd {
 	return spinnerTickCmd()
 }
 
+// loadingOnScreen reports whether the frame shows a loading line: the
+// full-screen chart or comparison waiting on history, the symbol card
+// waiting on its summary, or the active tab waiting on its first data.
+func (a *App) loadingOnScreen() bool {
+	switch {
+	case a.chart.Active():
+		return a.chart.Loading()
+	case a.compare.Active():
+		return a.compare.Loading()
+	case a.symbolInfo.Loading():
+		return true
+	case a.detail.Active():
+		return false
+	}
+	switch a.activeTab {
+	case TabMacro:
+		return a.macro.Loading()
+	case TabNews:
+		return a.news.Loading()
+	case TabOptions:
+		return a.options.Loading()
+	}
+	return false
+}
+
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -357,19 +383,31 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ClockTickMsg:
 		a.statusbar.SetNow(time.Time(msg))
+		// A loading line animates while it is on screen. The clock arms
+		// the spinner the first second one is showing, and the spinner
+		// stops itself once none is, so an idle frame is never repainted
+		// to animate a glyph it does not show.
+		if !a.spinning && a.loadingOnScreen() {
+			a.spinning = true
+			return a, tea.Batch(clockTickCmd(), spinnerTickCmd())
+		}
 		return a, clockTickCmd()
 
 	case SpinnerTickMsg:
-		// The spinner is drawn only by the !a.ready branch of View. Once
-		// the first WindowSizeMsg has landed nothing reads spinnerTick, so
-		// re-arming would repaint every frame at spinnerInterval for the
-		// life of the process — on every attached SSH session — to animate
-		// a glyph that is no longer on screen.
-		if a.ready {
-			return a, nil
+		// Before the first frame the tick animates the pre-ready spinner.
+		// After it, the tick only repaints while a loading line is on
+		// screen, and stops once none is: re-arming for an idle frame
+		// would repaint every attached SSH session at spinnerInterval for
+		// the life of the process.
+		if !a.ready {
+			a.spinnerTick++
+			return a, spinnerTickCmd()
 		}
-		a.spinnerTick++
-		return a, spinnerTickCmd()
+		if a.loadingOnScreen() {
+			return a, spinnerTickCmd()
+		}
+		a.spinning = false
+		return a, nil
 
 	case tea.KeyPressMsg:
 		return a.handleKey(msg)
@@ -905,7 +943,7 @@ func (a *App) forwardMouseToActiveTab(msg tea.Msg) tea.Cmd {
 func (a *App) View() tea.View {
 	if !a.ready {
 		spinner := format.SpinnerFrame(a.spinnerTick)
-		return tea.NewView(theme.StyleAccentText(spinner + " Loading..."))
+		return tea.NewView(theme.StyleAccentText(spinner + " Loading…"))
 	}
 
 	// The full-screen charts own every row and draw no tab bar or status

@@ -91,6 +91,11 @@ func NewCompare(hp HistoryProvider) CompareModel {
 	}
 }
 
+// Loading reports whether the comparison is waiting on its histories.
+func (m CompareModel) Loading() bool {
+	return m.active && m.loading
+}
+
 // Active returns whether comparison chart is showing.
 func (m CompareModel) Active() bool {
 	return m.active
@@ -443,7 +448,7 @@ func (m CompareModel) View() string {
 	sb.WriteString("  " + styleAxis.Render(fitHints(compareHints, m.width-2)) + "\n\n")
 
 	if m.loading {
-		sb.WriteString(styleAxis.Render("  Loading..."))
+		sb.WriteString(theme.Loading("Loading comparison", m.width))
 		return sb.String()
 	}
 
