@@ -2,23 +2,105 @@ package format
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
 )
 
-// FormatPrice formats a price with appropriate precision.
+// FormatPrice formats a price at the precision its magnitude needs, then
+// drops trailing zeros past the cents: a $12.34 stock reads "12.34" rather
+// than "12.3400", while a $2.1345 coin keeps the digits its tick size has.
 func FormatPrice(price float64) string {
+	var s string
 	switch {
 	case price >= 100:
 		return fmt.Sprintf("%.2f", price)
 	case price >= 1:
-		return fmt.Sprintf("%.4f", price)
+		s = fmt.Sprintf("%.4f", price)
 	case price >= 0.01:
-		return fmt.Sprintf("%.6f", price)
+		s = fmt.Sprintf("%.6f", price)
 	default:
-		return fmt.Sprintf("%.8f", price)
+		s = fmt.Sprintf("%.8f", price)
 	}
+	return trimPastCents(s)
+}
+
+// trimPastCents drops the trailing zeros of a decimal past its second
+// fractional digit.
+func trimPastCents(s string) string {
+	dot := strings.IndexByte(s, '.')
+	if dot < 0 {
+		return s
+	}
+	end := len(s)
+	for end > dot+3 && s[end-1] == '0' {
+		end--
+	}
+	return s[:end]
+}
+
+// SignedPct formats a percentage change with its sign at prec decimals:
+// "+1.23%", "-0.50%". A change that rounds to zero reads "0.00%", never
+// "-0.00%", and NaN or an infinity reads "—".
+func SignedPct(pct float64, prec int) string {
+	if math.IsNaN(pct) || math.IsInf(pct, 0) {
+		return "—"
+	}
+	scale := math.Pow(10, float64(prec))
+	if math.Round(pct*scale) == 0 {
+		return fmt.Sprintf("%.*f%%", prec, 0.0)
+	}
+	return fmt.Sprintf("%+.*f%%", prec, pct)
+}
+
+// Money formats a dollar amount to the cent with thousands separators:
+// "$12,345.67", and "-$12.30" for a negative amount.
+func Money(v float64) string {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return "—"
+	}
+	if math.Round(v*100) == 0 {
+		return "$0.00"
+	}
+	sign := ""
+	if v < 0 {
+		sign, v = "-", -v
+	}
+	return sign + "$" + groupThousands(fmt.Sprintf("%.2f", v))
+}
+
+// SignedMoney is Money with a "+" on a gain, for a profit or loss.
+func SignedMoney(v float64) string {
+	s := Money(v)
+	if v > 0 && s != "$0.00" {
+		return "+" + s
+	}
+	return s
+}
+
+// groupThousands puts a comma between each group of three digits of a
+// non-negative decimal's integer part.
+func groupThousands(s string) string {
+	intPart, frac := s, ""
+	if dot := strings.IndexByte(s, '.'); dot >= 0 {
+		intPart, frac = s[:dot], s[dot:]
+	}
+	if len(intPart) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	lead := len(intPart) % 3
+	if lead > 0 {
+		b.WriteString(intPart[:lead])
+	}
+	for i := lead; i < len(intPart); i += 3 {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(intPart[i : i+3])
+	}
+	return b.String() + frac
 }
 
 // FormatAxisPrice formats a price for chart Y-axis labels (lower precision).

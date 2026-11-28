@@ -652,9 +652,10 @@ func (m Model) renderReadout(v viewport, mainH int) string {
 	}
 	shown := v.candles[idx]
 
-	summary := fmt.Sprintf("\n  %s O:%.2f H:%.2f L:%.2f C:%.2f V:%.0f",
+	summary := fmt.Sprintf("\n  %s O:%s H:%s L:%s C:%s V:%s",
 		styleInfo.Render(shown.Time.Format("2006-01-02 15:04")),
-		shown.Open, shown.High, shown.Low, shown.Close, shown.Volume)
+		format.FormatPrice(shown.Open), format.FormatPrice(shown.High), format.FormatPrice(shown.Low),
+		format.FormatPrice(shown.Close), format.FormatVolume(shown.Volume))
 
 	var indVals []string
 	if m.indicators[IndSMA] {

@@ -442,7 +442,7 @@ func (m Model) viewOverview() string {
 			nameRow = rect.Y + 1
 		}
 		if nameRow < chartH && rect.W >= 3 {
-			label := fmt.Sprintf("%s %.1f%%", s.Name, chg)
+			label := s.Name + " " + format.SignedPct(chg, 1)
 			if quoted == 0 {
 				label = s.Name + " n/a"
 			}
@@ -522,7 +522,7 @@ func (m Model) viewDrilldown() string {
 	}
 	title := lipgloss.NewStyle().Foreground(sectorColor).Bold(true).
 		Render(fmt.Sprintf("  %s", sect.Name))
-	chgStr := fmt.Sprintf(" %.2f%%", sectorChg)
+	chgStr := " " + format.SignedPct(sectorChg, 2)
 	chgStyle := theme.StyleUp
 	if quoted == 0 {
 		chgStr = " n/a"

@@ -2,6 +2,7 @@ package format
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -207,12 +208,16 @@ func TestTruncateNeverExceedsBudget(t *testing.T) {
 // every cell, so both sides of each threshold are pinned.
 func TestFormatPriceLadder(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{"99.999", "99.9990"},
+		{"99.999", "99.999"},
 		{"100", "100.00"},
-		{"0.999", "0.999000"},
-		{"1", "1.0000"},
-		{"0.00999", "0.00999000"},
-		{"0.01", "0.010000"},
+		{"0.999", "0.999"},
+		{"1", "1.00"},
+		{"12.34", "12.34"},
+		{"2.1345", "2.1345"},
+		{"0.00999", "0.00999"},
+		{"0.01", "0.01"},
+		{"0.12345678", "0.123457"},
+		{"0.00000123", "0.00000123"},
 	} {
 		var f float64
 		fmt.Sscanf(tc.in, "%g", &f)
@@ -291,6 +296,47 @@ func TestFirstFitTakesTheLongestThatFits(t *testing.T) {
 	}{{20, "a long wording"}, {14, "a long wording"}, {13, "short"}, {5, "short"}, {4, "s"}, {0, ""}} {
 		if got := FirstFit(c.w, v...); got != c.want {
 			t.Errorf("FirstFit(%d) = %q, want %q", c.w, got, c.want)
+		}
+	}
+}
+
+func TestSignedPct(t *testing.T) {
+	for _, c := range []struct {
+		pct  float64
+		prec int
+		want string
+	}{
+		{1.234, 2, "+1.23%"}, {-0.5, 2, "-0.50%"}, {0, 2, "0.00%"},
+		{-0.001, 2, "0.00%"}, {0.004, 2, "0.00%"}, {-0.04, 1, "0.0%"},
+		{12.36, 1, "+12.4%"}, {math.NaN(), 2, "—"}, {math.Inf(-1), 2, "—"},
+	} {
+		if got := SignedPct(c.pct, c.prec); got != c.want {
+			t.Errorf("SignedPct(%v, %d) = %q, want %q", c.pct, c.prec, got, c.want)
+		}
+	}
+}
+
+func TestMoney(t *testing.T) {
+	for _, c := range []struct {
+		v            float64
+		money, signd string
+	}{
+		{0, "$0.00", "$0.00"},
+		{-0.001, "$0.00", "$0.00"},
+		{12.3, "$12.30", "+$12.30"},
+		{-12.3, "-$12.30", "-$12.30"},
+		{999.99, "$999.99", "+$999.99"},
+		{1000, "$1,000.00", "+$1,000.00"},
+		{-1234567.891, "-$1,234,567.89", "-$1,234,567.89"},
+		{123456, "$123,456.00", "+$123,456.00"},
+		{999999.999, "$1,000,000.00", "+$1,000,000.00"},
+		{math.NaN(), "—", "—"},
+	} {
+		if got := Money(c.v); got != c.money {
+			t.Errorf("Money(%v) = %q, want %q", c.v, got, c.money)
+		}
+		if got := SignedMoney(c.v); got != c.signd {
+			t.Errorf("SignedMoney(%v) = %q, want %q", c.v, got, c.signd)
 		}
 	}
 }

@@ -485,16 +485,14 @@ func (m Model) View() string {
 	// Total row
 	sb.WriteString("\n")
 	totalPnlStyle := theme.StyleUp
-	totalSign := "+"
 	if summary.TotalPnL < 0 {
 		totalPnlStyle = theme.StyleDown
-		totalSign = ""
 	}
 	sb.WriteString(footerLine(m.width,
-		seg{fmt.Sprintf("Total Cost: $%.2f", summary.TotalCost), styleTotal},
-		seg{fmt.Sprintf("Value: $%.2f", summary.TotalValue), styleTotal},
-		seg{fmt.Sprintf("P&L: %s$%.2f (%s%.1f%%)",
-			totalSign, summary.TotalPnL, totalSign, summary.TotalPnLPct), totalPnlStyle.Bold(true)},
+		seg{"Total Cost: " + format.Money(summary.TotalCost), styleTotal},
+		seg{"Value: " + format.Money(summary.TotalValue), styleTotal},
+		seg{fmt.Sprintf("P&L: %s (%s)", format.SignedMoney(summary.TotalPnL),
+			format.SignedPct(summary.TotalPnLPct, 1)), totalPnlStyle.Bold(true)},
 	))
 
 	// Coverage: the totals above cover priced holdings only, so say so
@@ -522,24 +520,22 @@ func (m Model) View() string {
 	if len(p.Transactions) > 0 {
 		realized := p.Realized()
 		realizedStyle := theme.StyleUp
-		realizedSign := "+"
 		if realized < 0 {
 			realizedStyle = theme.StyleDown
-			realizedSign = ""
 		}
 		label := "Realized"
 		if p.TaxMethod != portfolio.TaxAverage {
 			label = fmt.Sprintf("Realized (%s)", strings.ToUpper(string(p.TaxMethod)))
 		}
 		sb.WriteString(footerLine(m.width, seg{
-			fmt.Sprintf("%s: %s$%.2f", label, realizedSign, realized), realizedStyle.Bold(true),
+			label + ": " + format.SignedMoney(realized), realizedStyle.Bold(true),
 		}))
 
 		divTotal := portfolio.Dividends(p.Transactions)
 		if divTotal > 0 {
 			ytd := portfolio.DividendsYTD(p.Transactions, time.Now())
 			sb.WriteString(footerLine(m.width, seg{
-				fmt.Sprintf("Dividends: $%.2f  (YTD: $%.2f)", divTotal, ytd), theme.StyleUp.Bold(true),
+				fmt.Sprintf("Dividends: %s  (YTD: %s)", format.Money(divTotal), format.Money(ytd)), theme.StyleUp.Bold(true),
 			}))
 		}
 	}
