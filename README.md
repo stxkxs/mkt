@@ -325,7 +325,9 @@ Pairwise Pearson correlation of **log returns** across the whole watchlist unive
 
 ### Themes
 
-Press `T` to cycle through 7 color themes: Tokyonight (default), Catppuccin Mocha, Gruvbox Dark, Nord, Dracula, Solarized Dark, and Catppuccin Latte (light). Theme choice persists in config.
+Press `T` to cycle through 7 color themes: Tokyonight, Catppuccin Mocha, Gruvbox Dark, Nord, Dracula, Solarized Dark, and Catppuccin Latte (light). Theme choice persists in config.
+
+The default, `theme: auto`, follows the terminal: mkt asks the terminal for its background color at start and uses Catppuccin Latte on a light background and Tokyonight on a dark one, or on a terminal that does not answer. Naming a theme in config, or picking one with `T` or `:theme`, fixes it. Under `mkt serve` every session keeps the host's theme, so `auto` reads as Tokyonight there.
 
 ---
 
@@ -368,7 +370,7 @@ notes:                # free text shown in the detail panel
 edgar_tickers: [AAPL, NVDA]
 poll_interval: 15s
 sparkline_len: 60
-theme: tokyonight
+theme: auto           # or a theme name; see Themes
 ```
 
 A file may carry both watchlist spellings. `watchlist:` is one flat list of symbols and `watchlists:` is a list of named groups; the flat list leads, under the name **Default**, and the named groups follow in file order. Every surface — the Watch tab, the heatmap, `mkt config validate`, the MCP server — resolves them the same way, so a group cannot be watched on one and missing on another.

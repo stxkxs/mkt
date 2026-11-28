@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"image/color"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -1347,5 +1348,52 @@ func TestLoadingSpinnerRunsOnlyWhileLoading(t *testing.T) {
 	a, cmd = send(t, a, SpinnerTickMsg{})
 	if cmd != nil || a.spinning {
 		t.Fatal("the spinner kept running after the data landed")
+	}
+}
+
+// With the auto theme, the app asks the terminal for its background and
+// applies the light preset on a light one. A theme picked by hand ends
+// the following, and a shared process never follows.
+func TestAutoThemeFollowsTheBackground(t *testing.T) {
+	defer theme.Apply(theme.CurrentName)
+	light := tea.BackgroundColorMsg{Color: color.RGBA{0xfa, 0xfa, 0xfa, 0xff}}
+	dark := tea.BackgroundColorMsg{Color: color.RGBA{0x10, 0x10, 0x10, 0xff}}
+
+	theme.Apply(theme.Auto)
+	a := sizedApp(t, 120, 40)
+	a.SetAutoTheme(true)
+	if a.Init() == nil {
+		t.Fatal("Init returned no command")
+	}
+	a, cmd := send(t, a, dark)
+	if theme.CurrentName != theme.Dark || cmd != nil {
+		t.Fatalf("a dark terminal changed the theme to %q", theme.CurrentName)
+	}
+	a, cmd = send(t, a, light)
+	if theme.CurrentName != theme.Light || cmd == nil {
+		t.Fatalf("a light terminal left the theme at %q, cmd %v", theme.CurrentName, cmd)
+	}
+	if _, ok := cmd().(theme.ChangedMsg); !ok {
+		t.Fatal("switching to the light preset did not broadcast ChangedMsg")
+	}
+
+	a, _ = send(t, a, keyPress("T"))
+	picked := theme.CurrentName
+	if _, cmd = send(t, a, dark); theme.CurrentName != picked || cmd != nil {
+		t.Fatalf("a background reply overrode the theme picked with T: %q → %q", picked, theme.CurrentName)
+	}
+
+	theme.Apply(theme.Auto)
+	guest := sizedApp(t, 120, 40)
+	guest.SetShared(true)
+	guest.SetAutoTheme(true)
+	if _, cmd = send(t, guest, light); theme.CurrentName != theme.Dark || cmd != nil {
+		t.Fatalf("a shared session restyled the process to %q", theme.CurrentName)
+	}
+
+	theme.Apply(theme.Auto)
+	fixed := sizedApp(t, 120, 40)
+	if _, cmd = send(t, fixed, light); theme.CurrentName != theme.Dark || cmd != nil {
+		t.Fatalf("a configured theme followed the background to %q", theme.CurrentName)
 	}
 }

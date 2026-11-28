@@ -159,11 +159,32 @@ var CurrentName string
 
 var themeIdx int
 
-// Apply activates a theme by name, updating all package-level colors and styles.
+// Auto is the theme setting that follows the terminal: Dark on a dark
+// background and Light on a light one. Until the terminal reports its
+// background, and on a terminal that never does, it reads as Dark.
+const Auto = "auto"
+
+// Dark and Light are the presets Auto picks between.
+const (
+	Dark  = "tokyonight"
+	Light = "catppuccin-latte"
+)
+
+// ForBackground is the preset Auto picks for a dark or a light terminal.
+func ForBackground(dark bool) string {
+	if dark {
+		return Dark
+	}
+	return Light
+}
+
+// Apply activates a theme by name, updating all package-level colors and
+// styles. Auto applies Dark; the caller switches to Light once the terminal
+// reports a light background.
 func Apply(name string) {
-	// Alias "dark" to "tokyonight" for backwards compat
-	if name == "dark" {
-		name = "tokyonight"
+	// "dark" is an alias for tokyonight.
+	if name == "dark" || name == Auto {
+		name = Dark
 	}
 	t, ok := themes[name]
 	if !ok {

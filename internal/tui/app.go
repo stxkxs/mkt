@@ -103,6 +103,11 @@ type App struct {
 	// the others render from them. Guests keep the host's theme.
 	shared bool
 
+	// autoTheme follows the terminal's background: the app asks for it at
+	// start and applies the light preset if the reply is light. Choosing a
+	// theme by hand ends it, so a late reply cannot undo the choice.
+	autoTheme bool
+
 	watchlist watchlist.Model
 	detail    detail.Model
 	chart     chart.Model
@@ -338,7 +343,31 @@ func clockTickCmd() tea.Cmd {
 }
 
 func (a *App) Init() tea.Cmd {
+	if a.autoTheme {
+		return tea.Batch(spinnerTickCmd(), tea.RequestBackgroundColor)
+	}
 	return spinnerTickCmd()
+}
+
+// SetAutoTheme makes the theme follow the terminal's background. A shared
+// process keeps the host's theme, so it has no effect there.
+func (a *App) SetAutoTheme(auto bool) {
+	a.autoTheme = auto && !a.shared
+}
+
+// followBackground applies the preset for the terminal's reported
+// background, when the theme follows it.
+func (a *App) followBackground(dark bool) tea.Cmd {
+	if !a.autoTheme {
+		return nil
+	}
+	name := theme.ForBackground(dark)
+	if name == theme.CurrentName {
+		return nil
+	}
+	theme.Apply(name)
+	a.statusbar.SetThemeName(name)
+	return func() tea.Msg { return theme.ChangedMsg{Name: name} }
 }
 
 // loadingOnScreen reports whether the frame shows a loading line: the
@@ -380,6 +409,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.ready = true
 		a.resize(msg.Width, msg.Height)
 		return a, cmd
+
+	case tea.BackgroundColorMsg:
+		return a, a.followBackground(msg.IsDark())
 
 	case ClockTickMsg:
 		a.statusbar.SetNow(time.Time(msg))
@@ -545,6 +577,7 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if a.shared {
 				return a, nil
 			}
+			a.autoTheme = false
 			theme.Apply(res.Arg)
 			a.statusbar.SetThemeName(theme.CurrentName)
 			return a, func() tea.Msg { return theme.ChangedMsg{Name: theme.CurrentName} }
@@ -661,6 +694,7 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// so each sub-model can rebuild its cached styles in its own Update.
 	// Withheld for a shared process — see App.shared.
 	if msg.String() == "T" && !a.shared {
+		a.autoTheme = false
 		name := theme.NextTheme()
 		theme.Apply(name)
 		a.statusbar.SetThemeName(name)

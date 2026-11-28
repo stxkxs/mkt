@@ -635,5 +635,5 @@ var (
 
 	DefaultPollInterval = "15s"
 	DefaultSparklineLen = 60
-	DefaultTheme        = "tokyonight"
+	DefaultTheme        = "auto"
 )
